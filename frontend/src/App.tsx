@@ -44,6 +44,7 @@ async function saveTradingSettings(payload: {
   defaultLeverage: number;
   apiKey?: string;
   apiSecret?: string;
+  anthropicApiKey?: string;
 }): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", {
     method: "PUT",
@@ -52,6 +53,12 @@ async function saveTradingSettings(payload: {
   });
   if (!response.ok) throw new Error("Failed to save settings");
   return response.json();
+}
+
+async function testConnection(target: "binance" | "anthropic") {
+  const response = await fetch(`/api/settings/test/${target}`, { method: "POST" });
+  if (!response.ok) throw new Error("Test request failed");
+  return response.json() as Promise<{ connected: boolean; message: string; detail?: string | null }>;
 }
 
 async function fetchOverview(): Promise<Overview> {
@@ -256,9 +263,26 @@ function SettingsPage() {
   const [leverage, setLeverage] = useState("5");
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
+  const [anthropicKey, setAnthropicKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [initialized, setInitialized] = useState(false);
+  const [binanceTest, setBinanceTest] = useState<{ connected: boolean; message: string; detail?: string | null } | null>(null);
+  const [anthropicTest, setAnthropicTest] = useState<{ connected: boolean; message: string; detail?: string | null } | null>(null);
+  const [testing, setTesting] = useState("");
+
+  const runTest = async (target: "binance" | "anthropic") => {
+    setTesting(target);
+    try {
+      const result = await testConnection(target);
+      if (target === "binance") setBinanceTest(result); else setAnthropicTest(result);
+    } catch {
+      const fail = { connected: false, message: "Test request failed" };
+      if (target === "binance") setBinanceTest(fail); else setAnthropicTest(fail);
+    } finally {
+      setTesting("");
+    }
+  };
 
   useEffect(() => {
     if (current && !initialized) {
@@ -286,9 +310,11 @@ function SettingsPage() {
         defaultLeverage: Number(leverage),
         apiKey: apiKey || undefined,
         apiSecret: apiSecret || undefined,
+        anthropicApiKey: anthropicKey || undefined,
       });
       setApiKey("");
       setApiSecret("");
+      setAnthropicKey("");
       setMessage("Settings tersimpan.");
       refetch();
     } catch (err) {
@@ -407,7 +433,49 @@ function SettingsPage() {
               type="password"
             />
           </div>
+          <div className="mt-4 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => runTest("binance")}
+              disabled={testing === "binance"}
+              className="rounded-md border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+            >
+              {testing === "binance" ? "Testing..." : "Test Connection"}
+            </button>
+            {binanceTest && <ConnectionBadge result={binanceTest} />}
+          </div>
           <p className="mt-3 text-xs text-slate-600">API key hanya dipakai jika mode Live aktif. Paper trading tidak butuh API key.</p>
+        </section>
+
+        {/* Anthropic / Claude AI */}
+        <section className="rounded-lg border border-slate-800 bg-panel p-5">
+          <h3 className="mb-4 text-sm font-semibold text-slate-300">Claude AI (Anthropic)</h3>
+          {current && (
+            <div className="mb-4 flex items-center gap-2 text-sm">
+              <span className={`h-2 w-2 rounded-full ${current.hasAnthropicKey ? "bg-emerald-400" : "bg-slate-600"}`} />
+              <span className="text-slate-400">API Key: </span>
+              <span className="text-slate-200">{current.hasAnthropicKey ? current.anthropicKeyPreview : "Belum diset"}</span>
+            </div>
+          )}
+          <SettingInput
+            label="Anthropic API Key (kosongkan jika tidak diubah)"
+            value={anthropicKey}
+            onChange={setAnthropicKey}
+            hint="Dari console.anthropic.com — dipakai untuk validasi keputusan AI (hybrid LLM)"
+            type="password"
+          />
+          <div className="mt-4 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => runTest("anthropic")}
+              disabled={testing === "anthropic"}
+              className="rounded-md border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+            >
+              {testing === "anthropic" ? "Testing..." : "Test Connection"}
+            </button>
+            {anthropicTest && <ConnectionBadge result={anthropicTest} />}
+          </div>
+          <p className="mt-3 text-xs text-slate-600">Opsional. Tanpa key, engine tetap jalan rule-based saja (tanpa validasi LLM). Simpan key dulu sebelum test.</p>
         </section>
 
         <div className="flex items-center gap-4">
@@ -422,6 +490,15 @@ function SettingsPage() {
         </div>
       </form>
     </main>
+  );
+}
+
+function ConnectionBadge({ result }: { result: { connected: boolean; message: string; detail?: string | null } }) {
+  return (
+    <span className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold ${result.connected ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"}`}>
+      <span className={`h-2 w-2 rounded-full ${result.connected ? "bg-emerald-400" : "bg-red-400"}`} />
+      {result.connected ? "✓ " : "✗ "}{result.message}{result.detail ? ` — ${result.detail}` : ""}
+    </span>
   );
 }
 

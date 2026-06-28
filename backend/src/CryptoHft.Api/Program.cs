@@ -42,6 +42,7 @@ builder.Services.AddHostedService<BinanceMarketDataWorker>();
 builder.Services.AddHostedService<BinanceUserDataWorker>();
 builder.Services.AddHostedService<KillSwitchHeartbeatWorker>();
 builder.Services.AddHostedService<AutoTradingWorker>();
+builder.Services.AddHostedService<AiLearningWorker>();
 
 var app = builder.Build();
 
@@ -83,6 +84,18 @@ app.MapPut("/api/settings/trading", (
     var settings = settingsService.Update(request);
     return Results.Ok(settings);
 });
+
+app.MapPost("/api/settings/test/binance", async (
+    IConnectionTester tester, CancellationToken cancellationToken) =>
+    Results.Ok(await tester.TestBinanceAsync(cancellationToken)));
+
+app.MapPost("/api/settings/test/anthropic", async (
+    IConnectionTester tester, CancellationToken cancellationToken) =>
+    Results.Ok(await tester.TestAnthropicAsync(cancellationToken)));
+
+app.MapGet("/api/ai/performance", async (
+    IAdaptiveWeightService adaptive, CancellationToken cancellationToken) =>
+    Results.Ok(await adaptive.GetPerformanceAsync(cancellationToken)));
 
 app.MapGet("/api/market/klines", async (
     string symbol,
@@ -589,6 +602,37 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
     await db.Database.EnsureCreatedAsync();
+
+    // EnsureCreated does not add tables to an already-existing schema; create the
+    // AI-learning tables idempotently so upgrades don't require a DB reset.
+    await db.Database.ExecuteSqlRawAsync("""
+        CREATE TABLE IF NOT EXISTS trading."AiDecisionLogs" (
+            "Id" uuid PRIMARY KEY,
+            "Symbol" text NOT NULL,
+            "Regime" integer NOT NULL,
+            "Action" integer NOT NULL,
+            "Confidence" numeric NOT NULL,
+            "EntryPrice" numeric NOT NULL,
+            "ScoresJson" text NOT NULL,
+            "Evaluated" boolean NOT NULL,
+            "Win" boolean NULL,
+            "PriceMovePercent" numeric NOT NULL,
+            "CreatedAt" timestamptz NOT NULL,
+            "EvaluatedAt" timestamptz NULL
+        );
+        CREATE INDEX IF NOT EXISTS "IX_AiDecisionLogs_Evaluated_CreatedAt"
+            ON trading."AiDecisionLogs" ("Evaluated", "CreatedAt");
+        CREATE TABLE IF NOT EXISTS trading."FactorStats" (
+            "Id" uuid PRIMARY KEY,
+            "Regime" integer NOT NULL,
+            "Factor" text NOT NULL,
+            "Alpha" numeric NOT NULL,
+            "Beta" numeric NOT NULL,
+            "UpdatedAt" timestamptz NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_FactorStats_Regime_Factor"
+            ON trading."FactorStats" ("Regime", "Factor");
+        """);
 }
 
 app.Run();

@@ -27,27 +27,27 @@ public static class MarketRegimeDetector
     {
         MarketRegime.Trending => new Dictionary<string, decimal>
         {
-            ["Trend"] = 0.30m, ["Momentum"] = 0.20m, ["OrderFlow"] = 0.15m,
-            ["Volume"] = 0.10m, ["News"] = 0.08m, ["Derivatives"] = 0.07m,
-            ["Volatility"] = 0.05m, ["Social"] = 0.05m
+            ["Trend"] = 0.28m, ["Momentum"] = 0.18m, ["OrderFlow"] = 0.14m,
+            ["SmartMoney"] = 0.10m, ["Volume"] = 0.09m, ["News"] = 0.07m,
+            ["Derivatives"] = 0.06m, ["Volatility"] = 0.04m, ["Social"] = 0.04m
         },
         MarketRegime.Ranging => new Dictionary<string, decimal>
         {
-            ["PriceAction"] = 0.22m, ["OrderFlow"] = 0.20m, ["Volume"] = 0.16m,
-            ["Momentum"] = 0.14m, ["Volatility"] = 0.10m, ["News"] = 0.08m,
-            ["Derivatives"] = 0.06m, ["Social"] = 0.04m
+            ["SmartMoney"] = 0.22m, ["PriceAction"] = 0.18m, ["OrderFlow"] = 0.18m,
+            ["Volume"] = 0.13m, ["Momentum"] = 0.11m, ["Volatility"] = 0.08m,
+            ["News"] = 0.05m, ["Derivatives"] = 0.03m, ["Social"] = 0.02m
         },
         MarketRegime.HighVolatility => new Dictionary<string, decimal>
         {
-            ["OrderFlow"] = 0.22m, ["Volatility"] = 0.18m, ["Trend"] = 0.15m,
-            ["Momentum"] = 0.13m, ["News"] = 0.12m, ["Derivatives"] = 0.10m,
-            ["Volume"] = 0.06m, ["Social"] = 0.04m
+            ["OrderFlow"] = 0.20m, ["SmartMoney"] = 0.16m, ["Volatility"] = 0.15m,
+            ["Trend"] = 0.13m, ["Momentum"] = 0.11m, ["News"] = 0.10m,
+            ["Derivatives"] = 0.08m, ["Volume"] = 0.04m, ["Social"] = 0.03m
         },
         _ => new Dictionary<string, decimal> // LowVolatility — breakout anticipation
         {
-            ["Trend"] = 0.22m, ["Volume"] = 0.20m, ["Momentum"] = 0.18m,
-            ["OrderFlow"] = 0.14m, ["PriceAction"] = 0.12m, ["News"] = 0.08m,
-            ["Derivatives"] = 0.04m, ["Social"] = 0.02m
+            ["Trend"] = 0.20m, ["Volume"] = 0.18m, ["Momentum"] = 0.16m,
+            ["SmartMoney"] = 0.14m, ["OrderFlow"] = 0.12m, ["PriceAction"] = 0.10m,
+            ["News"] = 0.06m, ["Derivatives"] = 0.02m, ["Social"] = 0.02m
         }
     };
 }

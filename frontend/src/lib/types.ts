@@ -344,4 +344,12 @@ export type TradingSettings = {
   hasApiKey: boolean;
   hasApiSecret: boolean;
   apiKeyPreview: string;
+  hasAnthropicKey: boolean;
+  anthropicKeyPreview: string;
+};
+
+export type ConnectionTestResult = {
+  connected: boolean;
+  message: string;
+  detail?: string | null;
 };

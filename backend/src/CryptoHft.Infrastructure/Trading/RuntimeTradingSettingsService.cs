@@ -15,7 +15,8 @@ public sealed class RuntimeTradingSettingsService(IOptions<BinanceOptions> optio
         MaxExposurePercent: 0.25m,
         DefaultLeverage: 5,
         ApiKey: options.Value.ApiKey,
-        ApiSecret: options.Value.ApiSecret);
+        ApiSecret: options.Value.ApiSecret,
+        AnthropicApiKey: null);
 
     public TradingSettingsDto GetPublicSettings()
     {
@@ -46,7 +47,8 @@ public sealed class RuntimeTradingSettingsService(IOptions<BinanceOptions> optio
                 MaxExposurePercent = ClampPercent(request.MaxExposurePercent, 0.01m, 5m),
                 DefaultLeverage = Math.Clamp(request.DefaultLeverage, 1, 125),
                 ApiKey = string.IsNullOrWhiteSpace(request.ApiKey) ? _settings.ApiKey : request.ApiKey.Trim(),
-                ApiSecret = string.IsNullOrWhiteSpace(request.ApiSecret) ? _settings.ApiSecret : request.ApiSecret.Trim()
+                ApiSecret = string.IsNullOrWhiteSpace(request.ApiSecret) ? _settings.ApiSecret : request.ApiSecret.Trim(),
+                AnthropicApiKey = string.IsNullOrWhiteSpace(request.AnthropicApiKey) ? _settings.AnthropicApiKey : request.AnthropicApiKey.Trim()
             };
 
             return ToDto(_settings);
@@ -64,7 +66,9 @@ public sealed class RuntimeTradingSettingsService(IOptions<BinanceOptions> optio
             settings.DefaultLeverage,
             !string.IsNullOrWhiteSpace(settings.ApiKey),
             !string.IsNullOrWhiteSpace(settings.ApiSecret),
-            Mask(settings.ApiKey));
+            Mask(settings.ApiKey),
+            !string.IsNullOrWhiteSpace(settings.AnthropicApiKey),
+            Mask(settings.AnthropicApiKey));
     }
 
     private static decimal ClampPercent(decimal value, decimal min, decimal max)

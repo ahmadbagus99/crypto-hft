@@ -37,6 +37,8 @@ public static class DependencyInjection
         services.AddSingleton<IDerivativesDataProvider, BinanceDerivativesProvider>();
         services.AddSingleton<ISentimentProvider, FreeSentimentProvider>();
         services.AddSingleton<ILlmDecisionValidator, ClaudeDecisionValidator>();
+        services.AddSingleton<IAdaptiveWeightService, AdaptiveWeightService>();
+        services.AddSingleton<IConnectionTester, ConnectionTester>();
         services.AddSingleton<IAiDecisionService, AiDecisionService>();
         return services;
     }

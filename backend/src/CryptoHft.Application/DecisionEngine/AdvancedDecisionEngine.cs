@@ -8,12 +8,19 @@ namespace CryptoHft.Application.DecisionEngine;
 // and produces an explainable, risk-managed decision. The LLM layer validates on top.
 public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
 {
-    public AdvancedDecision Evaluate(AdvancedDecisionInput input, RiskProfile profile, decimal equity)
+    public AdvancedDecision Evaluate(
+        AdvancedDecisionInput input, RiskProfile profile, decimal equity,
+        IReadOnlyDictionary<string, decimal>? weightMultipliers = null)
     {
         var primary = GetTimeframe(input, "1h") ?? input.Timeframes.OrderByDescending(t => t.Candles.Count).First();
         var candles = primary.Candles;
+        // SMC runs on the entry timeframe (15m if available) for finer structure
+        var smcTf = GetTimeframe(input, "15m") ?? primary;
         var regime = MarketRegimeDetector.Detect(candles);
-        var weights = MarketRegimeDetector.WeightsFor(regime);
+        var baseWeights = MarketRegimeDetector.WeightsFor(regime);
+
+        // Apply learned adaptive multipliers (Bayesian) on top of the regime base weights
+        var weights = ApplyMultipliers(baseWeights, weightMultipliers);
 
         var components = new List<ScoreComponent>
         {
@@ -21,6 +28,7 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
             ScoreMomentum(candles),
             ScoreVolume(candles),
             ScorePriceAction(candles),
+            ScoreSmartMoney(smcTf.Candles),
             ScoreOrderFlow(input.Derivatives),
             ScoreDerivatives(input.Derivatives),
             ScoreNews(input.Sentiment),
@@ -115,6 +123,30 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
 
     private static TimeframeData? GetTimeframe(AdvancedDecisionInput input, string interval)
         => input.Timeframes.FirstOrDefault(t => t.Interval == interval);
+
+    // Multiply regime base weights by learned multipliers, then renormalize to sum 1.
+    private static IReadOnlyDictionary<string, decimal> ApplyMultipliers(
+        IReadOnlyDictionary<string, decimal> baseWeights,
+        IReadOnlyDictionary<string, decimal>? multipliers)
+    {
+        if (multipliers is null || multipliers.Count == 0) return baseWeights;
+        var adjusted = new Dictionary<string, decimal>();
+        foreach (var (k, w) in baseWeights)
+        {
+            var m = multipliers.TryGetValue(k, out var mult) ? Math.Clamp(mult, 0.5m, 1.5m) : 1m;
+            adjusted[k] = w * m;
+        }
+        var total = adjusted.Values.Sum();
+        if (total <= 0) return baseWeights;
+        foreach (var k in adjusted.Keys.ToList()) adjusted[k] = Math.Round(adjusted[k] / total, 4);
+        return adjusted;
+    }
+
+    private static ScoreComponent ScoreSmartMoney(IReadOnlyList<Candle> candles)
+    {
+        var smc = SmartMoneyConcepts.Detect(candles);
+        return new ScoreComponent("SmartMoney", smc.Score, 0, smc.Summary);
+    }
 
     private static decimal MultiTimeframeAgreement(AdvancedDecisionInput input, bool bullish)
     {

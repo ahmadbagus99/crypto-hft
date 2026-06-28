@@ -9,7 +9,9 @@ public sealed record TradingSettingsDto(
     int DefaultLeverage,
     bool HasApiKey,
     bool HasApiSecret,
-    string ApiKeyPreview);
+    string ApiKeyPreview,
+    bool HasAnthropicKey,
+    string AnthropicKeyPreview);
 
 public sealed record UpdateTradingSettingsRequest(
     bool PaperTradingOnly,
@@ -19,7 +21,16 @@ public sealed record UpdateTradingSettingsRequest(
     decimal MaxExposurePercent,
     int DefaultLeverage,
     string? ApiKey,
-    string? ApiSecret);
+    string? ApiSecret,
+    string? AnthropicApiKey);
+
+public sealed record ConnectionTestResult(bool Connected, string Message, string? Detail = null);
+
+public interface IConnectionTester
+{
+    Task<ConnectionTestResult> TestBinanceAsync(CancellationToken cancellationToken);
+    Task<ConnectionTestResult> TestAnthropicAsync(CancellationToken cancellationToken);
+}
 
 public interface IRuntimeTradingSettingsService
 {
@@ -36,5 +47,6 @@ public sealed record RuntimeTradingSettings(
     decimal MaxExposurePercent,
     int DefaultLeverage,
     string? ApiKey,
-    string? ApiSecret);
+    string? ApiSecret,
+    string? AnthropicApiKey);
 

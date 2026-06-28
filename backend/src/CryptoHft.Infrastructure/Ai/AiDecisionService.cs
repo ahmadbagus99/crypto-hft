@@ -17,6 +17,7 @@ public sealed class AiDecisionService(
     ISentimentProvider sentimentProvider,
     IAdvancedDecisionEngine engine,
     ILlmDecisionValidator llmValidator,
+    IAdaptiveWeightService adaptiveWeights,
     IRuntimeTradingSettingsService settingsService,
     IFuturesAccountClient accountClient,
     IOptions<AiOptions> aiOptions,
@@ -49,7 +50,13 @@ public sealed class AiDecisionService(
             MinimumRiskReward: 2m,
             AutoTradeConfidenceThreshold: 85m);
 
-        var decision = engine.Evaluate(input, profile, equity);
+        // Adaptive learning: load learned weight multipliers for the current regime
+        var primary = input.Timeframes.FirstOrDefault(t => t.Interval == "1h")
+                      ?? input.Timeframes.OrderByDescending(t => t.Candles.Count).First();
+        var regime = MarketRegimeDetector.Detect(primary.Candles);
+        var multipliers = await adaptiveWeights.GetMultipliersAsync(regime, cancellationToken);
+
+        var decision = engine.Evaluate(input, profile, equity, multipliers);
 
         // Hybrid: only call the LLM for actionable, high-confidence signals to control cost.
         if (decision.Confidence >= _aiOptions.LlmConfidenceThreshold && decision.Action != DecisionAction.NoTrade)
@@ -57,6 +64,10 @@ public sealed class AiDecisionService(
             var validation = await llmValidator.ValidateAsync(decision, input, cancellationToken);
             decision = ApplyValidation(decision, validation);
         }
+
+        // Log the decision for online evaluation (fire-and-forget against the DB)
+        try { await adaptiveWeights.LogDecisionAsync(decision, cancellationToken); }
+        catch (Exception ex) { logger.LogDebug(ex, "decision logging failed"); }
 
         return decision;
     }

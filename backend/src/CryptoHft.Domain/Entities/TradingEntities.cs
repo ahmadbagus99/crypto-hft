@@ -119,6 +119,35 @@ public sealed class NewsSentiment
     public bool IgnoreAsLikelyFake { get; set; }
 }
 
+// One logged AI decision, evaluated later against realized price movement (online learning).
+public sealed class AiDecisionLog
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string Symbol { get; set; } = "BTCUSDT";
+    public int Regime { get; set; }
+    public DecisionAction Action { get; set; }
+    public decimal Confidence { get; set; }
+    public decimal EntryPrice { get; set; }
+    public string ScoresJson { get; set; } = "{}"; // factor -> 0-100 score at decision time
+    public bool Evaluated { get; set; }
+    public bool? Win { get; set; }
+    public decimal PriceMovePercent { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? EvaluatedAt { get; set; }
+}
+
+// Per-factor, per-regime Bayesian performance (Beta distribution). Weight multiplier
+// is derived from the posterior mean Alpha/(Alpha+Beta).
+public sealed class FactorStat
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public int Regime { get; set; }
+    public string Factor { get; set; } = string.Empty;
+    public decimal Alpha { get; set; } = 1m; // prior wins
+    public decimal Beta { get; set; } = 1m;  // prior losses
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
 public sealed class AuditLog
 {
     public Guid Id { get; set; } = Guid.NewGuid();

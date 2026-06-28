@@ -30,3 +30,15 @@ public interface IAiDecisionService
 {
     Task<AdvancedDecision> AnalyzeAsync(string symbol, CancellationToken cancellationToken);
 }
+
+public sealed record FactorPerformance(string Factor, int Regime, decimal WinRate, int Samples, decimal Multiplier);
+
+// Online learning: stores decisions, evaluates them against realized price, and derives
+// per-factor weight multipliers (Bayesian) that the engine applies to regime weights.
+public interface IAdaptiveWeightService
+{
+    Task<IReadOnlyDictionary<string, decimal>> GetMultipliersAsync(MarketRegime regime, CancellationToken cancellationToken);
+    Task LogDecisionAsync(AdvancedDecision decision, CancellationToken cancellationToken);
+    Task<int> EvaluatePendingAsync(decimal currentPrice, CancellationToken cancellationToken);
+    Task<IReadOnlyList<FactorPerformance>> GetPerformanceAsync(CancellationToken cancellationToken);
+}

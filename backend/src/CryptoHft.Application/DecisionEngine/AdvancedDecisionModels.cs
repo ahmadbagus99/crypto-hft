@@ -86,5 +86,9 @@ public sealed record AdvancedDecision(
 
 public interface IAdvancedDecisionEngine
 {
-    AdvancedDecision Evaluate(AdvancedDecisionInput input, Risk.RiskProfile profile, decimal equity);
+    AdvancedDecision Evaluate(
+        AdvancedDecisionInput input,
+        Risk.RiskProfile profile,
+        decimal equity,
+        IReadOnlyDictionary<string, decimal>? weightMultipliers = null);
 }

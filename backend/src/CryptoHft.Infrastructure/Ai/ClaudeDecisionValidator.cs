@@ -2,6 +2,7 @@ using System.Text.Json;
 using Anthropic;
 using Anthropic.Models.Messages;
 using CryptoHft.Application.DecisionEngine;
+using CryptoHft.Application.Trading;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -12,9 +13,17 @@ namespace CryptoHft.Infrastructure.Ai;
 // This is a confirmation gate, not the primary signal — if no API key, it passes through.
 public sealed class ClaudeDecisionValidator(
     IOptions<AiOptions> options,
+    IRuntimeTradingSettingsService settingsService,
     ILogger<ClaudeDecisionValidator> logger) : ILlmDecisionValidator
 {
     private readonly AiOptions _options = options.Value;
+
+    // Runtime UI key takes precedence over the config/env key.
+    private string? ResolveApiKey()
+    {
+        var runtime = settingsService.GetRuntimeSettings().AnthropicApiKey;
+        return !string.IsNullOrWhiteSpace(runtime) ? runtime : _options.AnthropicApiKey;
+    }
 
     private const string SystemPrompt =
         "You are a senior quantitative crypto futures trader validating an automated trading signal for BTCUSDT perpetuals. " +
@@ -28,12 +37,13 @@ public sealed class ClaudeDecisionValidator(
     public async Task<LlmValidation> ValidateAsync(
         AdvancedDecision decision, AdvancedDecisionInput input, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(_options.AnthropicApiKey))
+        var apiKey = ResolveApiKey();
+        if (string.IsNullOrWhiteSpace(apiKey))
             return Passthrough(decision, "LLM disabled (no API key)");
 
         try
         {
-            var client = new AnthropicClient { ApiKey = _options.AnthropicApiKey };
+            var client = new AnthropicClient { ApiKey = apiKey };
             var payload = BuildPayload(decision, input);
 
             var response = await client.Messages.Create(new MessageCreateParams

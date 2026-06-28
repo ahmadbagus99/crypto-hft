@@ -5,6 +5,7 @@ import React, { useEffect, useState } from "react";
 import { createTradingConnection } from "./lib/signalr";
 import type {
   AccountUpdateEvent,
+  AiDecision,
   AggTradeTick,
   BacktestResult,
   FuturesPositionInfo,
@@ -92,6 +93,12 @@ async function fetchJournal(): Promise<JournalResponse> {
 async function fetchRiskDetails(): Promise<RiskDetailResponse> {
   const response = await fetch(`/api/risk/positions?symbol=${symbol}`, { cache: "no-store" });
   if (!response.ok) throw new Error("Failed to load risk details");
+  return response.json();
+}
+
+async function fetchAiDecision(): Promise<AiDecision> {
+  const response = await fetch(`/api/ai/analyze?symbol=${symbol}`, { cache: "no-store" });
+  if (!response.ok) throw new Error("Failed to run AI analysis");
   return response.json();
 }
 
@@ -548,6 +555,7 @@ function DashboardPage() {
   const { data: journal } = useQuery({ queryKey: ["journal", symbol], queryFn: fetchJournal, refetchInterval: 5000, retry: false });
   const { data: riskDetails } = useQuery({ queryKey: ["risk-details", symbol], queryFn: fetchRiskDetails, refetchInterval: 5000, retry: false });
   const { data: backtest } = useQuery({ queryKey: ["backtest", symbol, "1h"], queryFn: fetchBacktest, retry: false });
+  const { data: aiDecision } = useQuery({ queryKey: ["ai-decision", symbol], queryFn: fetchAiDecision, refetchInterval: 30000, retry: false });
   const usdtWallet = walletBalances?.find((wallet) => wallet.asset === "USDT");
   const displayedPositions = realtimePositions.length ? realtimePositions : positions ?? [];
 
@@ -703,7 +711,7 @@ function DashboardPage() {
             <KillSwitchPanel state={killSwitch} onChanged={refetchKillSwitch} />
           </Panel>
           <Panel title="AI Decision">
-            <EmptyState text="Decision engine receives indicators, order flow, funding, OI, and news scores." />
+            <AiDecisionPanel decision={aiDecision} />
           </Panel>
         </section>
 
@@ -1347,6 +1355,90 @@ function ManualOrder() {
       </div>
       {message && <div className="rounded-md border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">{message}</div>}
     </form>
+  );
+}
+
+const ACTION_LABELS: Record<number, string> = {
+  1: "STRONG SELL", 2: "SELL", 3: "WEAK SELL", 4: "HOLD", 5: "WEAK BUY", 6: "BUY", 7: "STRONG BUY"
+};
+const REGIME_LABELS: Record<number, string> = {
+  0: "Trending", 1: "Ranging", 2: "High Volatility", 3: "Low Volatility"
+};
+
+function AiDecisionPanel({ decision }: { decision?: AiDecision }) {
+  if (!decision) {
+    return <EmptyState text="Running multi-factor AI analysis (technical, order flow, derivatives, sentiment)..." />;
+  }
+
+  const action = ACTION_LABELS[decision.action] ?? "UNKNOWN";
+  const isBuy = decision.action >= 5;
+  const isSell = decision.action <= 3;
+  const actionColor = isBuy ? "text-emerald-300" : isSell ? "text-red-300" : "text-slate-300";
+
+  return (
+    <div className="grid gap-3 text-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className={`text-lg font-bold ${actionColor}`}>{action}</div>
+          <div className="mt-1 text-xs text-slate-500">{REGIME_LABELS[decision.regime] ?? "?"} regime</div>
+        </div>
+        <div className="text-right">
+          <div className="text-2xl font-semibold text-slate-100">{formatNumber(decision.confidence, 0)}</div>
+          <div className="text-xs text-slate-500">confidence</div>
+        </div>
+      </div>
+
+      <div className={`rounded-md px-3 py-2 text-xs font-semibold ${decision.shouldTrade ? "bg-emerald-500/15 text-emerald-300" : "bg-slate-700/50 text-slate-300"}`}>
+        {decision.shouldTrade ? "✓ TRADE SIGNAL ACTIVE" : `NO TRADE — ${decision.noTradeReason || "conditions not met"}`}
+      </div>
+
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-slate-400">
+        <PositionStat label="Probability" value={`${formatNumber(decision.probabilityOfSuccess, 0)}%`} />
+        <PositionStat label="Risk/Reward" value={`1:${formatNumber(decision.riskReward, 2)}`} />
+        <PositionStat label="Entry" value={formatNumber(decision.entryPrice)} />
+        <PositionStat label="Leverage" value={`${decision.leverage}x`} />
+        <PositionStat label="Stop Loss" value={formatNumber(decision.stopLoss)} />
+        <PositionStat label="Take Profit" value={formatNumber(decision.takeProfit)} />
+        <PositionStat label="Size" value={formatNumber(decision.positionSizeQuantity, 4)} />
+        <PositionStat label="Trailing" value={`${formatNumber(decision.trailingStopPercent, 2)}%`} />
+      </div>
+
+      <div>
+        <div className="mb-1 text-xs text-slate-500">Factor Scores (0-100)</div>
+        <div className="grid gap-1">
+          {Object.entries(decision.scores).map(([name, score]) => (
+            <div key={name} className="flex items-center gap-2">
+              <span className="w-24 text-xs text-slate-400">{name}</span>
+              <div className="h-2 flex-1 overflow-hidden rounded bg-slate-800">
+                <div
+                  className={`h-full ${score >= 60 ? "bg-emerald-500" : score <= 40 ? "bg-red-500" : "bg-slate-500"}`}
+                  style={{ width: `${Math.max(0, Math.min(100, score))}%` }}
+                />
+              </div>
+              <span className="w-7 text-right text-xs text-slate-300">{formatNumber(score, 0)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {decision.llm.used && (
+        <div className="rounded-md border border-indigo-500/30 bg-indigo-950/30 p-3">
+          <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-indigo-300">
+            <Bot className="h-3.5 w-3.5" /> Claude validation: {decision.llm.confirmed ? "CONFIRMED" : "VETOED"}
+          </div>
+          {decision.llm.narrative && <div className="text-xs text-slate-300">{decision.llm.narrative}</div>}
+          {decision.llm.risks.length > 0 && (
+            <ul className="mt-2 list-disc pl-4 text-xs text-amber-300/80">
+              {decision.llm.risks.map((r, i) => <li key={i}>{r}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+
+      <div className="max-h-[160px] overflow-y-auto rounded-md border border-slate-800 bg-slate-950 p-2 text-xs text-slate-400">
+        {decision.reasons.map((r, i) => <div key={i} className="border-b border-slate-800/50 py-1 last:border-0">{r}</div>)}
+      </div>
+    </div>
   );
 }
 

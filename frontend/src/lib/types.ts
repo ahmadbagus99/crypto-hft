@@ -306,6 +306,34 @@ export type BacktestResult = {
   }>;
 };
 
+export type AiDecision = {
+  symbol: string;
+  action: number;
+  confidence: number;
+  probabilityOfSuccess: number;
+  regime: number;
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit: number;
+  trailingStopPercent: number;
+  riskReward: number;
+  positionSizeQuantity: number;
+  leverage: number;
+  shouldTrade: boolean;
+  noTradeReason: string;
+  scores: Record<string, number>;
+  weights: Record<string, number>;
+  reasons: string[];
+  llm: {
+    confirmed: boolean;
+    adjustedConfidence: number;
+    narrative: string;
+    risks: string[];
+    used: boolean;
+  };
+  time: string;
+};
+
 export type TradingSettings = {
   paperTradingOnly: boolean;
   autoTradingEnabled: boolean;

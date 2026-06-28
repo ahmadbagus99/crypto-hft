@@ -1,0 +1,116 @@
+using System.Text.Json;
+using Anthropic;
+using Anthropic.Models.Messages;
+using CryptoHft.Application.DecisionEngine;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace CryptoHft.Infrastructure.Ai;
+
+// Hybrid LLM layer. Feeds the rule engine's scores + market context to Claude and asks
+// for a final confirm/veto with an adjusted confidence and a plain-language narrative.
+// This is a confirmation gate, not the primary signal — if no API key, it passes through.
+public sealed class ClaudeDecisionValidator(
+    IOptions<AiOptions> options,
+    ILogger<ClaudeDecisionValidator> logger) : ILlmDecisionValidator
+{
+    private readonly AiOptions _options = options.Value;
+
+    private const string SystemPrompt =
+        "You are a senior quantitative crypto futures trader validating an automated trading signal for BTCUSDT perpetuals. " +
+        "You receive pre-computed factor scores (0-100), the detected market regime, derivatives data, and news sentiment. " +
+        "Your job: decide whether to CONFIRM or VETO the proposed action, give an adjusted confidence (0-100), " +
+        "a concise narrative, and key risks. Be conservative: veto if signals conflict, funding is extreme, " +
+        "liquidity is thin, or higher-timeframe trend disagrees. " +
+        "Respond ONLY with minified JSON: " +
+        "{\"confirmed\":bool,\"adjusted_confidence\":number,\"narrative\":string,\"risks\":[string]}";
+
+    public async Task<LlmValidation> ValidateAsync(
+        AdvancedDecision decision, AdvancedDecisionInput input, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_options.AnthropicApiKey))
+            return Passthrough(decision, "LLM disabled (no API key)");
+
+        try
+        {
+            var client = new AnthropicClient { ApiKey = _options.AnthropicApiKey };
+            var payload = BuildPayload(decision, input);
+
+            var response = await client.Messages.Create(new MessageCreateParams
+            {
+                Model = _options.Model,
+                MaxTokens = 1024,
+                System = SystemPrompt,
+                Messages = [new() { Role = Role.User, Content = payload }]
+            });
+
+            var text = response.Content
+                .Select(b => b.Value)
+                .OfType<TextBlock>()
+                .Select(t => t.Text)
+                .FirstOrDefault() ?? "";
+
+            return ParseResponse(text, decision);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Claude validation failed; falling back to rule-based confidence");
+            return Passthrough(decision, "LLM error, used rule-based result");
+        }
+    }
+
+    private static string BuildPayload(AdvancedDecision d, AdvancedDecisionInput input)
+    {
+        var scores = string.Join(", ", d.Scores.Select(kv => $"{kv.Key}={kv.Value:F0}"));
+        var headlines = input.Sentiment.Headlines.Count > 0
+            ? string.Join(" | ", input.Sentiment.Headlines.Take(5))
+            : "none";
+
+        return $$"""
+        Symbol: {{d.Symbol}}
+        Proposed action: {{d.Action}}
+        Rule-based confidence: {{d.Confidence:F0}}
+        Market regime: {{d.Regime}}
+        Entry: {{d.EntryPrice}}, StopLoss: {{d.StopLoss}}, TakeProfit: {{d.TakeProfit}}, RiskReward: {{d.RiskReward:F2}}
+        Factor scores (0-100): {{scores}}
+        Funding rate: {{input.Derivatives.FundingRate * 100:F4}}%
+        Open interest change: {{input.Derivatives.OpenInterestChangePercent:F2}}%
+        Long/short ratio: {{input.Derivatives.LongShortRatio:F2}}
+        Order book imbalance: {{input.Derivatives.OrderBookImbalance:F3}}
+        Fear & Greed: {{input.Sentiment.FearGreedIndex}} ({{input.Sentiment.FearGreedLabel}})
+        Recent headlines: {{headlines}}
+
+        Validate this signal. Respond with the JSON schema only.
+        """;
+    }
+
+    private LlmValidation ParseResponse(string text, AdvancedDecision decision)
+    {
+        try
+        {
+            var start = text.IndexOf('{');
+            var end = text.LastIndexOf('}');
+            if (start < 0 || end <= start) return Passthrough(decision, "LLM returned no JSON");
+            var json = text.Substring(start, end - start + 1);
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var confirmed = root.TryGetProperty("confirmed", out var c) && c.GetBoolean();
+            var adjusted = root.TryGetProperty("adjusted_confidence", out var ac) ? ac.GetDecimal() : decision.Confidence;
+            var narrative = root.TryGetProperty("narrative", out var n) ? n.GetString() ?? "" : "";
+            var risks = root.TryGetProperty("risks", out var r) && r.ValueKind == JsonValueKind.Array
+                ? r.EnumerateArray().Select(x => x.GetString() ?? "").Where(s => s.Length > 0).ToList()
+                : new List<string>();
+
+            return new LlmValidation(confirmed, Math.Clamp(adjusted, 0m, 100m), narrative, risks, true);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to parse LLM JSON: {Text}", text);
+            return Passthrough(decision, "LLM parse error");
+        }
+    }
+
+    private static LlmValidation Passthrough(AdvancedDecision d, string note)
+        => new(true, d.Confidence, note, Array.Empty<string>(), false);
+}

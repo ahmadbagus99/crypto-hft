@@ -19,6 +19,9 @@ services:
       Binance__ApiKey: ${BINANCE_API_KEY:-}
       Binance__ApiSecret: ${BINANCE_API_SECRET:-}
       Binance__PaperTradingOnly: 'true'
+      Ai__AnthropicApiKey: ${ANTHROPIC_API_KEY:-}
+      Ai__Model: claude-opus-4-8
+      Ai__LlmConfidenceThreshold: '80'
     networks:
       - default
       - creatio-shared
@@ -39,6 +42,9 @@ services:
       Binance__ApiKey: ${BINANCE_API_KEY:-}
       Binance__ApiSecret: ${BINANCE_API_SECRET:-}
       Binance__PaperTradingOnly: 'true'
+      Ai__AnthropicApiKey: ${ANTHROPIC_API_KEY:-}
+      Ai__Model: claude-opus-4-8
+      Ai__LlmConfidenceThreshold: '80'
     networks:
       - default
       - creatio-shared

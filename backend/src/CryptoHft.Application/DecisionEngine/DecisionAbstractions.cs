@@ -1,0 +1,32 @@
+namespace CryptoHft.Application.DecisionEngine;
+
+// Pulls derivatives + order-flow data from the exchange.
+public interface IDerivativesDataProvider
+{
+    Task<DerivativesSnapshot> GetSnapshotAsync(string symbol, CancellationToken cancellationToken);
+}
+
+// Pulls free news + Fear & Greed sentiment.
+public interface ISentimentProvider
+{
+    Task<SentimentSnapshot> GetSentimentAsync(CancellationToken cancellationToken);
+}
+
+// Pulls multi-timeframe candle data.
+public interface IMultiTimeframeProvider
+{
+    Task<IReadOnlyList<TimeframeData>> GetTimeframesAsync(string symbol, CancellationToken cancellationToken);
+    Task<decimal> GetLastPriceAsync(string symbol, CancellationToken cancellationToken);
+}
+
+// Hybrid LLM validation of a rule-based decision (Claude).
+public interface ILlmDecisionValidator
+{
+    Task<LlmValidation> ValidateAsync(AdvancedDecision decision, AdvancedDecisionInput input, CancellationToken cancellationToken);
+}
+
+// Orchestrates: gather data -> rule engine -> LLM validation -> final decision.
+public interface IAiDecisionService
+{
+    Task<AdvancedDecision> AnalyzeAsync(string symbol, CancellationToken cancellationToken);
+}

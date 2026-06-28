@@ -2,6 +2,7 @@ using CryptoHft.Application.Abstractions;
 using CryptoHft.Application.DecisionEngine;
 using CryptoHft.Application.Risk;
 using CryptoHft.Application.Trading;
+using CryptoHft.Infrastructure.Ai;
 using CryptoHft.Infrastructure.Binance;
 using CryptoHft.Infrastructure.Persistence;
 using CryptoHft.Infrastructure.Trading;
@@ -28,6 +29,15 @@ public static class DependencyInjection
         services.AddSingleton<IFuturesAccountClient, BinanceFuturesAccountWebSocketApiClient>();
         services.AddSingleton<IMultiFactorDecisionEngine, MultiFactorDecisionEngine>();
         services.AddSingleton<IRiskManager, RiskManager>();
+
+        // AI decision engine (Phase 1): rule-based scoring + dynamic weighting + hybrid LLM validation
+        services.Configure<AiOptions>(configuration.GetSection("Ai"));
+        services.AddSingleton<IAdvancedDecisionEngine, AdvancedDecisionEngine>();
+        services.AddSingleton<IMultiTimeframeProvider, BinanceMultiTimeframeProvider>();
+        services.AddSingleton<IDerivativesDataProvider, BinanceDerivativesProvider>();
+        services.AddSingleton<ISentimentProvider, FreeSentimentProvider>();
+        services.AddSingleton<ILlmDecisionValidator, ClaudeDecisionValidator>();
+        services.AddSingleton<IAiDecisionService, AiDecisionService>();
         return services;
     }
 }

@@ -41,6 +41,7 @@ builder.Services.AddSingleton<IRealtimePublisher, SignalRRealtimePublisher>();
 builder.Services.AddHostedService<BinanceMarketDataWorker>();
 builder.Services.AddHostedService<BinanceUserDataWorker>();
 builder.Services.AddHostedService<KillSwitchHeartbeatWorker>();
+builder.Services.AddHostedService<AutoTradingWorker>();
 
 var app = builder.Build();
 
@@ -549,6 +550,26 @@ app.MapPost("/api/decision/evaluate", (
             AutoTradeConfidenceThreshold: 80m));
 
     return Results.Ok(new { decision, risk });
+});
+
+app.MapGet("/api/ai/analyze", async (
+    string? symbol,
+    IAiDecisionService aiService,
+    CancellationToken cancellationToken) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    try
+    {
+        var decision = await aiService.AnalyzeAsync(symbol, cancellationToken);
+        return Results.Ok(decision);
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(
+            title: "AI analysis failed",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
 });
 
 app.MapGet("/api/risk/profile", (IRuntimeTradingSettingsService settingsService) =>

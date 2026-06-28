@@ -1,0 +1,980 @@
+using CryptoHft.Api.BackgroundServices;
+using CryptoHft.Api.Hubs;
+using CryptoHft.Application.Abstractions;
+using CryptoHft.Application.DecisionEngine;
+using CryptoHft.Application.Risk;
+using CryptoHft.Application.Trading;
+using CryptoHft.Domain.Enums;
+using CryptoHft.Infrastructure;
+using CryptoHft.Infrastructure.Binance;
+using CryptoHft.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Serilog;
+using System.Globalization;
+using System.Text.Json;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Host.UseSerilog((context, configuration) =>
+{
+    configuration
+        .ReadFrom.Configuration(context.Configuration)
+        .WriteTo.Console();
+});
+
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+        policy.AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials()
+            .SetIsOriginAllowed(_ => true));
+});
+
+builder.Services.AddSignalR();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+builder.Services.AddHttpClient();
+builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddSingleton<IRealtimePublisher, SignalRRealtimePublisher>();
+builder.Services.AddHostedService<BinanceMarketDataWorker>();
+builder.Services.AddHostedService<BinanceUserDataWorker>();
+builder.Services.AddHostedService<KillSwitchHeartbeatWorker>();
+
+var app = builder.Build();
+
+app.UseCors();
+app.UseSwagger();
+app.UseSwaggerUI();
+app.MapHub<TradingHub>("/hubs/trading");
+
+app.MapGet("/health", () => Results.Ok(new
+{
+    status = "ok",
+    service = "crypto-hft-api",
+    time = DateTimeOffset.UtcNow
+}));
+
+app.MapGet("/api/overview", () => Results.Ok(new
+{
+    symbol = "BTCUSDT",
+    mode = "Mainnet Data / Paper Trading",
+    walletBalance = 100000m,
+    availableBalance = 100000m,
+    dailyPnl = 0m,
+    weeklyPnl = 0m,
+    monthlyPnl = 0m,
+    winRate = 0m,
+    profitFactor = 0m,
+    sharpeRatio = 0m,
+    maxDrawdown = 0m,
+    openPositions = Array.Empty<object>()
+}));
+
+app.MapGet("/api/settings/trading", (IRuntimeTradingSettingsService settingsService) =>
+    Results.Ok(settingsService.GetPublicSettings()));
+
+app.MapPut("/api/settings/trading", (
+    UpdateTradingSettingsRequest request,
+    IRuntimeTradingSettingsService settingsService) =>
+{
+    var settings = settingsService.Update(request);
+    return Results.Ok(settings);
+});
+
+app.MapGet("/api/market/klines", async (
+    string symbol,
+    string interval,
+    int limit,
+    IHttpClientFactory httpClientFactory,
+    IOptions<BinanceOptions> binanceOptions,
+    CancellationToken cancellationToken) =>
+{
+    limit = Math.Clamp(limit, 1, 1500);
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    interval = string.IsNullOrWhiteSpace(interval) ? "1d" : interval;
+
+    var baseUrl = binanceOptions.Value.RestBaseUrl.TrimEnd('/');
+    var url = $"{baseUrl}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}";
+    using var response = await httpClientFactory.CreateClient().GetAsync(url, cancellationToken);
+    var body = await response.Content.ReadAsStringAsync(cancellationToken);
+    if (!response.IsSuccessStatusCode)
+    {
+        return Results.Problem(body, statusCode: (int)response.StatusCode);
+    }
+
+    using var document = JsonDocument.Parse(body);
+    var klines = document.RootElement.EnumerateArray().Select(item => new MarketKlineDto(
+        Symbol: symbol,
+        Interval: interval,
+        OpenTime: DateTimeOffset.FromUnixTimeMilliseconds(item[0].GetInt64()),
+        CloseTime: DateTimeOffset.FromUnixTimeMilliseconds(item[6].GetInt64()),
+        Open: ProgramHelpers.ParseDecimal(item[1]),
+        High: ProgramHelpers.ParseDecimal(item[2]),
+        Low: ProgramHelpers.ParseDecimal(item[3]),
+        Close: ProgramHelpers.ParseDecimal(item[4]),
+        Volume: ProgramHelpers.ParseDecimal(item[5]),
+        QuoteVolume: ProgramHelpers.ParseDecimal(item[7]),
+        NumberOfTrades: item[8].GetInt64(),
+        TakerBuyBaseVolume: ProgramHelpers.ParseDecimal(item[9]),
+        TakerBuyQuoteVolume: ProgramHelpers.ParseDecimal(item[10]),
+        IsClosed: true,
+        EventTime: DateTimeOffset.UtcNow)).ToList();
+
+    return Results.Ok(klines);
+});
+
+app.MapGet("/api/market/agg-trades", async (
+    string symbol,
+    int limit,
+    IHttpClientFactory httpClientFactory,
+    IOptions<BinanceOptions> binanceOptions,
+    CancellationToken cancellationToken) =>
+{
+    limit = Math.Clamp(limit, 1, 1000);
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+
+    var baseUrl = binanceOptions.Value.RestBaseUrl.TrimEnd('/');
+    var url = $"{baseUrl}/fapi/v1/aggTrades?symbol={symbol}&limit={limit}";
+    using var response = await httpClientFactory.CreateClient().GetAsync(url, cancellationToken);
+    var body = await response.Content.ReadAsStringAsync(cancellationToken);
+    if (!response.IsSuccessStatusCode)
+    {
+        return Results.Problem(body, statusCode: (int)response.StatusCode);
+    }
+
+    using var document = JsonDocument.Parse(body);
+    var trades = document.RootElement.EnumerateArray()
+        .OrderByDescending(item => item.GetProperty("T").GetInt64())
+        .Select(item => new MarketAggTradeDto(
+            Symbol: symbol,
+            Price: ProgramHelpers.ParseDecimal(item.GetProperty("p")),
+            Quantity: ProgramHelpers.ParseDecimal(item.GetProperty("q")),
+            BuyerIsMaker: item.GetProperty("m").GetBoolean(),
+            Time: DateTimeOffset.FromUnixTimeMilliseconds(item.GetProperty("T").GetInt64())))
+        .ToList();
+
+    return Results.Ok(trades);
+});
+
+app.MapGet("/api/market/mark-price", async (
+    string symbol,
+    IHttpClientFactory httpClientFactory,
+    IOptions<BinanceOptions> binanceOptions,
+    CancellationToken cancellationToken) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+
+    var baseUrl = binanceOptions.Value.RestBaseUrl.TrimEnd('/');
+    var url = $"{baseUrl}/fapi/v1/premiumIndex?symbol={symbol}";
+    using var response = await httpClientFactory.CreateClient().GetAsync(url, cancellationToken);
+    var body = await response.Content.ReadAsStringAsync(cancellationToken);
+    if (!response.IsSuccessStatusCode)
+    {
+        return Results.Problem(body, statusCode: (int)response.StatusCode);
+    }
+
+    using var document = JsonDocument.Parse(body);
+    var root = document.RootElement;
+    var markPrice = ProgramHelpers.ParseDecimal(root.GetProperty("markPrice"));
+    var tick = new MarketMarkPriceDto(
+        Symbol: root.GetProperty("symbol").GetString() ?? symbol,
+        MarkPrice: markPrice,
+        MarkPriceMovingAverage: markPrice,
+        IndexPrice: ProgramHelpers.ParseDecimal(root.GetProperty("indexPrice")),
+        EstimatedSettlePrice: ProgramHelpers.TryParseDecimal(root, "estimatedSettlePrice"),
+        FundingRate: ProgramHelpers.ParseDecimal(root.GetProperty("lastFundingRate")),
+        NextFundingTime: DateTimeOffset.FromUnixTimeMilliseconds(root.GetProperty("nextFundingTime").GetInt64()),
+        Time: DateTimeOffset.FromUnixTimeMilliseconds(root.GetProperty("time").GetInt64()));
+
+    return Results.Ok(tick);
+});
+
+app.MapGet("/api/account/wallet", async (
+    IFuturesAccountClient accountClient,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var balances = await accountClient.GetWalletBalancesAsync(cancellationToken);
+        return Results.Ok(balances);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(
+            title: "Binance private account request rejected",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapGet("/api/account/positions", async (
+    string? symbol,
+    IFuturesAccountClient accountClient,
+    CancellationToken cancellationToken) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    try
+    {
+        var positions = await accountClient.GetPositionsAsync(symbol, cancellationToken);
+        return Results.Ok(positions);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(
+            title: "Binance private position request rejected",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapGet("/api/exchange/rules", async (
+    string? symbol,
+    IFuturesExchangeInfoClient exchangeInfoClient,
+    CancellationToken cancellationToken) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    try
+    {
+        var rules = await exchangeInfoClient.GetSymbolRulesAsync(symbol, cancellationToken);
+        return Results.Ok(rules);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(
+            title: "Binance exchangeInfo request rejected",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapGet("/api/kill-switch", (IKillSwitchService killSwitchService) =>
+    Results.Ok(killSwitchService.GetState()));
+
+app.MapPost("/api/kill-switch/enable", async (
+    KillSwitchDto request,
+    IKillSwitchService killSwitchService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var state = await killSwitchService.EnableAsync(
+            new KillSwitchRequest(
+                string.IsNullOrWhiteSpace(request.Symbol) ? "BTCUSDT" : request.Symbol,
+                request.CountdownTimeMs <= 0 ? 120_000 : request.CountdownTimeMs,
+                request.HeartbeatIntervalMs <= 0 ? 30_000 : request.HeartbeatIntervalMs),
+            cancellationToken);
+
+        return Results.Ok(state);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(
+            title: "Binance futures kill switch request rejected",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapPost("/api/kill-switch/disable", async (
+    IKillSwitchService killSwitchService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var state = await killSwitchService.DisableAsync(cancellationToken);
+        return Results.Ok(state);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(
+            title: "Binance futures kill switch disable rejected",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapPost("/api/manual/order", async (
+    ManualOrderDto request,
+    ITradingExecutor executor,
+    IRuntimeTradingSettingsService settingsService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var settings = settingsService.GetRuntimeSettings();
+        var order = new TradeOrderRequest(
+            "BTCUSDT",
+            request.Side,
+            request.Kind,
+            request.Quantity,
+            request.Price,
+            request.StopPrice,
+            request.TakeProfit,
+            request.StopLoss,
+            request.Leverage <= 0 ? settings.DefaultLeverage : request.Leverage,
+            request.ReduceOnly,
+            TradingMode.Manual,
+            request.Reason ?? "Manual order");
+
+        var result = await executor.PlaceAsync(order, cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(
+            title: "Binance new order request rejected",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapPost("/api/manual/close", async (
+    ClosePositionDto request,
+    ITradingExecutor executor,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await executor.ClosePositionAsync(
+            new ClosePositionRequest("BTCUSDT", request.Side, request.Quantity, request.Reason ?? "Manual close"),
+            cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(
+            title: "Binance close position request rejected",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapGet("/api/journal/orders", async (
+    string? symbol,
+    int? limit,
+    TradingDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    var take = Math.Clamp(limit ?? 50, 1, 200);
+    var orders = await db.Orders
+        .AsNoTracking()
+        .Where(order => order.Symbol == symbol)
+        .OrderByDescending(order => order.CreatedAt)
+        .Take(take)
+        .Select(order => new JournalOrderDto(
+            order.Id,
+            order.Symbol,
+            order.Side.ToString(),
+            order.Kind.ToString(),
+            order.Status.ToString(),
+            order.Quantity,
+            order.Price,
+            order.StopPrice,
+            order.TakeProfit,
+            order.StopLoss,
+            order.ReduceOnly,
+            order.IsPaper,
+            order.ExchangeOrderId,
+            order.Reason,
+            order.CreatedAt))
+        .ToListAsync(cancellationToken);
+
+    var summary = new JournalSummaryDto(
+        TotalOrders: orders.Count,
+        FilledOrders: orders.Count(order => order.Status == OrderStatus.Filled.ToString()),
+        RejectedOrders: orders.Count(order => order.Status == OrderStatus.Rejected.ToString()),
+        PaperOrders: orders.Count(order => order.IsPaper),
+        ReduceOnlyOrders: orders.Count(order => order.ReduceOnly));
+
+    return Results.Ok(new JournalResponseDto(summary, orders));
+});
+
+app.MapGet("/api/risk/positions", async (
+    string? symbol,
+    IFuturesAccountClient accountClient,
+    IRuntimeTradingSettingsService settingsService,
+    CancellationToken cancellationToken) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    var settings = settingsService.GetRuntimeSettings();
+    var maxDailyLossPercent = settings.MaxDailyLossPercent;
+    var defaultLeverage = (decimal)settings.DefaultLeverage;
+
+    try
+    {
+        var positions = await accountClient.GetPositionsAsync(symbol, cancellationToken);
+        var wallets = await accountClient.GetWalletBalancesAsync(cancellationToken);
+        var usdt = wallets.FirstOrDefault(wallet => wallet.Asset == "USDT");
+        var walletBalance = usdt?.Balance > 0 ? usdt.Balance : 100000m;
+        var equity = Math.Max(walletBalance + (usdt?.CrossUnrealizedPnl ?? 0m), 1m);
+        var maxDailyLoss = equity * maxDailyLossPercent;
+
+        var active = positions
+            .Where(position => Math.Abs(position.PositionAmount) > 0)
+            .Select(position =>
+            {
+                var mark = position.MarkPrice > 0 ? position.MarkPrice : position.EntryPrice;
+                var notional = Math.Abs(position.PositionAmount) * mark;
+                var leverage = position.Leverage > 0 ? position.Leverage : defaultLeverage;
+                var initialMargin = leverage > 0 ? notional / leverage : 0m;
+                var marginRatio = initialMargin > 0 ? Math.Max(0m, -position.UnrealizedProfit) / initialMargin : 0m;
+                var liquidationBuffer = position.LiquidationPrice > 0 && mark > 0
+                    ? Math.Abs(mark - position.LiquidationPrice) / mark
+                    : 1m;
+                var pnlPercent = initialMargin > 0 ? position.UnrealizedProfit / initialMargin : 0m;
+                var riskLevel = marginRatio >= 0.80m || liquidationBuffer <= 0.03m
+                    ? "critical"
+                    : marginRatio >= 0.50m || liquidationBuffer <= 0.08m
+                        ? "warning"
+                        : "normal";
+
+                return new PositionRiskDto(
+                    position.Symbol,
+                    position.PositionSide,
+                    position.MarginType,
+                    position.PositionAmount,
+                    position.EntryPrice,
+                    mark,
+                    position.LiquidationPrice,
+                    notional,
+                    initialMargin,
+                    position.UnrealizedProfit,
+                    pnlPercent,
+                    leverage,
+                    marginRatio,
+                    liquidationBuffer,
+                    riskLevel);
+            })
+            .ToList();
+
+        var totalNotional = active.Sum(position => position.Notional);
+        var totalUnrealized = active.Sum(position => position.UnrealizedProfit);
+        var exposureRatio = totalNotional / equity;
+        var dailyLossUsed = totalUnrealized < 0 ? Math.Abs(totalUnrealized) / maxDailyLoss : 0m;
+        var portfolioRisk = active.Any(position => position.RiskLevel == "critical") || dailyLossUsed >= 1m
+            ? "critical"
+            : active.Any(position => position.RiskLevel == "warning") || dailyLossUsed >= 0.70m
+                ? "warning"
+                : "normal";
+
+        return Results.Ok(new RiskDetailResponseDto(
+            Symbol: symbol,
+            Equity: equity,
+            AvailableBalance: usdt?.AvailableBalance ?? 0m,
+            MaxDailyLossPercent: maxDailyLossPercent,
+            MaxDailyLoss: maxDailyLoss,
+            DailyLossUsedPercent: dailyLossUsed,
+            TotalNotional: totalNotional,
+            ExposureRatio: exposureRatio,
+            TotalUnrealizedProfit: totalUnrealized,
+            DefaultLeverage: defaultLeverage,
+            PortfolioRiskLevel: portfolioRisk,
+            Positions: active));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(
+            title: "Binance private risk request rejected",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapGet("/api/backtest/run", async (
+    string? symbol,
+    string? interval,
+    int? limit,
+    decimal? initialEquity,
+    decimal? leverage,
+    IHttpClientFactory httpClientFactory,
+    IOptions<BinanceOptions> binanceOptions,
+    CancellationToken cancellationToken) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    interval = string.IsNullOrWhiteSpace(interval) ? "1h" : interval;
+    var take = Math.Clamp(limit ?? 1000, 100, 1500);
+    var equity = initialEquity is > 0 ? initialEquity.Value : 10000m;
+    var lev = leverage is > 0 ? leverage.Value : 5m;
+
+    var baseUrl = binanceOptions.Value.RestBaseUrl.TrimEnd('/');
+    var url = $"{baseUrl}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={take}";
+    using var response = await httpClientFactory.CreateClient().GetAsync(url, cancellationToken);
+    var body = await response.Content.ReadAsStringAsync(cancellationToken);
+    if (!response.IsSuccessStatusCode)
+    {
+        return Results.Problem(body, statusCode: (int)response.StatusCode);
+    }
+
+    using var document = JsonDocument.Parse(body);
+    var candles = document.RootElement.EnumerateArray().Select(item => new BacktestCandle(
+        OpenTime: DateTimeOffset.FromUnixTimeMilliseconds(item[0].GetInt64()),
+        Open: ProgramHelpers.ParseDecimal(item[1]),
+        High: ProgramHelpers.ParseDecimal(item[2]),
+        Low: ProgramHelpers.ParseDecimal(item[3]),
+        Close: ProgramHelpers.ParseDecimal(item[4]),
+        Volume: ProgramHelpers.ParseDecimal(item[5]))).ToList();
+
+    return Results.Ok(ProgramHelpers.RunMultiIndicatorBacktest(symbol, interval, candles, equity, lev));
+});
+
+app.MapPost("/api/decision/evaluate", (
+    DecisionInput input,
+    IMultiFactorDecisionEngine engine,
+    IRiskManager riskManager,
+    IRuntimeTradingSettingsService settingsService) =>
+{
+    var settings = settingsService.GetRuntimeSettings();
+    var decision = engine.Evaluate(input);
+    var risk = riskManager.Evaluate(
+        new RiskState(
+            Equity: 100000m,
+            AvailableBalance: 100000m,
+            DailyLoss: 0m,
+            ConsecutiveLosses: 0,
+            OpenPositions: 0,
+            CurrentExposure: 0m,
+            Atr: input.Atr,
+            LastPrice: input.LastPrice),
+        decision,
+        new RiskProfile(
+            MaxDailyLoss: settings.MaxDailyLossPercent,
+            MaxConsecutiveLosses: 3,
+            MaxOpenPositions: 1,
+            MaxExposure: settings.MaxExposurePercent,
+            RiskPerTrade: settings.RiskPerTradePercent,
+            MinimumRiskReward: 2m,
+            AutoTradeConfidenceThreshold: 80m));
+
+    return Results.Ok(new { decision, risk });
+});
+
+app.MapGet("/api/risk/profile", (IRuntimeTradingSettingsService settingsService) =>
+{
+    var settings = settingsService.GetRuntimeSettings();
+    return Results.Ok(new RiskProfile(
+        MaxDailyLoss: settings.MaxDailyLossPercent,
+        MaxConsecutiveLosses: 3,
+        MaxOpenPositions: 1,
+        MaxExposure: settings.MaxExposurePercent,
+        RiskPerTrade: settings.RiskPerTradePercent,
+        MinimumRiskReward: 2m,
+        AutoTradeConfidenceThreshold: 80m));
+});
+
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+    await db.Database.EnsureCreatedAsync();
+}
+
+app.Run();
+
+public sealed record ManualOrderDto(
+    TradeSide Side,
+    OrderKind Kind,
+    decimal Quantity,
+    decimal? Price,
+    decimal? StopPrice,
+    decimal? TakeProfit,
+    decimal? StopLoss,
+    int Leverage,
+    bool ReduceOnly,
+    string? Reason);
+
+public sealed record ClosePositionDto(TradeSide Side, decimal? Quantity, string? Reason);
+
+public sealed record KillSwitchDto(string? Symbol, long CountdownTimeMs, long HeartbeatIntervalMs);
+
+public sealed record JournalOrderDto(
+    Guid Id,
+    string Symbol,
+    string Side,
+    string Kind,
+    string Status,
+    decimal Quantity,
+    decimal? Price,
+    decimal? StopPrice,
+    decimal? TakeProfit,
+    decimal? StopLoss,
+    bool ReduceOnly,
+    bool IsPaper,
+    string? ExchangeOrderId,
+    string Reason,
+    DateTimeOffset CreatedAt);
+
+public sealed record JournalSummaryDto(int TotalOrders, int FilledOrders, int RejectedOrders, int PaperOrders, int ReduceOnlyOrders);
+
+public sealed record JournalResponseDto(JournalSummaryDto Summary, IReadOnlyList<JournalOrderDto> Orders);
+
+public sealed record PositionRiskDto(
+    string Symbol,
+    string PositionSide,
+    string MarginType,
+    decimal PositionAmount,
+    decimal EntryPrice,
+    decimal MarkPrice,
+    decimal LiquidationPrice,
+    decimal Notional,
+    decimal InitialMargin,
+    decimal UnrealizedProfit,
+    decimal UnrealizedProfitPercent,
+    decimal Leverage,
+    decimal MarginRatio,
+    decimal LiquidationBufferPercent,
+    string RiskLevel);
+
+public sealed record RiskDetailResponseDto(
+    string Symbol,
+    decimal Equity,
+    decimal AvailableBalance,
+    decimal MaxDailyLossPercent,
+    decimal MaxDailyLoss,
+    decimal DailyLossUsedPercent,
+    decimal TotalNotional,
+    decimal ExposureRatio,
+    decimal TotalUnrealizedProfit,
+    decimal DefaultLeverage,
+    string PortfolioRiskLevel,
+    IReadOnlyList<PositionRiskDto> Positions);
+
+public sealed record BacktestCandle(DateTimeOffset OpenTime, decimal Open, decimal High, decimal Low, decimal Close, decimal Volume);
+
+public sealed record BacktestTradeDto(
+    string Side,
+    DateTimeOffset EntryTime,
+    DateTimeOffset ExitTime,
+    decimal EntryPrice,
+    decimal ExitPrice,
+    decimal Quantity,
+    decimal Pnl,
+    decimal PnlPercent,
+    string ExitReason);
+
+public sealed record BacktestResultDto(
+    string Symbol,
+    string Interval,
+    int Candles,
+    decimal InitialEquity,
+    decimal FinalEquity,
+    decimal NetPnl,
+    decimal NetPnlPercent,
+    decimal MaxDrawdownPercent,
+    decimal WinRate,
+    decimal ProfitFactor,
+    int TotalTrades,
+    decimal FeeRate,
+    decimal SlippageRate,
+    decimal Leverage,
+    IReadOnlyList<string> Indicators,
+    IReadOnlyList<BacktestTradeDto> Trades);
+
+public sealed record MarketKlineDto(
+    string Symbol,
+    string Interval,
+    DateTimeOffset OpenTime,
+    DateTimeOffset CloseTime,
+    decimal Open,
+    decimal High,
+    decimal Low,
+    decimal Close,
+    decimal Volume,
+    decimal QuoteVolume,
+    long NumberOfTrades,
+    decimal TakerBuyBaseVolume,
+    decimal TakerBuyQuoteVolume,
+    bool IsClosed,
+    DateTimeOffset EventTime);
+
+public sealed record MarketAggTradeDto(
+    string Symbol,
+    decimal Price,
+    decimal Quantity,
+    bool BuyerIsMaker,
+    DateTimeOffset Time);
+
+public sealed record MarketMarkPriceDto(
+    string Symbol,
+    decimal MarkPrice,
+    decimal MarkPriceMovingAverage,
+    decimal IndexPrice,
+    decimal EstimatedSettlePrice,
+    decimal FundingRate,
+    DateTimeOffset NextFundingTime,
+    DateTimeOffset Time);
+
+public static class ProgramHelpers
+{
+    public static decimal ParseDecimal(JsonElement element)
+    {
+        return Decimal.Parse(element.GetString() ?? "0", CultureInfo.InvariantCulture);
+    }
+
+    public static decimal TryParseDecimal(JsonElement root, string propertyName)
+    {
+        return root.TryGetProperty(propertyName, out var value) ? ParseDecimal(value) : 0;
+    }
+
+    public static BacktestResultDto RunMultiIndicatorBacktest(
+        string symbol,
+        string interval,
+        IReadOnlyList<BacktestCandle> candles,
+        decimal initialEquity,
+        decimal leverage)
+    {
+        const decimal feeRate = 0.0004m;
+        const decimal slippageRate = 0.0002m;
+        const decimal riskFraction = 0.10m;
+        var indicators = new[]
+        {
+            "EMA 9/21/55",
+            "RSI 14",
+            "MACD 12/26/9",
+            "Bollinger 20/2",
+            "Stochastic 14",
+            "ATR 14",
+            "Volume SMA 20"
+        };
+
+        if (candles.Count < 80)
+        {
+            return new BacktestResultDto(symbol, interval, candles.Count, initialEquity, initialEquity, 0, 0, 0, 0, 0, 0, feeRate, slippageRate, leverage, indicators, []);
+        }
+
+        var closes = candles.Select(candle => candle.Close).ToList();
+        var volumes = candles.Select(candle => candle.Volume).ToList();
+        var ema9 = Ema(closes, 9);
+        var ema21 = Ema(closes, 21);
+        var ema55 = Ema(closes, 55);
+        var rsi = Rsi(closes, 14);
+        var macdFast = Ema(closes, 12);
+        var macdSlow = Ema(closes, 26);
+        var macd = macdFast.Zip(macdSlow, (fast, slow) => fast - slow).ToList();
+        var macdSignal = Ema(macd, 9);
+        var atr = Atr(candles, 14);
+        var volumeSma = Sma(volumes, 20);
+
+        var equity = initialEquity;
+        var peakEquity = initialEquity;
+        var maxDrawdown = 0m;
+        var trades = new List<BacktestTradeDto>();
+        string? side = null;
+        decimal entryPrice = 0;
+        decimal quantity = 0;
+        decimal stopLoss = 0;
+        decimal takeProfit = 0;
+        DateTimeOffset entryTime = DateTimeOffset.MinValue;
+
+        for (var index = 60; index < candles.Count; index++)
+        {
+            var candle = candles[index];
+            var score = SignalScore(index, candles, ema9, ema21, ema55, rsi, macd, macdSignal, volumeSma);
+
+            if (side is not null)
+            {
+                var exitPrice = 0m;
+                var exitReason = "";
+                if (side == "LONG")
+                {
+                    if (candle.Low <= stopLoss)
+                    {
+                        exitPrice = stopLoss * (1 - slippageRate);
+                        exitReason = "SL";
+                    }
+                    else if (candle.High >= takeProfit)
+                    {
+                        exitPrice = takeProfit * (1 - slippageRate);
+                        exitReason = "TP";
+                    }
+                    else if (score <= -2)
+                    {
+                        exitPrice = candle.Close * (1 - slippageRate);
+                        exitReason = "Signal flip";
+                    }
+                }
+                else
+                {
+                    if (candle.High >= stopLoss)
+                    {
+                        exitPrice = stopLoss * (1 + slippageRate);
+                        exitReason = "SL";
+                    }
+                    else if (candle.Low <= takeProfit)
+                    {
+                        exitPrice = takeProfit * (1 + slippageRate);
+                        exitReason = "TP";
+                    }
+                    else if (score >= 2)
+                    {
+                        exitPrice = candle.Close * (1 + slippageRate);
+                        exitReason = "Signal flip";
+                    }
+                }
+
+                if (exitPrice > 0)
+                {
+                    var grossPnl = side == "LONG"
+                        ? (exitPrice - entryPrice) * quantity
+                        : (entryPrice - exitPrice) * quantity;
+                    var fees = (entryPrice * quantity * feeRate) + (exitPrice * quantity * feeRate);
+                    var pnl = grossPnl - fees;
+                    equity += pnl;
+                    peakEquity = Math.Max(peakEquity, equity);
+                    maxDrawdown = Math.Max(maxDrawdown, peakEquity > 0 ? (peakEquity - equity) / peakEquity : 0);
+                    trades.Add(new BacktestTradeDto(side, entryTime, candle.OpenTime, entryPrice, exitPrice, quantity, pnl, pnl / initialEquity, exitReason));
+                    side = null;
+                }
+            }
+
+            if (side is null && equity > 0 && atr[index] > 0)
+            {
+                if (score >= 3)
+                {
+                    side = "LONG";
+                    entryPrice = candle.Close * (1 + slippageRate);
+                    quantity = (equity * riskFraction * leverage) / entryPrice;
+                    stopLoss = entryPrice - (atr[index] * 1.5m);
+                    takeProfit = entryPrice + (atr[index] * 3m);
+                    entryTime = candle.OpenTime;
+                }
+                else if (score <= -3)
+                {
+                    side = "SHORT";
+                    entryPrice = candle.Close * (1 - slippageRate);
+                    quantity = (equity * riskFraction * leverage) / entryPrice;
+                    stopLoss = entryPrice + (atr[index] * 1.5m);
+                    takeProfit = entryPrice - (atr[index] * 3m);
+                    entryTime = candle.OpenTime;
+                }
+            }
+        }
+
+        var wins = trades.Count(trade => trade.Pnl > 0);
+        var grossProfit = trades.Where(trade => trade.Pnl > 0).Sum(trade => trade.Pnl);
+        var grossLoss = Math.Abs(trades.Where(trade => trade.Pnl < 0).Sum(trade => trade.Pnl));
+        var netPnl = equity - initialEquity;
+
+        return new BacktestResultDto(
+            symbol,
+            interval,
+            candles.Count,
+            initialEquity,
+            equity,
+            netPnl,
+            initialEquity > 0 ? netPnl / initialEquity : 0,
+            maxDrawdown,
+            trades.Count > 0 ? wins / (decimal)trades.Count : 0,
+            grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999m : 0m,
+            trades.Count,
+            feeRate,
+            slippageRate,
+            leverage,
+            indicators,
+            trades.TakeLast(50).Reverse().ToList());
+    }
+
+    private static int SignalScore(
+        int index,
+        IReadOnlyList<BacktestCandle> candles,
+        IReadOnlyList<decimal> ema9,
+        IReadOnlyList<decimal> ema21,
+        IReadOnlyList<decimal> ema55,
+        IReadOnlyList<decimal> rsi,
+        IReadOnlyList<decimal> macd,
+        IReadOnlyList<decimal> macdSignal,
+        IReadOnlyList<decimal> volumeSma)
+    {
+        var close = candles[index].Close;
+        var window = candles.Skip(index - 19).Take(20).Select(candle => candle.Close).ToList();
+        var mean = window.Average();
+        var stdDev = Sqrt(window.Sum(value => (value - mean) * (value - mean)) / window.Count);
+        var upperBand = mean + (2m * stdDev);
+        var lowerBand = mean - (2m * stdDev);
+        var high14 = candles.Skip(index - 13).Take(14).Max(candle => candle.High);
+        var low14 = candles.Skip(index - 13).Take(14).Min(candle => candle.Low);
+        var stoch = high14 > low14 ? ((close - low14) / (high14 - low14)) * 100m : 50m;
+        var score = 0;
+
+        if (ema9[index] > ema21[index] && ema21[index] > ema55[index]) score += 2;
+        if (ema9[index] < ema21[index] && ema21[index] < ema55[index]) score -= 2;
+        if (rsi[index] > 52m && rsi[index] < 72m) score++;
+        if (rsi[index] < 48m && rsi[index] > 28m) score--;
+        if (macd[index] > macdSignal[index]) score++;
+        if (macd[index] < macdSignal[index]) score--;
+        if (close <= lowerBand) score++;
+        if (close >= upperBand) score--;
+        if (stoch > 55m && stoch < 85m) score++;
+        if (stoch < 45m && stoch > 15m) score--;
+        if (candles[index].Volume > volumeSma[index]) score += Math.Sign(score);
+
+        return score;
+    }
+
+    private static List<decimal> Ema(IReadOnlyList<decimal> values, int period)
+    {
+        var result = new List<decimal>(values.Count);
+        var multiplier = 2m / (period + 1);
+        var ema = values[0];
+        foreach (var value in values)
+        {
+            ema = ((value - ema) * multiplier) + ema;
+            result.Add(ema);
+        }
+
+        return result;
+    }
+
+    private static List<decimal> Sma(IReadOnlyList<decimal> values, int period)
+    {
+        var result = new List<decimal>(values.Count);
+        for (var index = 0; index < values.Count; index++)
+        {
+            var start = Math.Max(0, index - period + 1);
+            var count = index - start + 1;
+            result.Add(values.Skip(start).Take(count).Average());
+        }
+
+        return result;
+    }
+
+    private static List<decimal> Rsi(IReadOnlyList<decimal> closes, int period)
+    {
+        var result = Enumerable.Repeat(50m, closes.Count).ToList();
+        for (var index = period; index < closes.Count; index++)
+        {
+            var gains = 0m;
+            var losses = 0m;
+            for (var lookback = index - period + 1; lookback <= index; lookback++)
+            {
+                var change = closes[lookback] - closes[lookback - 1];
+                if (change >= 0) gains += change;
+                else losses += Math.Abs(change);
+            }
+
+            result[index] = losses == 0 ? 100m : 100m - (100m / (1m + (gains / losses)));
+        }
+
+        return result;
+    }
+
+    private static List<decimal> Atr(IReadOnlyList<BacktestCandle> candles, int period)
+    {
+        var trueRanges = new List<decimal> { candles[0].High - candles[0].Low };
+        for (var index = 1; index < candles.Count; index++)
+        {
+            var highLow = candles[index].High - candles[index].Low;
+            var highClose = Math.Abs(candles[index].High - candles[index - 1].Close);
+            var lowClose = Math.Abs(candles[index].Low - candles[index - 1].Close);
+            trueRanges.Add(Math.Max(highLow, Math.Max(highClose, lowClose)));
+        }
+
+        return Sma(trueRanges, period);
+    }
+
+    private static decimal Sqrt(decimal value)
+    {
+        return value <= 0 ? 0 : (decimal)Math.Sqrt((double)value);
+    }
+}

@@ -45,6 +45,7 @@ async function saveTradingSettings(payload: {
   apiKey?: string;
   apiSecret?: string;
   anthropicApiKey?: string;
+  aiModel?: string;
 }): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", {
     method: "PUT",
@@ -264,6 +265,7 @@ function SettingsPage() {
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
   const [anthropicKey, setAnthropicKey] = useState("");
+  const [aiModel, setAiModel] = useState("claude-opus-4-8");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [initialized, setInitialized] = useState(false);
@@ -292,6 +294,7 @@ function SettingsPage() {
       setRiskPerTrade(String(Math.round(current.riskPerTradePercent * 100)));
       setMaxExposure(String(Math.round(current.maxExposurePercent * 100)));
       setLeverage(String(current.defaultLeverage));
+      setAiModel(current.aiModel ?? "claude-opus-4-8");
       setInitialized(true);
     }
   }, [current, initialized]);
@@ -311,6 +314,7 @@ function SettingsPage() {
         apiKey: apiKey || undefined,
         apiSecret: apiSecret || undefined,
         anthropicApiKey: anthropicKey || undefined,
+        aiModel: aiModel || undefined,
       });
       setApiKey("");
       setApiSecret("");
@@ -464,6 +468,19 @@ function SettingsPage() {
             hint="Dari console.anthropic.com — dipakai untuk validasi keputusan AI (hybrid LLM)"
             type="password"
           />
+          <div className="mt-4">
+            <label className="mb-1 block text-xs text-slate-400">Model Claude</label>
+            <select
+              value={aiModel}
+              onChange={e => setAiModel(e.target.value)}
+              className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            >
+              <option value="claude-opus-4-8">claude-opus-4-8 — Terbaik, ~$0.013/call</option>
+              <option value="claude-sonnet-4-6">claude-sonnet-4-6 — Seimbang, lebih murah</option>
+              <option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001 — Tercepat, ~$0.002/call</option>
+            </select>
+            <p className="mt-1 text-xs text-slate-600">Pilih model sesuai kebutuhan akurasi vs. biaya. Haiku cocok untuk validasi awal.</p>
+          </div>
           <div className="mt-4 flex items-center gap-3">
             <button
               type="button"

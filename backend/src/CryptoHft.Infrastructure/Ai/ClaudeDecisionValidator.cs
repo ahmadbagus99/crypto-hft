@@ -18,11 +18,17 @@ public sealed class ClaudeDecisionValidator(
 {
     private readonly AiOptions _options = options.Value;
 
-    // Runtime UI key takes precedence over the config/env key.
+    // Runtime UI key/model takes precedence over the config/env values.
     private string? ResolveApiKey()
     {
         var runtime = settingsService.GetRuntimeSettings().AnthropicApiKey;
         return !string.IsNullOrWhiteSpace(runtime) ? runtime : _options.AnthropicApiKey;
+    }
+
+    private string ResolveModel()
+    {
+        var runtime = settingsService.GetRuntimeSettings().AiModel;
+        return !string.IsNullOrWhiteSpace(runtime) ? runtime : _options.Model;
     }
 
     private const string SystemPrompt =
@@ -48,7 +54,7 @@ public sealed class ClaudeDecisionValidator(
 
             var response = await client.Messages.Create(new MessageCreateParams
             {
-                Model = _options.Model,
+                Model = ResolveModel(),
                 MaxTokens = 1024,
                 System = SystemPrompt,
                 Messages = [new() { Role = Role.User, Content = payload }]

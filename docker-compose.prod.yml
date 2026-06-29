@@ -1,0 +1,46 @@
+name: crypto-hft-btcusdt
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/src/CryptoHft.Api/Dockerfile
+    ports:
+      - '5006:8080'
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=postgres;Username=creatio_user;Password=CreatioStr0ngPass!
+      Redis__ConnectionString: redis:6379,password=R3d!sStr0ngPass#2025
+      Binance__Environment: MainnetMarketDataPaperTrading
+      Binance__RestBaseUrl: https://fapi.binance.com
+      Binance__WebSocketBaseUrl: wss://fstream.binance.com/ws
+      Binance__WebSocketApiBaseUrl: wss://ws-fapi.binance.com/ws-fapi/v1
+      Binance__Symbol: btcusdt
+      Binance__ApiKey: ${BINANCE_API_KEY:-}
+      Binance__ApiSecret: ${BINANCE_API_SECRET:-}
+      Binance__PaperTradingOnly: 'true'
+      Ai__AnthropicApiKey: ${ANTHROPIC_API_KEY:-}
+      Ai__Model: claude-opus-4-8
+      Ai__LlmConfidenceThreshold: '80'
+    restart: unless-stopped
+    networks:
+      - creatio-shared
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_APP_PASSWORD: ${APP_PASSWORD:-admin}
+    ports:
+      - '5005:80'
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - creatio-shared
+
+networks:
+  creatio-shared:
+    external: true
+    name: shared_creatio-shared

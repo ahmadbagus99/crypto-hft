@@ -11,7 +11,8 @@ public sealed record TradingSettingsDto(
     bool HasApiSecret,
     string ApiKeyPreview,
     bool HasAnthropicKey,
-    string AnthropicKeyPreview);
+    string AnthropicKeyPreview,
+    string AiModel);
 
 public sealed record UpdateTradingSettingsRequest(
     bool PaperTradingOnly,
@@ -22,7 +23,8 @@ public sealed record UpdateTradingSettingsRequest(
     int DefaultLeverage,
     string? ApiKey,
     string? ApiSecret,
-    string? AnthropicApiKey);
+    string? AnthropicApiKey,
+    string? AiModel);
 
 public sealed record ConnectionTestResult(bool Connected, string Message, string? Detail = null);
 
@@ -48,5 +50,6 @@ public sealed record RuntimeTradingSettings(
     int DefaultLeverage,
     string? ApiKey,
     string? ApiSecret,
-    string? AnthropicApiKey);
+    string? AnthropicApiKey,
+    string? AiModel);
 

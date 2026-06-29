@@ -252,7 +252,6 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
             Login
           </button>
         </form>
-        <p className="mt-4 text-xs text-slate-600">Default password: admin — ubah via env VITE_APP_PASSWORD</p>
       </div>
     </div>
   );
@@ -636,7 +635,7 @@ export function App() {
 function AppHeader({ page, onPageChange, onLogout }: { page: string; onPageChange: (p: "dashboard" | "settings") => void; onLogout: () => void }) {
   return (
     <header className="border-b border-slate-800 bg-[#0e1522]">
-      <div className="mx-auto flex max-w-[1600px] flex-col gap-4 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex w-full max-w-none flex-col gap-4 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-center gap-3">
           <Bot className="h-7 w-7 text-exchangeGreen" />
           <h1 className="text-xl font-semibold">BTCUSDT Perpetual Auto Trading</h1>
@@ -710,6 +709,7 @@ function DashboardPage() {
     };
   })();
   const displayedPositions = realtimePositions.length ? realtimePositions : positions ?? [];
+  const isManualMode = tradingSettings?.autoTradingEnabled !== true;
 
   useEffect(() => {
     const connection = createTradingConnection();
@@ -809,7 +809,7 @@ function DashboardPage() {
   }, []);
 
   return (
-    <main className="mx-auto grid max-w-[1600px] gap-4 px-4 py-4">
+    <main className="grid w-full max-w-none gap-4 px-4 py-4">
       <div className="flex flex-wrap items-center gap-2 pt-2">
         <StatusPill label={connectionState} />
         {tradingSettings && (
@@ -839,9 +839,18 @@ function DashboardPage() {
           <Metric title="Unreal PnL" value={usdtWallet?.crossUnrealizedPnl ?? 0} danger={(usdtWallet?.crossUnrealizedPnl ?? 0) < 0} />
         </section>
 
-        <section className="grid gap-4 xl:grid-cols-[1.5fr_0.8fr_0.9fr]">
+        <section className="grid gap-4 xl:grid-cols-[1.4fr_0.8fr]">
+          <Panel title="AI Decision">
+            <AiDecisionPanel decision={aiDecision} />
+          </Panel>
+          <Panel title="Claude API Usage">
+            <AiUsagePanel usage={aiUsage} />
+          </Panel>
+        </section>
+
+        <section className="grid items-start gap-4 xl:grid-cols-[1.45fr_0.65fr_0.75fr_0.75fr]">
           <Panel title="Realtime Chart">
-            <div className="h-[420px]">
+            <div className="h-[360px]">
               <CandlestickChart candles={klines} />
             </div>
           </Panel>
@@ -850,35 +859,33 @@ function DashboardPage() {
             <OrderBook snapshot={orderBook} />
           </Panel>
 
-          <Panel title="Manual Paper Order">
-            <ManualOrder />
-          </Panel>
-        </section>
-
-        <section className="grid gap-4 xl:grid-cols-[1fr_1fr_1fr]">
-          <Panel title="Trade Tape">
-            <TradeTape trades={trades} />
-          </Panel>
           <Panel title="Open Position">
             <OpenPositions positions={displayedPositions} />
           </Panel>
+
           <Panel title="Order Updates">
             <OrderUpdates updates={orderUpdates} />
           </Panel>
         </section>
 
-        <section className="grid gap-4 xl:grid-cols-[1fr_1fr_1fr]">
+        <section className={`grid gap-4 ${isManualMode ? "xl:grid-cols-[0.9fr_0.9fr]" : "xl:grid-cols-[1fr]"}`}>
+          <Panel title="Trade Tape">
+            <TradeTape trades={trades} />
+          </Panel>
+
+          {isManualMode && (
+            <Panel title={tradingSettings?.paperTradingOnly ? "Manual Paper Order" : "Manual Live Order"}>
+              <ManualOrder />
+            </Panel>
+          )}
+        </section>
+
+        <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
           <Panel title="Exchange Rules">
             <ExchangeRules rules={exchangeRules} />
           </Panel>
           <Panel title="Kill Switch">
             <KillSwitchPanel state={killSwitch} onChanged={refetchKillSwitch} />
-          </Panel>
-          <Panel title="AI Decision">
-            <AiDecisionPanel decision={aiDecision} />
-          </Panel>
-          <Panel title="Claude API Usage">
-            <AiUsagePanel usage={aiUsage} />
           </Panel>
         </section>
 
@@ -893,6 +900,7 @@ function DashboardPage() {
             <BacktestPanel result={backtest} />
           </Panel>
         </section>
+
     </main>
   );
 }

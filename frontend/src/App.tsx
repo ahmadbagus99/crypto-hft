@@ -113,9 +113,11 @@ async function fetchRiskDetails(): Promise<RiskDetailResponse> {
   return response.json();
 }
 
-async function fetchAiDecision(): Promise<AiDecision> {
-  const response = await fetch(`/api/ai/analyze?symbol=${symbol}`, { cache: "no-store" });
-  if (!response.ok) throw new Error("Failed to run AI analysis");
+async function fetchAiDecision(): Promise<AiDecision | null> {
+  // Read-only cached decision — does not trigger a Claude-billed analysis.
+  const response = await fetch(`/api/ai/decision?symbol=${symbol}`, { cache: "no-store" });
+  if (response.status === 204) return null; // analysis loop hasn't produced one yet
+  if (!response.ok) throw new Error("Failed to load AI decision");
   return response.json();
 }
 
@@ -1569,9 +1571,9 @@ const REGIME_LABELS: Record<number, string> = {
   0: "Trending", 1: "Ranging", 2: "High Volatility", 3: "Low Volatility"
 };
 
-function AiDecisionPanel({ decision }: { decision?: AiDecision }) {
+function AiDecisionPanel({ decision }: { decision?: AiDecision | null }) {
   if (!decision) {
-    return <EmptyState text="Running multi-factor AI analysis (technical, order flow, derivatives, sentiment)..." />;
+    return <EmptyState text="Menunggu hasil analisa AI dari worker (jalan tiap 30 detik)..." />;
   }
 
   const action = ACTION_LABELS[decision.action] ?? "UNKNOWN";

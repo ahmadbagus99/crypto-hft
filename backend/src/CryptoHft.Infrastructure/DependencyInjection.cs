@@ -40,6 +40,7 @@ public static class DependencyInjection
         services.AddSingleton<ILlmDecisionValidator, ClaudeDecisionValidator>();
         services.AddSingleton<IAdaptiveWeightService, AdaptiveWeightService>();
         services.AddSingleton<IConnectionTester, ConnectionTester>();
+        services.AddSingleton<ILatestDecisionStore, LatestDecisionStore>();
         services.AddSingleton<IAiUsageTracker, AiUsageTracker>();
         services.AddSingleton<IAiDecisionService, AiDecisionService>();
         return services;

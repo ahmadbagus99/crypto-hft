@@ -612,6 +612,17 @@ app.MapGet("/api/ai/analyze", async (
     }
 });
 
+// Read-only: returns the latest cached decision produced by the analysis loop.
+// Does NOT trigger a new analysis, so the dashboard never incurs Claude cost.
+app.MapGet("/api/ai/decision", (
+    string? symbol,
+    ILatestDecisionStore store) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    var decision = store.Get(symbol);
+    return decision is null ? Results.NoContent() : Results.Ok(decision);
+});
+
 app.MapGet("/api/ai/usage", async (
     IAiUsageTracker usageTracker,
     CancellationToken cancellationToken) =>

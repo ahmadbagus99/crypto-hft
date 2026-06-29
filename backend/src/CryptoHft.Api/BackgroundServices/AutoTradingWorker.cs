@@ -13,6 +13,7 @@ public sealed class AutoTradingWorker(
     IAiDecisionService aiDecisionService,
     IRuntimeTradingSettingsService settingsService,
     IFuturesAccountClient accountClient,
+    ILatestDecisionStore decisionStore,
     ILogger<AutoTradingWorker> logger) : BackgroundService
 {
     private const string Symbol = "BTCUSDT";
@@ -39,6 +40,18 @@ public sealed class AutoTradingWorker(
     private async Task TickAsync(CancellationToken cancellationToken)
     {
         var settings = settingsService.GetRuntimeSettings();
+
+        // Run the analysis once per tick regardless of mode and cache it — this is the
+        // single place that may call Claude. The dashboard reads the cached result so
+        // opening it never triggers extra (billed) analyses.
+        var decision = await aiDecisionService.AnalyzeAsync(Symbol, cancellationToken);
+        decisionStore.Set(Symbol, decision);
+
+        logger.LogInformation(
+            "AI decision: {Action} conf={Confidence} regime={Regime} shouldTrade={ShouldTrade} {Reason}",
+            decision.Action, decision.Confidence, decision.Regime, decision.ShouldTrade, decision.NoTradeReason);
+
+        // Order placement only in Auto mode.
         if (!settings.AutoTradingEnabled) return;
 
         // Don't open a new position if one is already active (MaxOpenPositions = 1).
@@ -47,12 +60,6 @@ public sealed class AutoTradingWorker(
             logger.LogDebug("Auto-trade skipped: position already open");
             return;
         }
-
-        var decision = await aiDecisionService.AnalyzeAsync(Symbol, cancellationToken);
-
-        logger.LogInformation(
-            "AI decision: {Action} conf={Confidence} regime={Regime} shouldTrade={ShouldTrade} {Reason}",
-            decision.Action, decision.Confidence, decision.Regime, decision.ShouldTrade, decision.NoTradeReason);
 
         if (!decision.ShouldTrade) return;
         if (decision.PositionSizeQuantity <= 0)

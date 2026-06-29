@@ -1,4 +1,5 @@
 using CryptoHft.Application.Abstractions;
+using CryptoHft.Application.Account;
 using CryptoHft.Application.DecisionEngine;
 using CryptoHft.Application.Risk;
 using CryptoHft.Application.Trading;
@@ -98,8 +99,8 @@ public sealed class AiDecisionService(
         try
         {
             var wallets = await accountClient.GetWalletBalancesAsync(cancellationToken);
-            var usdt = wallets.FirstOrDefault(w => w.Asset == "USDT");
-            return usdt is { Balance: > 0 } ? usdt.Balance + usdt.CrossUnrealizedPnl : 100000m;
+            var equity = wallets.UsdEquity();
+            return equity > 0 ? equity : 100000m;
         }
         catch (Exception ex)
         {

@@ -650,7 +650,19 @@ function DashboardPage() {
   const { data: riskDetails } = useQuery({ queryKey: ["risk-details", symbol], queryFn: fetchRiskDetails, refetchInterval: 5000, retry: false });
   const { data: backtest } = useQuery({ queryKey: ["backtest", symbol, "1h"], queryFn: fetchBacktest, retry: false });
   const { data: aiDecision } = useQuery({ queryKey: ["ai-decision", symbol], queryFn: fetchAiDecision, refetchInterval: 30000, retry: false });
-  const usdtWallet = walletBalances?.find((wallet) => wallet.asset === "USDT");
+  // Binance keeps futures margin across several 1:1 USD stablecoins; aggregate them so a
+  // USDC-funded account shows its real balance instead of 0.
+  const usdtWallet = (() => {
+    const usdAssets = ["USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USD1", "BFUSD", "DAI"];
+    const stable = walletBalances?.filter((wallet) => usdAssets.includes(wallet.asset)) ?? [];
+    if (stable.length === 0) return undefined;
+    return {
+      asset: "USD",
+      balance: stable.reduce((sum, w) => sum + w.balance, 0),
+      availableBalance: stable.reduce((sum, w) => sum + w.availableBalance, 0),
+      crossUnrealizedPnl: stable.reduce((sum, w) => sum + w.crossUnrealizedPnl, 0),
+    };
+  })();
   const displayedPositions = realtimePositions.length ? realtimePositions : positions ?? [];
 
   useEffect(() => {

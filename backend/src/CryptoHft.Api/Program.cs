@@ -1,6 +1,7 @@
 using CryptoHft.Api.BackgroundServices;
 using CryptoHft.Api.Hubs;
 using CryptoHft.Application.Abstractions;
+using CryptoHft.Application.Account;
 using CryptoHft.Application.DecisionEngine;
 using CryptoHft.Application.Risk;
 using CryptoHft.Application.Trading;
@@ -58,21 +59,47 @@ app.MapGet("/health", () => Results.Ok(new
     time = DateTimeOffset.UtcNow
 }));
 
-app.MapGet("/api/overview", () => Results.Ok(new
+app.MapGet("/api/overview", async (
+    IFuturesAccountClient accountClient,
+    IRuntimeTradingSettingsService settingsService,
+    CancellationToken cancellationToken) =>
 {
-    symbol = "BTCUSDT",
-    mode = "Mainnet Data / Paper Trading",
-    walletBalance = 100000m,
-    availableBalance = 100000m,
-    dailyPnl = 0m,
-    weeklyPnl = 0m,
-    monthlyPnl = 0m,
-    winRate = 0m,
-    profitFactor = 0m,
-    sharpeRatio = 0m,
-    maxDrawdown = 0m,
-    openPositions = Array.Empty<object>()
-}));
+    var settings = settingsService.GetRuntimeSettings();
+    var mode = settings.PaperTradingOnly ? "Mainnet Data / Paper Trading" : "Live Trading";
+
+    decimal walletBalance = 100000m;
+    decimal availableBalance = 100000m;
+    try
+    {
+        var wallets = await accountClient.GetWalletBalancesAsync(cancellationToken);
+        var equity = wallets.UsdEquity();
+        if (equity > 0)
+        {
+            walletBalance = equity;
+            availableBalance = wallets.UsdAvailableBalance();
+        }
+    }
+    catch
+    {
+        // Fall back to the paper defaults if the private balance request fails.
+    }
+
+    return Results.Ok(new
+    {
+        symbol = "BTCUSDT",
+        mode,
+        walletBalance,
+        availableBalance,
+        dailyPnl = 0m,
+        weeklyPnl = 0m,
+        monthlyPnl = 0m,
+        winRate = 0m,
+        profitFactor = 0m,
+        sharpeRatio = 0m,
+        maxDrawdown = 0m,
+        openPositions = Array.Empty<object>()
+    });
+});
 
 app.MapGet("/api/settings/trading", (IRuntimeTradingSettingsService settingsService) =>
     Results.Ok(settingsService.GetPublicSettings()));
@@ -421,9 +448,8 @@ app.MapGet("/api/risk/positions", async (
     {
         var positions = await accountClient.GetPositionsAsync(symbol, cancellationToken);
         var wallets = await accountClient.GetWalletBalancesAsync(cancellationToken);
-        var usdt = wallets.FirstOrDefault(wallet => wallet.Asset == "USDT");
-        var walletBalance = usdt?.Balance > 0 ? usdt.Balance : 100000m;
-        var equity = Math.Max(walletBalance + (usdt?.CrossUnrealizedPnl ?? 0m), 1m);
+        var usdEquity = wallets.UsdEquity();
+        var equity = Math.Max(usdEquity > 0 ? usdEquity : 100000m, 1m);
         var maxDailyLoss = equity * maxDailyLossPercent;
 
         var active = positions
@@ -477,7 +503,7 @@ app.MapGet("/api/risk/positions", async (
         return Results.Ok(new RiskDetailResponseDto(
             Symbol: symbol,
             Equity: equity,
-            AvailableBalance: usdt?.AvailableBalance ?? 0m,
+            AvailableBalance: wallets.UsdAvailableBalance(),
             MaxDailyLossPercent: maxDailyLossPercent,
             MaxDailyLoss: maxDailyLoss,
             DailyLossUsedPercent: dailyLossUsed,

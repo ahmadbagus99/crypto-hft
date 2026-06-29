@@ -681,6 +681,7 @@ using (var scope = app.Services.CreateScope())
             "AiModel" text NULL,
             "ConfidenceThreshold" numeric NOT NULL
         );
+        ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "LunarCrushApiKey" text NULL;
         CREATE TABLE IF NOT EXISTS trading."AiUsage" (
             "Id" uuid PRIMARY KEY,
             "Model" text NOT NULL,

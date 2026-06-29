@@ -1,13 +1,18 @@
 using System.Text.Json;
 using System.Xml.Linq;
 using CryptoHft.Application.DecisionEngine;
+using CryptoHft.Application.Trading;
 using Microsoft.Extensions.Logging;
 
 namespace CryptoHft.Infrastructure.Ai;
 
-// Free, key-less sentiment: CoinDesk RSS headlines + alternative.me Fear & Greed Index.
-// Cached for 5 minutes to avoid hammering the sources on every decision tick.
-public sealed class FreeSentimentProvider(IHttpClientFactory httpClientFactory, ILogger<FreeSentimentProvider> logger)
+// Sentiment: CoinDesk/Cointelegraph RSS headlines + alternative.me Fear & Greed Index.
+// If a LunarCrush API key is configured, its social sentiment is blended into the
+// SocialScore. Cached for 5 minutes to avoid hammering the sources on every tick.
+public sealed class FreeSentimentProvider(
+    IHttpClientFactory httpClientFactory,
+    IRuntimeTradingSettingsService settingsService,
+    ILogger<FreeSentimentProvider> logger)
     : ISentimentProvider
 {
     private static readonly string[] RssFeeds =
@@ -47,9 +52,16 @@ public sealed class FreeSentimentProvider(IHttpClientFactory httpClientFactory, 
             var (newsScore, label) = ScoreHeadlines(headlines);
             var (fgIndex, fgLabel) = await FetchFearGreedAsync(cancellationToken);
 
+            // SocialScore is Fear & Greed by default; blend in LunarCrush social
+            // sentiment (50/50) when an API key is configured.
+            decimal socialScore = fgIndex;
+            var lunar = await FetchLunarCrushAsync(cancellationToken);
+            if (lunar is not null)
+                socialScore = Math.Round((fgIndex + lunar.Value) / 2m, 1);
+
             var snapshot = new SentimentSnapshot(
                 NewsScore: newsScore,
-                SocialScore: fgIndex,
+                SocialScore: socialScore,
                 SentimentLabel: label,
                 FearGreedIndex: fgIndex,
                 FearGreedLabel: fgLabel,
@@ -116,6 +128,39 @@ public sealed class FreeSentimentProvider(IHttpClientFactory httpClientFactory, 
         score = Math.Clamp(score, 0m, 100m);
         var label = score >= 60 ? "Bullish" : score <= 40 ? "Bearish" : "Neutral";
         return (score, label);
+    }
+
+    // LunarCrush v4 social sentiment for BTC (0-100, % bullish). Returns null if no
+    // key is set or the request fails — caller falls back to Fear & Greed only.
+    private async Task<decimal?> FetchLunarCrushAsync(CancellationToken cancellationToken)
+    {
+        var key = settingsService.GetRuntimeSettings().LunarCrushApiKey;
+        if (string.IsNullOrWhiteSpace(key)) return null;
+
+        try
+        {
+            var client = httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(8);
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", key);
+
+            var json = await client.GetStringAsync(
+                "https://lunarcrush.com/api4/public/coins/BTC/v1", cancellationToken);
+            using var doc = JsonDocument.Parse(json);
+            var data = doc.RootElement.GetProperty("data");
+
+            // Prefer `sentiment` (% bullish 0-100); fall back to `galaxy_score` (0-100).
+            if (data.TryGetProperty("sentiment", out var s) && s.ValueKind == JsonValueKind.Number)
+                return Math.Clamp(s.GetDecimal(), 0m, 100m);
+            if (data.TryGetProperty("galaxy_score", out var g) && g.ValueKind == JsonValueKind.Number)
+                return Math.Clamp(g.GetDecimal(), 0m, 100m);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "LunarCrush fetch failed");
+            return null;
+        }
     }
 
     private async Task<(int index, string label)> FetchFearGreedAsync(CancellationToken cancellationToken)

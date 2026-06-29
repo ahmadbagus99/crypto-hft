@@ -48,6 +48,7 @@ async function saveTradingSettings(payload: {
   anthropicApiKey?: string;
   aiModel?: string;
   confidenceThreshold?: number;
+  lunarCrushApiKey?: string;
 }): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", {
     method: "PUT",
@@ -274,6 +275,7 @@ function SettingsPage() {
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
   const [anthropicKey, setAnthropicKey] = useState("");
+  const [lunarCrushKey, setLunarCrushKey] = useState("");
   const [aiModel, setAiModel] = useState("claude-opus-4-8");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
@@ -326,10 +328,12 @@ function SettingsPage() {
         anthropicApiKey: anthropicKey || undefined,
         aiModel: aiModel || undefined,
         confidenceThreshold: Number(confidenceThreshold) || undefined,
+        lunarCrushApiKey: lunarCrushKey || undefined,
       });
       setApiKey("");
       setApiSecret("");
       setAnthropicKey("");
+      setLunarCrushKey("");
       setMessage("Settings tersimpan.");
       refetch();
     } catch (err) {
@@ -513,6 +517,26 @@ function SettingsPage() {
             {anthropicTest && <ConnectionBadge result={anthropicTest} />}
           </div>
           <p className="mt-3 text-xs text-slate-600">Opsional. Tanpa key, engine tetap jalan rule-based saja (tanpa validasi LLM). Simpan key dulu sebelum test.</p>
+        </section>
+
+        {/* LunarCrush Social Sentiment */}
+        <section className="rounded-lg border border-slate-800 bg-panel p-5">
+          <h3 className="mb-4 text-sm font-semibold text-slate-300">LunarCrush (Social Sentiment)</h3>
+          {current && (
+            <div className="mb-4 flex items-center gap-2 text-sm">
+              <span className={`h-2 w-2 rounded-full ${current.hasLunarCrushKey ? "bg-emerald-400" : "bg-slate-600"}`} />
+              <span className="text-slate-400">API Key: </span>
+              <span className="text-slate-200">{current.hasLunarCrushKey ? current.lunarCrushKeyPreview : "Belum diset"}</span>
+            </div>
+          )}
+          <SettingInput
+            label="LunarCrush API Key (kosongkan jika tidak diubah)"
+            value={lunarCrushKey}
+            onChange={setLunarCrushKey}
+            hint="Dari lunarcrush.com/developers — sentimen sosial BTC di-blend ke faktor Social"
+            type="password"
+          />
+          <p className="mt-3 text-xs text-slate-600">Opsional. Tanpa key, faktor Social pakai Fear &amp; Greed saja. Dengan key, sentimen LunarCrush di-blend 50/50.</p>
         </section>
 
         <div className="flex items-center gap-4">

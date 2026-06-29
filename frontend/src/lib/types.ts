@@ -348,6 +348,8 @@ export type TradingSettings = {
   anthropicKeyPreview: string;
   aiModel: string;
   confidenceThreshold: number;
+  hasLunarCrushKey: boolean;
+  lunarCrushKeyPreview: string;
 };
 
 export type AiUsageSummary = {

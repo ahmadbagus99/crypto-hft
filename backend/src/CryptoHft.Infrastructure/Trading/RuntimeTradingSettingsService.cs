@@ -36,7 +36,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             ApiSecret: options.Value.ApiSecret,
             AnthropicApiKey: null,
             AiModel: null,
-            ConfidenceThreshold: 80m);
+            ConfidenceThreshold: 80m,
+            LunarCrushApiKey: null);
     }
 
     public TradingSettingsDto GetPublicSettings()
@@ -79,7 +80,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                     ApiSecret: string.IsNullOrWhiteSpace(row.ApiSecret) ? _settings.ApiSecret : row.ApiSecret,
                     AnthropicApiKey: row.AnthropicApiKey,
                     AiModel: row.AiModel,
-                    ConfidenceThreshold: row.ConfidenceThreshold > 0 ? row.ConfidenceThreshold : 80m);
+                    ConfidenceThreshold: row.ConfidenceThreshold > 0 ? row.ConfidenceThreshold : 80m,
+                    LunarCrushApiKey: row.LunarCrushApiKey);
             }
         }
         catch (Exception ex)
@@ -105,7 +107,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                 ApiSecret = string.IsNullOrWhiteSpace(request.ApiSecret) ? _settings.ApiSecret : request.ApiSecret.Trim(),
                 AnthropicApiKey = string.IsNullOrWhiteSpace(request.AnthropicApiKey) ? _settings.AnthropicApiKey : request.AnthropicApiKey.Trim(),
                 AiModel = string.IsNullOrWhiteSpace(request.AiModel) ? _settings.AiModel : request.AiModel.Trim(),
-                ConfidenceThreshold = request.ConfidenceThreshold is > 0 ? Math.Clamp(request.ConfidenceThreshold.Value, 1m, 100m) : _settings.ConfidenceThreshold
+                ConfidenceThreshold = request.ConfidenceThreshold is > 0 ? Math.Clamp(request.ConfidenceThreshold.Value, 1m, 100m) : _settings.ConfidenceThreshold,
+                LunarCrushApiKey = string.IsNullOrWhiteSpace(request.LunarCrushApiKey) ? _settings.LunarCrushApiKey : request.LunarCrushApiKey.Trim()
             };
             updated = _settings;
         }
@@ -138,6 +141,7 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             row.AnthropicApiKey = s.AnthropicApiKey;
             row.AiModel = s.AiModel;
             row.ConfidenceThreshold = s.ConfidenceThreshold;
+            row.LunarCrushApiKey = s.LunarCrushApiKey;
 
             db.SaveChanges();
         }
@@ -163,7 +167,9 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             !string.IsNullOrWhiteSpace(settings.AnthropicApiKey),
             Mask(settings.AnthropicApiKey),
             settings.AiModel ?? "claude-opus-4-8",
-            settings.ConfidenceThreshold);
+            settings.ConfidenceThreshold,
+            !string.IsNullOrWhiteSpace(settings.LunarCrushApiKey),
+            Mask(settings.LunarCrushApiKey));
     }
 
     private static decimal ClampPercent(decimal value, decimal min, decimal max)

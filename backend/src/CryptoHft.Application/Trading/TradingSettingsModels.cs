@@ -13,7 +13,9 @@ public sealed record TradingSettingsDto(
     bool HasAnthropicKey,
     string AnthropicKeyPreview,
     string AiModel,
-    decimal ConfidenceThreshold);
+    decimal ConfidenceThreshold,
+    bool HasLunarCrushKey,
+    string LunarCrushKeyPreview);
 
 public sealed record UpdateTradingSettingsRequest(
     bool PaperTradingOnly,
@@ -26,7 +28,8 @@ public sealed record UpdateTradingSettingsRequest(
     string? ApiSecret,
     string? AnthropicApiKey,
     string? AiModel,
-    decimal? ConfidenceThreshold);
+    decimal? ConfidenceThreshold,
+    string? LunarCrushApiKey);
 
 public sealed record ConnectionTestResult(bool Connected, string Message, string? Detail = null);
 
@@ -57,5 +60,6 @@ public sealed record RuntimeTradingSettings(
     string? ApiSecret,
     string? AnthropicApiKey,
     string? AiModel,
-    decimal ConfidenceThreshold);
+    decimal ConfidenceThreshold,
+    string? LunarCrushApiKey);
 

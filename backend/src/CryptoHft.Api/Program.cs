@@ -586,7 +586,7 @@ app.MapPost("/api/decision/evaluate", (
             MaxExposure: settings.MaxExposurePercent,
             RiskPerTrade: settings.RiskPerTradePercent,
             MinimumRiskReward: 2m,
-            AutoTradeConfidenceThreshold: 80m));
+            AutoTradeConfidenceThreshold: settings.ConfidenceThreshold));
 
     return Results.Ok(new { decision, risk });
 });
@@ -621,7 +621,7 @@ app.MapGet("/api/risk/profile", (IRuntimeTradingSettingsService settingsService)
         MaxExposure: settings.MaxExposurePercent,
         RiskPerTrade: settings.RiskPerTradePercent,
         MinimumRiskReward: 2m,
-        AutoTradeConfidenceThreshold: 80m));
+        AutoTradeConfidenceThreshold: settings.ConfidenceThreshold));
 });
 
 using (var scope = app.Services.CreateScope())

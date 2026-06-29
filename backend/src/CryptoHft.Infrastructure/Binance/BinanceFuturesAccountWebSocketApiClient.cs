@@ -18,7 +18,8 @@ public sealed class BinanceFuturesAccountWebSocketApiClient(
 
     public async Task<IReadOnlyList<FuturesWalletBalance>> GetWalletBalancesAsync(CancellationToken cancellationToken)
     {
-        if (!HasCredentials()) return PaperWallet();
+        // In Paper mode the dashboard reflects the simulated account, not the real wallet.
+        if (runtimeSettings.GetRuntimeSettings().PaperTradingOnly || !HasCredentials()) return PaperWallet();
 
         using var document = await InvokeSignedAsync("v2/account.balance", new Dictionary<string, object?>(), cancellationToken);
         return document.RootElement.GetProperty("result").EnumerateArray()
@@ -37,7 +38,8 @@ public sealed class BinanceFuturesAccountWebSocketApiClient(
 
     public async Task<IReadOnlyList<FuturesPositionInfo>> GetPositionsAsync(string? symbol, CancellationToken cancellationToken)
     {
-        if (!HasCredentials()) return Array.Empty<FuturesPositionInfo>();
+        // Paper mode has no real exchange positions; live positions are only fetched in Live mode.
+        if (runtimeSettings.GetRuntimeSettings().PaperTradingOnly || !HasCredentials()) return Array.Empty<FuturesPositionInfo>();
 
         var parameters = new Dictionary<string, object?>();
         if (!string.IsNullOrWhiteSpace(symbol))

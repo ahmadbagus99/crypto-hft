@@ -347,6 +347,7 @@ export type TradingSettings = {
   hasAnthropicKey: boolean;
   anthropicKeyPreview: string;
   aiModel: string;
+  confidenceThreshold: number;
 };
 
 export type ConnectionTestResult = {

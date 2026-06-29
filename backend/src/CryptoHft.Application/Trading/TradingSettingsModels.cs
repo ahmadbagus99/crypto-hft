@@ -12,7 +12,8 @@ public sealed record TradingSettingsDto(
     string ApiKeyPreview,
     bool HasAnthropicKey,
     string AnthropicKeyPreview,
-    string AiModel);
+    string AiModel,
+    decimal ConfidenceThreshold);
 
 public sealed record UpdateTradingSettingsRequest(
     bool PaperTradingOnly,
@@ -24,7 +25,8 @@ public sealed record UpdateTradingSettingsRequest(
     string? ApiKey,
     string? ApiSecret,
     string? AnthropicApiKey,
-    string? AiModel);
+    string? AiModel,
+    decimal? ConfidenceThreshold);
 
 public sealed record ConnectionTestResult(bool Connected, string Message, string? Detail = null);
 
@@ -51,5 +53,6 @@ public sealed record RuntimeTradingSettings(
     string? ApiKey,
     string? ApiSecret,
     string? AnthropicApiKey,
-    string? AiModel);
+    string? AiModel,
+    decimal ConfidenceThreshold);
 

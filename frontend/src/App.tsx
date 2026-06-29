@@ -46,6 +46,7 @@ async function saveTradingSettings(payload: {
   apiSecret?: string;
   anthropicApiKey?: string;
   aiModel?: string;
+  confidenceThreshold?: number;
 }): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", {
     method: "PUT",
@@ -262,6 +263,7 @@ function SettingsPage() {
   const [riskPerTrade, setRiskPerTrade] = useState("1");
   const [maxExposure, setMaxExposure] = useState("25");
   const [leverage, setLeverage] = useState("5");
+  const [confidenceThreshold, setConfidenceThreshold] = useState("80");
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
   const [anthropicKey, setAnthropicKey] = useState("");
@@ -295,6 +297,7 @@ function SettingsPage() {
       setMaxExposure(String(Math.round(current.maxExposurePercent * 100)));
       setLeverage(String(current.defaultLeverage));
       setAiModel(current.aiModel ?? "claude-opus-4-8");
+      setConfidenceThreshold(String(current.confidenceThreshold ?? 80));
       setInitialized(true);
     }
   }, [current, initialized]);
@@ -315,6 +318,7 @@ function SettingsPage() {
         apiSecret: apiSecret || undefined,
         anthropicApiKey: anthropicKey || undefined,
         aiModel: aiModel || undefined,
+        confidenceThreshold: Number(confidenceThreshold) || undefined,
       });
       setApiKey("");
       setApiSecret("");
@@ -400,6 +404,15 @@ function SettingsPage() {
               type="number"
               min="1"
               max="125"
+            />
+            <SettingInput
+              label="Min Confidence Open Order (%)"
+              value={confidenceThreshold}
+              onChange={setConfidenceThreshold}
+              hint="Order baru dibuka hanya jika confidence AI ≥ nilai ini"
+              type="number"
+              min="1"
+              max="100"
             />
           </div>
         </section>
@@ -641,7 +654,8 @@ function DashboardPage() {
   const [klines, setKlines] = useState<KlineTick[]>([]);
   const [realtimePositions, setRealtimePositions] = useState<FuturesPositionInfo[]>([]);
   const [orderUpdates, setOrderUpdates] = useState<OrderUpdateEvent[]>([]);
-  const { data: overview } = useQuery({ queryKey: ["overview"], queryFn: fetchOverview });
+  const { data: overview } = useQuery({ queryKey: ["overview"], queryFn: fetchOverview, refetchInterval: 5000 });
+  const { data: tradingSettings } = useQuery({ queryKey: ["trading-settings"], queryFn: fetchTradingSettings, refetchInterval: 5000, retry: false });
   const { data: walletBalances } = useQuery({ queryKey: ["wallet"], queryFn: fetchWallet, refetchInterval: 5000, retry: false });
   const { data: positions } = useQuery({ queryKey: ["positions", symbol], queryFn: fetchPositions, refetchInterval: 5000, retry: false });
   const { data: exchangeRules } = useQuery({ queryKey: ["exchange-rules", symbol], queryFn: fetchExchangeRules, refetchInterval: 60 * 60 * 1000, retry: false });
@@ -766,14 +780,26 @@ function DashboardPage() {
     <main className="mx-auto grid max-w-[1600px] gap-4 px-4 py-4">
       <div className="flex flex-wrap items-center gap-2 pt-2">
         <StatusPill label={connectionState} />
-        <span className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300">Mode: Mainnet Data / Paper Trading</span>
+        {tradingSettings && (
+          <span className={`rounded-md border px-3 py-2 text-sm font-semibold ${tradingSettings.paperTradingOnly ? "border-sky-700 bg-sky-500/10 text-sky-300" : "border-red-700 bg-red-500/10 text-red-300"}`}>
+            {tradingSettings.paperTradingOnly ? "📝 PAPER TRADING" : "🔴 LIVE TRADING"}
+          </span>
+        )}
+        {tradingSettings && (
+          <span className={`rounded-md border px-3 py-2 text-sm font-semibold ${tradingSettings.autoTradingEnabled ? "border-amber-700 bg-amber-500/10 text-amber-300" : "border-slate-700 text-slate-300"}`}>
+            {tradingSettings.autoTradingEnabled ? "🤖 AUTO" : "✋ MANUAL"}
+          </span>
+        )}
         <span className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300">Symbol: {symbol}</span>
+        {tradingSettings && (
+          <span className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300">Min Confidence: {tradingSettings.confidenceThreshold}%</span>
+        )}
       </div>
         {marginCall && <MarginCallAlert event={marginCall} onDismiss={() => setMarginCall(null)} />}
         {streamExpired && <UserStreamExpiredAlert event={streamExpired} onDismiss={() => setStreamExpired(null)} />}
 
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-          <Metric title="Wallet" value={usdtWallet?.balance ?? overview?.walletBalance ?? 0} icon={<Wallet />} />
+          <Metric title={tradingSettings?.paperTradingOnly ? "Wallet (Paper)" : "Wallet (Live)"} value={usdtWallet?.balance ?? overview?.walletBalance ?? 0} icon={<Wallet />} />
           <Metric title="Available" value={usdtWallet?.availableBalance ?? overview?.availableBalance ?? 0} icon={<ShieldCheck />} />
           <Metric title="Mark Price" value={markPrice?.markPrice ?? price?.price ?? 0} icon={<Activity />} />
           <Metric title="Index Price" value={markPrice?.indexPrice ?? 0} icon={<Activity />} />

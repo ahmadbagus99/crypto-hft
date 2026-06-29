@@ -5,7 +5,6 @@ using CryptoHft.Application.Risk;
 using CryptoHft.Application.Trading;
 using CryptoHft.Domain.Enums;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace CryptoHft.Infrastructure.Ai;
 
@@ -21,11 +20,8 @@ public sealed class AiDecisionService(
     IAdaptiveWeightService adaptiveWeights,
     IRuntimeTradingSettingsService settingsService,
     IFuturesAccountClient accountClient,
-    IOptions<AiOptions> aiOptions,
     ILogger<AiDecisionService> logger) : IAiDecisionService
 {
-    private readonly AiOptions _aiOptions = aiOptions.Value;
-
     public async Task<AdvancedDecision> AnalyzeAsync(string symbol, CancellationToken cancellationToken)
     {
         symbol = symbol.ToUpperInvariant();
@@ -49,7 +45,7 @@ public sealed class AiDecisionService(
             MaxExposure: settings.MaxExposurePercent,
             RiskPerTrade: settings.RiskPerTradePercent,
             MinimumRiskReward: 2m,
-            AutoTradeConfidenceThreshold: 85m);
+            AutoTradeConfidenceThreshold: settings.ConfidenceThreshold);
 
         // Adaptive learning: load learned weight multipliers for the current regime
         var primary = input.Timeframes.FirstOrDefault(t => t.Interval == "1h")
@@ -59,8 +55,9 @@ public sealed class AiDecisionService(
 
         var decision = engine.Evaluate(input, profile, equity, multipliers);
 
-        // Hybrid: only call the LLM for actionable, high-confidence signals to control cost.
-        if (decision.Confidence >= _aiOptions.LlmConfidenceThreshold && decision.Action != DecisionAction.NoTrade)
+        // Hybrid: only call the LLM for actionable signals that could open an order, so the
+        // validation gate tracks the same configurable confidence threshold (cost control).
+        if (decision.Confidence >= settings.ConfidenceThreshold && decision.Action != DecisionAction.NoTrade)
         {
             var validation = await llmValidator.ValidateAsync(decision, input, cancellationToken);
             decision = ApplyValidation(decision, validation);

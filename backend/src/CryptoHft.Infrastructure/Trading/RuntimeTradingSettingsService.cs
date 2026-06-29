@@ -17,7 +17,8 @@ public sealed class RuntimeTradingSettingsService(IOptions<BinanceOptions> optio
         ApiKey: options.Value.ApiKey,
         ApiSecret: options.Value.ApiSecret,
         AnthropicApiKey: null,
-        AiModel: null);
+        AiModel: null,
+        ConfidenceThreshold: 80m);
 
     public TradingSettingsDto GetPublicSettings()
     {
@@ -50,7 +51,8 @@ public sealed class RuntimeTradingSettingsService(IOptions<BinanceOptions> optio
                 ApiKey = string.IsNullOrWhiteSpace(request.ApiKey) ? _settings.ApiKey : request.ApiKey.Trim(),
                 ApiSecret = string.IsNullOrWhiteSpace(request.ApiSecret) ? _settings.ApiSecret : request.ApiSecret.Trim(),
                 AnthropicApiKey = string.IsNullOrWhiteSpace(request.AnthropicApiKey) ? _settings.AnthropicApiKey : request.AnthropicApiKey.Trim(),
-                AiModel = string.IsNullOrWhiteSpace(request.AiModel) ? _settings.AiModel : request.AiModel.Trim()
+                AiModel = string.IsNullOrWhiteSpace(request.AiModel) ? _settings.AiModel : request.AiModel.Trim(),
+                ConfidenceThreshold = request.ConfidenceThreshold is > 0 ? Math.Clamp(request.ConfidenceThreshold.Value, 1m, 100m) : _settings.ConfidenceThreshold
             };
 
             return ToDto(_settings);
@@ -71,7 +73,8 @@ public sealed class RuntimeTradingSettingsService(IOptions<BinanceOptions> optio
             Mask(settings.ApiKey),
             !string.IsNullOrWhiteSpace(settings.AnthropicApiKey),
             Mask(settings.AnthropicApiKey),
-            settings.AiModel ?? "claude-opus-4-8");
+            settings.AiModel ?? "claude-opus-4-8",
+            settings.ConfidenceThreshold);
     }
 
     private static decimal ClampPercent(decimal value, decimal min, decimal max)

@@ -65,7 +65,7 @@ EOF
 
         stage('Health check') {
             steps {
-                sshagent(credentials: ['vps-ssh']) {
+                sshagent(credentials: ['creatio-server']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${VPS_USER}@${VPS_HOST} bash -se <<EOF
                             set -euo pipefail

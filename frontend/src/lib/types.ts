@@ -350,6 +350,17 @@ export type TradingSettings = {
   confidenceThreshold: number;
 };
 
+export type AiUsageSummary = {
+  callsToday: number;
+  callsTotal: number;
+  costTodayUsd: number;
+  costTotalUsd: number;
+  inputTokensTotal: number;
+  outputTokensTotal: number;
+  lastModel: string | null;
+  lastCallAt: string | null;
+};
+
 export type ConnectionTestResult = {
   connected: boolean;
   message: string;

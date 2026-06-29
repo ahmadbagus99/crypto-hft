@@ -99,6 +99,18 @@ public sealed class RiskManagementSetting
     public bool AutoTradingEnabled { get; set; }
 }
 
+// One row per Claude API call. Records token usage and the computed USD cost so the
+// dashboard can show estimated spend (Anthropic has no balance/credit API).
+public sealed class AiUsageLog
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string Model { get; set; } = string.Empty;
+    public int InputTokens { get; set; }
+    public int OutputTokens { get; set; }
+    public decimal CostUsd { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
 // Single-row table (Id = 1) holding the runtime trading settings + API keys so they
 // survive container restarts instead of living only in memory.
 public sealed class PersistedTradingSettings

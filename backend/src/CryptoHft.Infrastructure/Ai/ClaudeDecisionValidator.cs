@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Anthropic;
 using Anthropic.Models.Messages;
+using CryptoHft.Application.Ai;
 using CryptoHft.Application.DecisionEngine;
 using CryptoHft.Application.Trading;
 using Microsoft.Extensions.Logging;
@@ -14,6 +15,7 @@ namespace CryptoHft.Infrastructure.Ai;
 public sealed class ClaudeDecisionValidator(
     IOptions<AiOptions> options,
     IRuntimeTradingSettingsService settingsService,
+    IAiUsageTracker usageTracker,
     ILogger<ClaudeDecisionValidator> logger) : ILlmDecisionValidator
 {
     private readonly AiOptions _options = options.Value;
@@ -51,14 +53,17 @@ public sealed class ClaudeDecisionValidator(
         {
             var client = new AnthropicClient { ApiKey = apiKey };
             var payload = BuildPayload(decision, input);
+            var model = ResolveModel();
 
             var response = await client.Messages.Create(new MessageCreateParams
             {
-                Model = ResolveModel(),
+                Model = model,
                 MaxTokens = 1024,
                 System = SystemPrompt,
                 Messages = [new() { Role = Role.User, Content = payload }]
             });
+
+            usageTracker.Record(model, (int)response.Usage.InputTokens, (int)response.Usage.OutputTokens);
 
             var text = response.Content
                 .Select(b => b.Value)

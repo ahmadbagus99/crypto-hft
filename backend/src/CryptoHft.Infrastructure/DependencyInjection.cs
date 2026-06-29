@@ -1,4 +1,5 @@
 using CryptoHft.Application.Abstractions;
+using CryptoHft.Application.Ai;
 using CryptoHft.Application.DecisionEngine;
 using CryptoHft.Application.Risk;
 using CryptoHft.Application.Trading;
@@ -39,6 +40,7 @@ public static class DependencyInjection
         services.AddSingleton<ILlmDecisionValidator, ClaudeDecisionValidator>();
         services.AddSingleton<IAdaptiveWeightService, AdaptiveWeightService>();
         services.AddSingleton<IConnectionTester, ConnectionTester>();
+        services.AddSingleton<IAiUsageTracker, AiUsageTracker>();
         services.AddSingleton<IAiDecisionService, AiDecisionService>();
         return services;
     }

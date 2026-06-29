@@ -2,6 +2,7 @@ using CryptoHft.Api.BackgroundServices;
 using CryptoHft.Api.Hubs;
 using CryptoHft.Application.Abstractions;
 using CryptoHft.Application.Account;
+using CryptoHft.Application.Ai;
 using CryptoHft.Application.DecisionEngine;
 using CryptoHft.Application.Risk;
 using CryptoHft.Application.Trading;
@@ -611,6 +612,14 @@ app.MapGet("/api/ai/analyze", async (
     }
 });
 
+app.MapGet("/api/ai/usage", async (
+    IAiUsageTracker usageTracker,
+    CancellationToken cancellationToken) =>
+{
+    var summary = await usageTracker.GetSummaryAsync(cancellationToken);
+    return Results.Ok(summary);
+});
+
 app.MapGet("/api/risk/profile", (IRuntimeTradingSettingsService settingsService) =>
 {
     var settings = settingsService.GetRuntimeSettings();
@@ -672,6 +681,15 @@ using (var scope = app.Services.CreateScope())
             "AiModel" text NULL,
             "ConfidenceThreshold" numeric NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS trading."AiUsage" (
+            "Id" uuid PRIMARY KEY,
+            "Model" text NOT NULL,
+            "InputTokens" integer NOT NULL,
+            "OutputTokens" integer NOT NULL,
+            "CostUsd" numeric NOT NULL,
+            "CreatedAt" timestamptz NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS "IX_AiUsage_CreatedAt" ON trading."AiUsage" ("CreatedAt");
         """);
 
     // Hydrate the in-memory runtime settings (incl. API keys) from the DB so they

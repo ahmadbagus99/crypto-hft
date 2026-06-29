@@ -23,7 +23,8 @@ import type {
   RiskDetailResponse,
   TradeOrderResult,
   TradingSettings,
-  UserDataStreamExpiredEvent
+  UserDataStreamExpiredEvent,
+  AiUsageSummary
 } from "./lib/types";
 
 const symbol = "BTCUSDT";
@@ -72,6 +73,12 @@ async function fetchOverview(): Promise<Overview> {
 async function fetchWallet(): Promise<FuturesWalletBalance[]> {
   const response = await fetch("/api/account/wallet", { cache: "no-store" });
   if (!response.ok) throw new Error("Failed to load wallet");
+  return response.json();
+}
+
+async function fetchAiUsage(): Promise<AiUsageSummary> {
+  const response = await fetch("/api/ai/usage", { cache: "no-store" });
+  if (!response.ok) throw new Error("Failed to load AI usage");
   return response.json();
 }
 
@@ -656,6 +663,7 @@ function DashboardPage() {
   const [orderUpdates, setOrderUpdates] = useState<OrderUpdateEvent[]>([]);
   const { data: overview } = useQuery({ queryKey: ["overview"], queryFn: fetchOverview, refetchInterval: 5000 });
   const { data: tradingSettings } = useQuery({ queryKey: ["trading-settings"], queryFn: fetchTradingSettings, refetchInterval: 5000, retry: false });
+  const { data: aiUsage } = useQuery({ queryKey: ["ai-usage"], queryFn: fetchAiUsage, refetchInterval: 30000, retry: false });
   const { data: walletBalances } = useQuery({ queryKey: ["wallet"], queryFn: fetchWallet, refetchInterval: 5000, retry: false });
   const { data: positions } = useQuery({ queryKey: ["positions", symbol], queryFn: fetchPositions, refetchInterval: 5000, retry: false });
   const { data: exchangeRules } = useQuery({ queryKey: ["exchange-rules", symbol], queryFn: fetchExchangeRules, refetchInterval: 60 * 60 * 1000, retry: false });
@@ -844,6 +852,9 @@ function DashboardPage() {
           </Panel>
           <Panel title="AI Decision">
             <AiDecisionPanel decision={aiDecision} />
+          </Panel>
+          <Panel title="Claude API Usage">
+            <AiUsagePanel usage={aiUsage} />
           </Panel>
         </section>
 
@@ -1427,6 +1438,35 @@ function PositionStat({ label, value }: { label: string; value: string }) {
     <div>
       <div className="text-xs text-slate-500">{label}</div>
       <div className="font-medium text-slate-200">{value}</div>
+    </div>
+  );
+}
+
+function AiUsagePanel({ usage }: { usage?: AiUsageSummary }) {
+  if (!usage) {
+    return <div className="text-sm text-slate-500">Belum ada panggilan Claude API.</div>;
+  }
+  const rupiah = (usd: number) => `Rp ${Math.round(usd * 16500).toLocaleString("id-ID")}`;
+  return (
+    <div className="grid gap-3">
+      <div className="grid grid-cols-2 gap-3">
+        <PositionStat label="Spend Hari Ini" value={`$${usage.costTodayUsd.toFixed(4)}`} />
+        <PositionStat label="Spend Total" value={`$${usage.costTotalUsd.toFixed(4)}`} />
+        <PositionStat label="Calls Hari Ini" value={String(usage.callsToday)} />
+        <PositionStat label="Calls Total" value={String(usage.callsTotal)} />
+      </div>
+      <div className="rounded-md border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+        <div>≈ {rupiah(usage.costTodayUsd)} hari ini · {rupiah(usage.costTotalUsd)} total</div>
+        <div className="mt-1">
+          Token: {usage.inputTokensTotal.toLocaleString()} in / {usage.outputTokensTotal.toLocaleString()} out
+        </div>
+        {usage.lastModel && (
+          <div className="mt-1">Model terakhir: {usage.lastModel}</div>
+        )}
+      </div>
+      <p className="text-xs text-slate-600">
+        Estimasi pemakaian (bukan sisa saldo — Anthropic tidak menyediakan API saldo). Sisa credit cek di console.anthropic.com.
+      </p>
     </div>
   );
 }

@@ -1,24 +1,43 @@
 using CryptoHft.Application.Trading;
+using CryptoHft.Domain.Entities;
 using CryptoHft.Infrastructure.Binance;
+using CryptoHft.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace CryptoHft.Infrastructure.Trading;
 
-public sealed class RuntimeTradingSettingsService(IOptions<BinanceOptions> options) : IRuntimeTradingSettingsService
+public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsService
 {
+    private const int RowId = 1;
+
     private readonly object _lock = new();
-    private RuntimeTradingSettings _settings = new(
-        PaperTradingOnly: options.Value.PaperTradingOnly,
-        AutoTradingEnabled: false,
-        MaxDailyLossPercent: 0.30m,
-        RiskPerTradePercent: 0.01m,
-        MaxExposurePercent: 0.25m,
-        DefaultLeverage: 5,
-        ApiKey: options.Value.ApiKey,
-        ApiSecret: options.Value.ApiSecret,
-        AnthropicApiKey: null,
-        AiModel: null,
-        ConfidenceThreshold: 80m);
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<RuntimeTradingSettingsService> _logger;
+    private RuntimeTradingSettings _settings;
+
+    public RuntimeTradingSettingsService(
+        IOptions<BinanceOptions> options,
+        IServiceScopeFactory scopeFactory,
+        ILogger<RuntimeTradingSettingsService> logger)
+    {
+        _scopeFactory = scopeFactory;
+        _logger = logger;
+        _settings = new RuntimeTradingSettings(
+            PaperTradingOnly: options.Value.PaperTradingOnly,
+            AutoTradingEnabled: false,
+            MaxDailyLossPercent: 0.30m,
+            RiskPerTradePercent: 0.01m,
+            MaxExposurePercent: 0.25m,
+            DefaultLeverage: 5,
+            ApiKey: options.Value.ApiKey,
+            ApiSecret: options.Value.ApiSecret,
+            AnthropicApiKey: null,
+            AiModel: null,
+            ConfidenceThreshold: 80m);
+    }
 
     public TradingSettingsDto GetPublicSettings()
     {
@@ -36,8 +55,42 @@ public sealed class RuntimeTradingSettingsService(IOptions<BinanceOptions> optio
         }
     }
 
+    public async Task LoadAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+            var row = await db.TradingSettings.AsNoTracking()
+                .FirstOrDefaultAsync(x => x.Id == RowId, cancellationToken);
+            if (row is null) return;
+
+            lock (_lock)
+            {
+                _settings = new RuntimeTradingSettings(
+                    PaperTradingOnly: row.PaperTradingOnly,
+                    AutoTradingEnabled: row.AutoTradingEnabled,
+                    MaxDailyLossPercent: row.MaxDailyLossPercent,
+                    RiskPerTradePercent: row.RiskPerTradePercent,
+                    MaxExposurePercent: row.MaxExposurePercent,
+                    DefaultLeverage: row.DefaultLeverage,
+                    // Fall back to env-provided keys if the DB row never stored one.
+                    ApiKey: string.IsNullOrWhiteSpace(row.ApiKey) ? _settings.ApiKey : row.ApiKey,
+                    ApiSecret: string.IsNullOrWhiteSpace(row.ApiSecret) ? _settings.ApiSecret : row.ApiSecret,
+                    AnthropicApiKey: row.AnthropicApiKey,
+                    AiModel: row.AiModel,
+                    ConfidenceThreshold: row.ConfidenceThreshold > 0 ? row.ConfidenceThreshold : 80m);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load persisted trading settings; using defaults");
+        }
+    }
+
     public TradingSettingsDto Update(UpdateTradingSettingsRequest request)
     {
+        RuntimeTradingSettings updated;
         lock (_lock)
         {
             _settings = _settings with
@@ -54,8 +107,44 @@ public sealed class RuntimeTradingSettingsService(IOptions<BinanceOptions> optio
                 AiModel = string.IsNullOrWhiteSpace(request.AiModel) ? _settings.AiModel : request.AiModel.Trim(),
                 ConfidenceThreshold = request.ConfidenceThreshold is > 0 ? Math.Clamp(request.ConfidenceThreshold.Value, 1m, 100m) : _settings.ConfidenceThreshold
             };
+            updated = _settings;
+        }
 
-            return ToDto(_settings);
+        Persist(updated);
+        return ToDto(updated);
+    }
+
+    private void Persist(RuntimeTradingSettings s)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+            var row = db.TradingSettings.FirstOrDefault(x => x.Id == RowId);
+            if (row is null)
+            {
+                row = new PersistedTradingSettings { Id = RowId };
+                db.TradingSettings.Add(row);
+            }
+
+            row.PaperTradingOnly = s.PaperTradingOnly;
+            row.AutoTradingEnabled = s.AutoTradingEnabled;
+            row.MaxDailyLossPercent = s.MaxDailyLossPercent;
+            row.RiskPerTradePercent = s.RiskPerTradePercent;
+            row.MaxExposurePercent = s.MaxExposurePercent;
+            row.DefaultLeverage = s.DefaultLeverage;
+            row.ApiKey = s.ApiKey;
+            row.ApiSecret = s.ApiSecret;
+            row.AnthropicApiKey = s.AnthropicApiKey;
+            row.AiModel = s.AiModel;
+            row.ConfidenceThreshold = s.ConfidenceThreshold;
+
+            db.SaveChanges();
+        }
+        catch (Exception ex)
+        {
+            // Best-effort: in-memory settings remain authoritative for this process.
+            _logger.LogWarning(ex, "Failed to persist trading settings");
         }
     }
 
@@ -89,4 +178,3 @@ public sealed class RuntimeTradingSettingsService(IOptions<BinanceOptions> optio
         return value.Length <= 8 ? "********" : $"{value[..4]}...{value[^4..]}";
     }
 }
-

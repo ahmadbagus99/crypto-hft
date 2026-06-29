@@ -41,6 +41,9 @@ public interface IRuntimeTradingSettingsService
     TradingSettingsDto GetPublicSettings();
     RuntimeTradingSettings GetRuntimeSettings();
     TradingSettingsDto Update(UpdateTradingSettingsRequest request);
+
+    // Load persisted settings from the database into memory (called once at startup).
+    Task LoadAsync(CancellationToken cancellationToken);
 }
 
 public sealed record RuntimeTradingSettings(

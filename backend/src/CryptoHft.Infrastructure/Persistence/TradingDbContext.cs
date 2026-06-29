@@ -12,6 +12,7 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
     public DbSet<Signal> Signals => Set<Signal>();
     public DbSet<WalletSnapshot> Wallet => Set<WalletSnapshot>();
     public DbSet<RiskManagementSetting> RiskManagement => Set<RiskManagementSetting>();
+    public DbSet<PersistedTradingSettings> TradingSettings => Set<PersistedTradingSettings>();
     public DbSet<NewsItem> News => Set<NewsItem>();
     public DbSet<NewsSentiment> NewsSentiment => Set<NewsSentiment>();
     public DbSet<AuditLog> Logs => Set<AuditLog>();
@@ -31,5 +32,7 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
         modelBuilder.Entity<Signal>().HasIndex(x => new { x.Symbol, x.CreatedAt });
         modelBuilder.Entity<WalletSnapshot>().HasIndex(x => x.Timestamp);
         modelBuilder.Entity<AuditLog>().HasIndex(x => x.CreatedAt);
+        modelBuilder.Entity<PersistedTradingSettings>().ToTable("TradingSettings");
+        modelBuilder.Entity<PersistedTradingSettings>().Property(x => x.Id).ValueGeneratedNever();
     }
 }

@@ -658,7 +658,26 @@ using (var scope = app.Services.CreateScope())
         );
         CREATE UNIQUE INDEX IF NOT EXISTS "IX_FactorStats_Regime_Factor"
             ON trading."FactorStats" ("Regime", "Factor");
+        CREATE TABLE IF NOT EXISTS trading."TradingSettings" (
+            "Id" integer PRIMARY KEY,
+            "PaperTradingOnly" boolean NOT NULL,
+            "AutoTradingEnabled" boolean NOT NULL,
+            "MaxDailyLossPercent" numeric NOT NULL,
+            "RiskPerTradePercent" numeric NOT NULL,
+            "MaxExposurePercent" numeric NOT NULL,
+            "DefaultLeverage" integer NOT NULL,
+            "ApiKey" text NULL,
+            "ApiSecret" text NULL,
+            "AnthropicApiKey" text NULL,
+            "AiModel" text NULL,
+            "ConfidenceThreshold" numeric NOT NULL
+        );
         """);
+
+    // Hydrate the in-memory runtime settings (incl. API keys) from the DB so they
+    // survive container restarts.
+    var settingsService = scope.ServiceProvider.GetRequiredService<IRuntimeTradingSettingsService>();
+    await settingsService.LoadAsync(CancellationToken.None);
 }
 
 app.Run();

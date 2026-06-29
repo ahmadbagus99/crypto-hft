@@ -99,6 +99,24 @@ public sealed class RiskManagementSetting
     public bool AutoTradingEnabled { get; set; }
 }
 
+// Single-row table (Id = 1) holding the runtime trading settings + API keys so they
+// survive container restarts instead of living only in memory.
+public sealed class PersistedTradingSettings
+{
+    public int Id { get; set; } = 1;
+    public bool PaperTradingOnly { get; set; } = true;
+    public bool AutoTradingEnabled { get; set; }
+    public decimal MaxDailyLossPercent { get; set; } = 0.30m;
+    public decimal RiskPerTradePercent { get; set; } = 0.01m;
+    public decimal MaxExposurePercent { get; set; } = 0.25m;
+    public int DefaultLeverage { get; set; } = 5;
+    public string? ApiKey { get; set; }
+    public string? ApiSecret { get; set; }
+    public string? AnthropicApiKey { get; set; }
+    public string? AiModel { get; set; }
+    public decimal ConfidenceThreshold { get; set; } = 80m;
+}
+
 public sealed class NewsItem
 {
     public Guid Id { get; set; } = Guid.NewGuid();

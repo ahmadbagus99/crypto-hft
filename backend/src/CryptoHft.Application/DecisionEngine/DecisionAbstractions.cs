@@ -12,6 +12,18 @@ public interface ISentimentProvider
     Task<SentimentSnapshot> GetSentimentAsync(CancellationToken cancellationToken);
 }
 
+// Pulls key-free macro data (equities, DXY, gold) and scores risk-on/off for BTC.
+public interface IMacroDataProvider
+{
+    Task<MacroSnapshot> GetSnapshotAsync(CancellationToken cancellationToken);
+}
+
+// Pulls key-free on-chain network data (mempool.space) and scores bullish/bearish.
+public interface IOnchainDataProvider
+{
+    Task<OnchainSnapshot> GetSnapshotAsync(CancellationToken cancellationToken);
+}
+
 // Pulls multi-timeframe candle data.
 public interface IMultiTimeframeProvider
 {

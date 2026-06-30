@@ -42,13 +42,30 @@ public sealed record SentimentSnapshot(
     string FearGreedLabel,
     IReadOnlyList<string> Headlines);
 
+// Macro snapshot from key-free sources (equities, DXY, gold). Score is 0-100,
+// > 50 = risk-on / bullish for BTC. Available is false when no source responded.
+public sealed record MacroSnapshot(
+    decimal Score,
+    string Summary,
+    bool Available);
+
+// On-chain network health from key-free sources (mempool.space): hashrate trend,
+// difficulty adjustment, fee demand. Score 0-100, > 50 = bullish. Available is false
+// when no source responded.
+public sealed record OnchainSnapshot(
+    decimal Score,
+    string Summary,
+    bool Available);
+
 // Full input bundle for the advanced engine
 public sealed record AdvancedDecisionInput(
     string Symbol,
     decimal LastPrice,
     IReadOnlyList<TimeframeData> Timeframes,
     DerivativesSnapshot Derivatives,
-    SentimentSnapshot Sentiment);
+    SentimentSnapshot Sentiment,
+    MacroSnapshot Macro,
+    OnchainSnapshot Onchain);
 
 // A single 0-100 factor score with explanation
 public sealed record ScoreComponent(string Name, decimal Score, decimal Weight, string Reason);
@@ -65,7 +82,10 @@ public sealed record LlmValidation(
 public sealed record AdvancedDecision(
     string Symbol,
     DecisionAction Action,
-    decimal Confidence,           // 0-100 final
+    decimal Confidence,           // 0-100 conviction of the recommended side (buy if long, sell if short, hold otherwise)
+    decimal ConfidenceBuy,        // 0-100 directional bullish score
+    decimal ConfidenceSell,       // 0-100 directional bearish score (100 - buy)
+    decimal ConfidenceHold,       // 0-100 peaks when the read is neutral
     decimal ProbabilityOfSuccess, // 0-100
     MarketRegime Regime,
     decimal EntryPrice,

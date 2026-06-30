@@ -310,6 +310,9 @@ export type AiDecision = {
   symbol: string;
   action: number;
   confidence: number;
+  confidenceBuy: number;
+  confidenceSell: number;
+  confidenceHold: number;
   probabilityOfSuccess: number;
   regime: number;
   entryPrice: number;

@@ -34,11 +34,15 @@ public sealed class ClaudeDecisionValidator(
     }
 
     private const string SystemPrompt =
-        "You are a senior quantitative crypto futures trader validating an automated trading signal for BTCUSDT perpetuals. " +
-        "You receive pre-computed factor scores (0-100), the detected market regime, derivatives data, and news sentiment. " +
-        "Your job: decide whether to CONFIRM or VETO the proposed action, give an adjusted confidence (0-100), " +
-        "a concise narrative, and key risks. Be conservative: veto if signals conflict, funding is extreme, " +
-        "liquidity is thin, or higher-timeframe trend disagrees. " +
+        "You are an institutional quantitative crypto trader specializing in BTCUSDT perpetuals. " +
+        "Your objective is NOT to predict the future — it is to decide whether opening a position RIGHT NOW " +
+        "has positive statistical expectancy. Think like a professional hedge fund trader. " +
+        "You receive pre-computed category scores (0-100, where >50 is bullish), separate BUY/SELL/HOLD " +
+        "confidences, the detected market regime, derivatives data, orderbook liquidity, and news/social sentiment. " +
+        "Some categories (on-chain, macro) have no live data source and are scored neutral (50) — never invent values for them; " +
+        "treat them as unknown. Decide whether to CONFIRM or VETO the proposed action and give an adjusted confidence (0-100) " +
+        "for that action's side. Be conservative: veto if signals conflict, funding is extreme, liquidity is thin, " +
+        "higher-timeframe trend disagrees, or conviction is marginal. " +
         "Respond ONLY with minified JSON: " +
         "{\"confirmed\":bool,\"adjusted_confidence\":number,\"narrative\":string,\"risks\":[string]}";
 
@@ -90,10 +94,10 @@ public sealed class ClaudeDecisionValidator(
         return $$"""
         Symbol: {{d.Symbol}}
         Proposed action: {{d.Action}}
-        Rule-based confidence: {{d.Confidence:F0}}
+        Confidence — BUY: {{d.ConfidenceBuy:F0}}, SELL: {{d.ConfidenceSell:F0}}, HOLD: {{d.ConfidenceHold:F0}} (action-side conviction: {{d.Confidence:F0}})
         Market regime: {{d.Regime}}
         Entry: {{d.EntryPrice}}, StopLoss: {{d.StopLoss}}, TakeProfit: {{d.TakeProfit}}, RiskReward: {{d.RiskReward:F2}}
-        Factor scores (0-100): {{scores}}
+        Category scores (0-100, >50 bullish): {{scores}}
         Funding rate: {{input.Derivatives.FundingRate * 100:F4}}%
         Open interest change: {{input.Derivatives.OpenInterestChangePercent:F2}}%
         Long/short ratio: {{input.Derivatives.LongShortRatio:F2}}

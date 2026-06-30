@@ -1594,6 +1594,21 @@ function AiDecisionPanel({ decision }: { decision?: AiDecision | null }) {
         </div>
       </div>
 
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="rounded-md bg-emerald-500/10 px-2 py-1">
+          <div className="text-sm font-semibold text-emerald-300">{formatNumber(decision.confidenceBuy, 0)}</div>
+          <div className="text-[10px] uppercase tracking-wide text-slate-500">Buy</div>
+        </div>
+        <div className="rounded-md bg-slate-700/40 px-2 py-1">
+          <div className="text-sm font-semibold text-slate-200">{formatNumber(decision.confidenceHold, 0)}</div>
+          <div className="text-[10px] uppercase tracking-wide text-slate-500">Hold</div>
+        </div>
+        <div className="rounded-md bg-red-500/10 px-2 py-1">
+          <div className="text-sm font-semibold text-red-300">{formatNumber(decision.confidenceSell, 0)}</div>
+          <div className="text-[10px] uppercase tracking-wide text-slate-500">Sell</div>
+        </div>
+      </div>
+
       <div className={`rounded-md px-3 py-2 text-xs font-semibold ${decision.shouldTrade ? "bg-emerald-500/15 text-emerald-300" : "bg-slate-700/50 text-slate-300"}`}>
         {decision.shouldTrade ? "✓ TRADE SIGNAL ACTIVE" : `NO TRADE — ${decision.noTradeReason || "conditions not met"}`}
       </div>

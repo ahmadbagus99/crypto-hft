@@ -15,6 +15,8 @@ public sealed class AiDecisionService(
     IMultiTimeframeProvider timeframeProvider,
     IDerivativesDataProvider derivativesProvider,
     ISentimentProvider sentimentProvider,
+    IMacroDataProvider macroProvider,
+    IOnchainDataProvider onchainProvider,
     IAdvancedDecisionEngine engine,
     ILlmDecisionValidator llmValidator,
     IAdaptiveWeightService adaptiveWeights,
@@ -30,12 +32,15 @@ public sealed class AiDecisionService(
         var timeframesTask = timeframeProvider.GetTimeframesAsync(symbol, cancellationToken);
         var derivativesTask = derivativesProvider.GetSnapshotAsync(symbol, cancellationToken);
         var sentimentTask = sentimentProvider.GetSentimentAsync(cancellationToken);
+        var macroTask = macroProvider.GetSnapshotAsync(cancellationToken);
+        var onchainTask = onchainProvider.GetSnapshotAsync(cancellationToken);
         var priceTask = timeframeProvider.GetLastPriceAsync(symbol, cancellationToken);
 
-        await Task.WhenAll(timeframesTask, derivativesTask, sentimentTask, priceTask);
+        await Task.WhenAll(timeframesTask, derivativesTask, sentimentTask, macroTask, onchainTask, priceTask);
 
         var input = new AdvancedDecisionInput(
-            symbol, priceTask.Result, timeframesTask.Result, derivativesTask.Result, sentimentTask.Result);
+            symbol, priceTask.Result, timeframesTask.Result, derivativesTask.Result, sentimentTask.Result,
+            macroTask.Result, onchainTask.Result);
 
         var equity = await GetEquityAsync(cancellationToken);
         var profile = new RiskProfile(

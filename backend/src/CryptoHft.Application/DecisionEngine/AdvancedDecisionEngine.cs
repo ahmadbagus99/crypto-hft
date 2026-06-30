@@ -8,6 +8,25 @@ namespace CryptoHft.Application.DecisionEngine;
 // and produces an explainable, risk-managed decision. The LLM layer validates on top.
 public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
 {
+    // Fixed category weights (institutional spec). Sum to 1.0. Adaptive multipliers
+    // adjust these per category; regime no longer selects the weights but still drives
+    // SL/TP/leverage and is reported for context.
+    private static readonly IReadOnlyDictionary<string, decimal> CategoryWeights = new Dictionary<string, decimal>
+    {
+        ["technical"] = 0.20m,
+        ["structure"] = 0.15m,
+        ["orderbook"] = 0.15m,
+        ["derivatives"] = 0.15m,
+        ["onchain"] = 0.10m,
+        ["macro"] = 0.10m,
+        ["sentiment"] = 0.05m,
+        ["news"] = 0.05m,
+        ["liquidity"] = 0.05m,
+        ["volatility"] = 0.05m
+    };
+
+    // macro and onchain are flagged dynamically only when their providers return no data.
+
     public AdvancedDecision Evaluate(
         AdvancedDecisionInput input, RiskProfile profile, decimal equity,
         IReadOnlyDictionary<string, decimal>? weightMultipliers = null)
@@ -17,11 +36,8 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         // SMC runs on the entry timeframe (15m if available) for finer structure
         var smcTf = GetTimeframe(input, "15m") ?? primary;
         var regime = MarketRegimeDetector.Detect(candles);
-        var baseWeights = MarketRegimeDetector.WeightsFor(regime);
 
-        // Apply learned adaptive multipliers (Bayesian) on top of the regime base weights
-        var weights = ApplyMultipliers(baseWeights, weightMultipliers);
-
+        // Internal factor components (kept for transparency + adaptive learning detail)
         var components = new List<ScoreComponent>
         {
             ScoreTrend(input),
@@ -35,10 +51,27 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
             ScoreSocial(input.Sentiment),
             ScoreVolatility(candles)
         };
+        var c = components.ToDictionary(x => x.Name, x => x.Score);
 
-        var scores = components.ToDictionary(c => c.Name, c => c.Score);
+        // Roll the components up into the 10 institutional scoring categories (0-100, bullish > 50).
+        var scores = new Dictionary<string, decimal>
+        {
+            ["technical"] = Avg(c["Trend"], c["Momentum"], c["Volume"]),
+            ["structure"] = Avg(c["SmartMoney"], c["PriceAction"]),
+            ["orderbook"] = c["OrderFlow"],
+            ["derivatives"] = c["Derivatives"],
+            ["onchain"] = input.Onchain.Available ? input.Onchain.Score : 50m,
+            ["macro"] = input.Macro.Available ? input.Macro.Score : 50m,
+            ["sentiment"] = c["Social"],
+            ["news"] = c["News"],
+            ["liquidity"] = ScoreLiquidity(input.Derivatives, input.LastPrice),
+            ["volatility"] = c["Volatility"]
+        };
 
-        // Weighted confidence over the regime's active factors
+        // Apply learned adaptive multipliers (Bayesian) on top of the fixed category weights
+        var weights = ApplyMultipliers(CategoryWeights, weightMultipliers);
+
+        // Directional score D (0-100): weighted blend of category scores.
         decimal weightedSum = 0, weightTotal = 0;
         foreach (var (key, w) in weights)
         {
@@ -46,11 +79,19 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
             weightedSum += s * w;
             weightTotal += w;
         }
-        var confidence = weightTotal == 0 ? 50m : Math.Clamp(weightedSum / weightTotal, 0m, 100m);
+        var directional = weightTotal == 0 ? 50m : Math.Clamp(weightedSum / weightTotal, 0m, 100m);
 
-        var action = ToAction(confidence);
+        // Symmetric buy/sell/hold confidences derived from the directional score.
+        var confidenceBuy = directional;
+        var confidenceSell = 100m - directional;
+        var confidenceHold = Math.Clamp(100m - Math.Abs(directional - 50m) * 2m, 0m, 100m);
+
+        var action = ToAction(directional);
         var isBuy = action is DecisionAction.WeakBuy or DecisionAction.Buy or DecisionAction.StrongBuy;
         var isSell = action is DecisionAction.WeakSell or DecisionAction.Sell or DecisionAction.StrongSell;
+
+        // Conviction of the recommended side — this is the value all gates compare to the threshold.
+        var confidence = isBuy ? confidenceBuy : isSell ? confidenceSell : confidenceHold;
 
         var atr = TechnicalIndicators.Atr(candles)[^1];
         if (atr <= 0) atr = input.LastPrice * 0.003m;
@@ -95,13 +136,27 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
 
         var shouldTrade = noTradeReasons.Count == 0;
 
-        foreach (var c in components.OrderByDescending(c => weights.GetValueOrDefault(c.Name, 0m)))
-            reasons.Add($"{c.Name} ({c.Score:F0}): {c.Reason}");
+        // Category scores ordered by weight, then the detailed factor breakdown.
+        foreach (var (name, score) in scores.OrderByDescending(kv => weights.GetValueOrDefault(kv.Key, 0m)))
+        {
+            var note = name switch
+            {
+                "macro" => input.Macro.Available ? $" [{input.Macro.Summary}]" : " [no data source — neutral]",
+                "onchain" => input.Onchain.Available ? $" [{input.Onchain.Summary}]" : " [no data source — neutral]",
+                _ => ""
+            };
+            reasons.Add($"{name} ({score:F0}, w={weights.GetValueOrDefault(name, 0m):P0}){note}");
+        }
+        foreach (var comp in components)
+            reasons.Add($"  · {comp.Name} ({comp.Score:F0}): {comp.Reason}");
 
         return new AdvancedDecision(
             Symbol: input.Symbol,
             Action: action,
             Confidence: Math.Round(confidence, 1),
+            ConfidenceBuy: Math.Round(confidenceBuy, 1),
+            ConfidenceSell: Math.Round(confidenceSell, 1),
+            ConfidenceHold: Math.Round(confidenceHold, 1),
             ProbabilityOfSuccess: Math.Round(probability, 1),
             Regime: regime,
             EntryPrice: Math.Round(entry, 2),
@@ -271,14 +326,27 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         return new ScoreComponent("Volatility", score, 0, $"ATR {atrPct:F2}% of price");
     }
 
-    private static DecisionAction ToAction(decimal confidence) => confidence switch
+    private static decimal Avg(params decimal[] values) => values.Length == 0 ? 50m : values.Average();
+
+    // Liquidity quality + directional bias. Bid-heavy book is bullish; a wide spread
+    // (thin book) pulls the score back toward neutral so it adds little conviction.
+    private static decimal ScoreLiquidity(DerivativesSnapshot d, decimal price)
     {
-        >= 95 => DecisionAction.StrongBuy,
-        >= 85 => DecisionAction.Buy,
-        >= 70 => DecisionAction.WeakBuy,
-        >= 55 => DecisionAction.NoTrade, // Hold
-        >= 40 => DecisionAction.WeakSell,
-        >= 25 => DecisionAction.Sell,
+        var score = 50m + d.OrderBookImbalance * 30m;
+        var spreadPct = price <= 0 ? 0 : d.BidAskSpread / price;
+        if (spreadPct > 0.0005m) score = 50m + (score - 50m) * 0.5m;
+        return Math.Clamp(score, 0m, 100m);
+    }
+
+    // Symmetric directional bands around 50 (neutral). LONG actionable at >= 65, SHORT at <= 35.
+    private static DecisionAction ToAction(decimal directional) => directional switch
+    {
+        >= 80 => DecisionAction.StrongBuy,
+        >= 65 => DecisionAction.Buy,
+        > 55 => DecisionAction.WeakBuy,
+        >= 45 => DecisionAction.NoTrade, // Hold
+        > 35 => DecisionAction.WeakSell,
+        > 20 => DecisionAction.Sell,
         _ => DecisionAction.StrongSell
     };
 }

@@ -89,6 +89,12 @@ async function fetchPositions(): Promise<FuturesPositionInfo[]> {
   return response.json();
 }
 
+async function fetchOrderUpdates(): Promise<OrderUpdateEvent[]> {
+  const response = await fetch(`/api/account/order-updates?symbol=${symbol}`, { cache: "no-store" });
+  if (!response.ok) throw new Error("Failed to load order updates");
+  return response.json();
+}
+
 async function fetchExchangeRules(): Promise<FuturesSymbolRules> {
   const response = await fetch(`/api/exchange/rules?symbol=${symbol}`, { cache: "no-store" });
   if (!response.ok) throw new Error("Failed to load exchange rules");
@@ -691,6 +697,7 @@ function DashboardPage() {
   const { data: aiUsage } = useQuery({ queryKey: ["ai-usage"], queryFn: fetchAiUsage, refetchInterval: 30000, retry: false });
   const { data: walletBalances } = useQuery({ queryKey: ["wallet"], queryFn: fetchWallet, refetchInterval: 5000, retry: false });
   const { data: positions } = useQuery({ queryKey: ["positions", symbol], queryFn: fetchPositions, refetchInterval: 5000, retry: false });
+  const { data: exchangeOrderUpdates } = useQuery({ queryKey: ["order-updates", symbol], queryFn: fetchOrderUpdates, refetchInterval: 5000, retry: false });
   const { data: exchangeRules } = useQuery({ queryKey: ["exchange-rules", symbol], queryFn: fetchExchangeRules, refetchInterval: 60 * 60 * 1000, retry: false });
   const { data: killSwitch, refetch: refetchKillSwitch } = useQuery({ queryKey: ["kill-switch"], queryFn: fetchKillSwitch, refetchInterval: 5000, retry: false });
   const { data: journal } = useQuery({ queryKey: ["journal", symbol], queryFn: fetchJournal, refetchInterval: 5000, retry: false });
@@ -711,6 +718,7 @@ function DashboardPage() {
     };
   })();
   const displayedPositions = realtimePositions.length ? realtimePositions : positions ?? [];
+  const displayedOrderUpdates = mergeOrderUpdates(orderUpdates, exchangeOrderUpdates ?? []);
   const isManualMode = tradingSettings?.autoTradingEnabled !== true;
 
   useEffect(() => {
@@ -866,7 +874,7 @@ function DashboardPage() {
           </Panel>
 
           <Panel title="Order Updates">
-            <OrderUpdates updates={orderUpdates} />
+            <OrderUpdates updates={displayedOrderUpdates} />
           </Panel>
         </section>
 
@@ -1016,6 +1024,17 @@ function mapOrderStatus(status: number | string) {
   };
 
   return statuses[status] ?? String(status);
+}
+
+function mergeOrderUpdates(realtime: OrderUpdateEvent[], snapshot: OrderUpdateEvent[]) {
+  const byOrderId = new Map<string, OrderUpdateEvent>();
+  [...snapshot, ...realtime].forEach((update) => {
+    byOrderId.set(String(update.orderId), update);
+  });
+
+  return Array.from(byOrderId.values())
+    .sort((left, right) => new Date(right.eventTime).getTime() - new Date(left.eventTime).getTime())
+    .slice(0, 12);
 }
 
 function Metric({ title, value, suffix = "", icon, danger = false }: { title: string; value: number; suffix?: string; icon?: ReactNode; danger?: boolean }) {

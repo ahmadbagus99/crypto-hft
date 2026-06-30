@@ -1,7 +1,10 @@
 # Context — Penggunaan & Biaya API (Anthropic + LunarCrush)
 
-> Update terakhir: mencerminkan fitur model dropdown, confidence configurable,
-> persistence settings ke DB, usage tracking, LunarCrush, dan decision caching.
+> Update terakhir: scoring engine 10-kategori (institusional), confidence
+> BUY/SELL/HOLD simetris, gate berbasis conviction, + sumber data gratis baru
+> (macro Yahoo Finance, on-chain mempool.space). Lihat Bagian 6.
+> Sebelumnya: model dropdown, confidence configurable, persistence settings ke DB,
+> usage tracking, LunarCrush, decision caching.
 
 ## 1. Anthropic API key dipakai untuk apa saja?
 
@@ -14,8 +17,13 @@ File: `backend/src/CryptoHft.Infrastructure/Ai/ClaudeDecisionValidator.cs`
 - Dipanggil hanya jika sinyal **kuat & actionable**: `confidence >= ConfidenceThreshold`
   DAN `action != NoTrade`. Threshold ini **bisa di-set** dari dashboard
   (Settings → "Min Confidence Open Order"), default 80. Sama dengan gate buka order.
-- Dikirim ke Claude: skor 10 faktor, market regime, entry/SL/TP, R:R, funding rate,
-  open interest, long/short ratio, orderbook imbalance, Fear & Greed, headline berita.
+  Catatan: `confidence` sekarang = **conviction sisi terpilih** (lihat Bagian 6), jadi
+  SHORT kuat juga bisa lolos gate — beda dgn versi lama yg bias bullish.
+- System prompt sekarang persona **"institutional quantitative crypto trader"**; dikirim
+  ke Claude: 10 skor kategori, confidence BUY/SELL/HOLD, market regime, entry/SL/TP, R:R,
+  funding rate, open interest, long/short ratio, orderbook imbalance, Fear & Greed,
+  headline berita. Kategori tanpa data (saat provider gagal) ditandai netral, Claude
+  diminta tidak mengarang nilainya.
 - Claude balas JSON: `{confirmed, adjusted_confidence, narrative, risks}`.
 - Hasil dipakai: CONFIRM/VETO (veto → `shouldTrade=false`), blend confidence
   (rata-rata rule-based + Claude), narasi + risiko tampil di panel AI Decision.
@@ -115,3 +123,60 @@ File: `backend/src/CryptoHft.Infrastructure/Ai/FreeSentimentProvider.cs`
   (`git pull && docker compose -f docker-compose.prod.yml up --build -d`).
 - VPS pakai PostgreSQL + Redis yang sudah ada (`creatio-postgres`, `creatio-redis`),
   network `shared_creatio-shared`. Frontend :5005, API :5006.
+
+---
+
+## 6. Decision engine — scoring 10 kategori & confidence BUY/SELL/HOLD
+
+File inti: `backend/src/CryptoHft.Application/DecisionEngine/AdvancedDecisionEngine.cs`
+
+### Alur
+1. **Data realtime** (tiap 30 detik via `AutoTradingWorker` → `AiDecisionService`):
+   multi-timeframe candle, derivatives, sentiment, **macro**, **on-chain**, harga.
+2. **10 kategori skor** (0-100, >50 = bullish), masing-masing dirakit dari komponen internal:
+   | Kategori | Bobot | Sumber |
+   |---|---|---|
+   | technical | 20% | Trend (EMA) + Momentum (RSI/MACD/Stoch) + Volume (OBV) |
+   | structure | 15% | SMC (FVG/OB/liquidity sweep) + market structure |
+   | orderbook | 15% | book imbalance + taker buy/sell |
+   | derivatives | 15% | funding, OI, long/short |
+   | onchain | 10% | mempool.space (lihat di bawah) |
+   | macro | 10% | Yahoo Finance (lihat di bawah) |
+   | sentiment | 5% | Fear & Greed / LunarCrush |
+   | news | 5% | RSS headline |
+   | liquidity | 5% | spread + imbalance |
+   | volatility | 5% | ATR% |
+   Bobot tetap (`CategoryWeights`), masih bisa di-tweak adaptive multiplier (Bayesian)
+   per kategori. Regime sekarang dipakai utk SL/TP/leverage & display, bukan pilih bobot.
+3. **Directional score D** = Σ(skor × bobot), 0-100, 50 = netral.
+4. **Confidence simetris**:
+   - `confidence_buy  = D`
+   - `confidence_sell = 100 − D`
+   - `confidence_hold = 100 − |D−50|×2`
+   - `Confidence` (field lama) = conviction sisi terpilih (buy bila long, sell bila short).
+     → inilah fix bug lama: dulu `confidence` skor bullish mentah, SHORT tak pernah ≥ threshold.
+5. **Decision rule** (`ToAction`, simetris): D ≥ 65 LONG, D ≤ 35 SHORT, 45-55 HOLD.
+6. **Gate buka order** (`shouldTrade` true hanya bila SEMUA lolos): conviction ≥ Min Confidence,
+   R:R ≥ 2.0, trend higher-timeframe selaras, funding tidak ekstrem, spread tidak lebar,
+   (bila lolos) Claude CONFIRM, Auto mode ON, belum ada posisi. Confidence ≠ pemicu tunggal.
+
+### Sumber data gratis baru (tanpa API key)
+- **Macro** — `FreeMacroProvider.cs`, Yahoo Finance chart API (endpoint publik unofficial).
+  Tarik daily close S&P500 (^GSPC), NASDAQ (^IXIC), DXY (DX-Y.NYB), Gold (GC=F),
+  hitung momentum ~5 hari → skor risk-on 0-100 (`50 + equity%×8 − DXY%×10 + gold%×2`).
+  Cache 15 menit. Catatan path JSON: `chart.result[0].indicators.quote[0].close` (plural).
+- **On-chain** — `FreeOnchainProvider.cs`, mempool.space (gratis, no key). 3 sinyal:
+  hashrate trend 1-bulan (`/v1/mining/hashrate/1m`), difficulty adjustment
+  (`/v1/difficulty-adjustment` → `difficultyChange`), fee demand (`/v1/fees/recommended`).
+  Skor: `50 + hashrate%×1.5 + diff%×1.5 ± fee_nudge`, clamp. Cache 20 menit.
+  **Keterbatasan jujur:** ini proxy network-health/miner-confidence, BUKAN valuasi
+  (tidak ada MVRV/SOPR/NUPL — itu butuh Glassnode/CryptoQuant berbayar).
+- Semua provider: kalau gagal → fallback skor 50 + flag `[no data source — neutral]`
+  di reasoning, tanpa error. `Available=false` saat tidak ada sumber yang merespons.
+
+### Catatan tuning
+- Min Confidence default masih **80** → dgn semantik baru artinya butuh D ≥ 80 (long) /
+  D ≤ 20 (short), sangat ketat & jarang tercapai. Spec menyarankan **65**. Belum diubah
+  di kode (default `TradingEntities.cs` / `RuntimeTradingSettingsService.cs` = 80) —
+  bisa diturunkan via dashboard atau ubah default.
+- Frontend: `AiDecision` type + panel sudah menampilkan baris BUY/HOLD/SELL confidence.

@@ -271,6 +271,26 @@ app.MapGet("/api/account/positions", async (
     }
 });
 
+app.MapGet("/api/account/order-updates", async (
+    string? symbol,
+    IFuturesAccountClient accountClient,
+    CancellationToken cancellationToken) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    try
+    {
+        var orders = await accountClient.GetOrderUpdatesAsync(symbol, cancellationToken);
+        return Results.Ok(orders);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(
+            title: "Binance private order updates request rejected",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
 app.MapGet("/api/exchange/rules", async (
     string? symbol,
     IFuturesExchangeInfoClient exchangeInfoClient,

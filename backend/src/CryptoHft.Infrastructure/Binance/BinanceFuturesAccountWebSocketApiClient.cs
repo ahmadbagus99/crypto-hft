@@ -1,10 +1,12 @@
 using System.Globalization;
+using System.Net.Http.Headers;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using CryptoHft.Application.Abstractions;
 using CryptoHft.Application.Account;
+using CryptoHft.Application.MarketData;
 using CryptoHft.Application.Trading;
 using Microsoft.Extensions.Options;
 
@@ -12,6 +14,7 @@ namespace CryptoHft.Infrastructure.Binance;
 
 public sealed class BinanceFuturesAccountWebSocketApiClient(
     IOptions<BinanceOptions> options,
+    IHttpClientFactory httpClientFactory,
     IRuntimeTradingSettingsService runtimeSettings) : IFuturesAccountClient
 {
     private readonly BinanceOptions _options = options.Value;
@@ -38,8 +41,9 @@ public sealed class BinanceFuturesAccountWebSocketApiClient(
 
     public async Task<IReadOnlyList<FuturesPositionInfo>> GetPositionsAsync(string? symbol, CancellationToken cancellationToken)
     {
-        // Paper mode has no real exchange positions; live positions are only fetched in Live mode.
-        if (runtimeSettings.GetRuntimeSettings().PaperTradingOnly || !HasCredentials()) return Array.Empty<FuturesPositionInfo>();
+        // Always expose exchange positions for monitoring when credentials exist. Paper mode
+        // still controls execution elsewhere; it should not hide positions opened manually.
+        if (!HasCredentials()) return Array.Empty<FuturesPositionInfo>();
 
         var parameters = new Dictionary<string, object?>();
         if (!string.IsNullOrWhiteSpace(symbol))
@@ -64,6 +68,50 @@ public sealed class BinanceFuturesAccountWebSocketApiClient(
                 IsolatedMargin: ParseDecimal(item.GetProperty("isolatedMargin")),
                 IsAutoAddMargin: item.GetProperty("isAutoAddMargin").GetString() == "true",
                 UpdateTime: DateTimeOffset.FromUnixTimeMilliseconds(item.GetProperty("updateTime").GetInt64())))
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<OrderUpdateEvent>> GetOrderUpdatesAsync(string? symbol, CancellationToken cancellationToken)
+    {
+        if (!HasCredentials()) return Array.Empty<OrderUpdateEvent>();
+
+        var effectiveSymbol = string.IsNullOrWhiteSpace(symbol) ? _options.Symbol.ToUpperInvariant() : symbol.ToUpperInvariant();
+        var parameters = new Dictionary<string, object?>
+        {
+            ["symbol"] = effectiveSymbol,
+            ["limit"] = 20
+        };
+
+        using var document = await InvokeSignedRestAsync(HttpMethod.Get, "/fapi/v1/allOrders", parameters, cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        return document.RootElement.EnumerateArray()
+            .OrderByDescending(item => TryParseLong(item, "updateTime"))
+            .Select(item =>
+            {
+                var orderTime = DateTimeOffset.FromUnixTimeMilliseconds(TryParseLong(item, "updateTime") ?? TryParseLong(item, "time") ?? now.ToUnixTimeMilliseconds());
+                return new OrderUpdateEvent(
+                    Symbol: item.GetProperty("symbol").GetString() ?? effectiveSymbol,
+                    OrderId: item.GetProperty("orderId").GetInt64(),
+                    ClientOrderId: item.TryGetProperty("clientOrderId", out var clientOrderId) ? clientOrderId.GetString() ?? "" : "",
+                    Side: item.GetProperty("side").GetString() ?? "",
+                    OrderType: item.GetProperty("type").GetString() ?? "",
+                    ExecutionType: "SNAPSHOT",
+                    OrderStatus: item.GetProperty("status").GetString() ?? "",
+                    TimeInForce: item.TryGetProperty("timeInForce", out var timeInForce) ? timeInForce.GetString() ?? "" : "",
+                    OriginalQuantity: ParseDecimal(item.GetProperty("origQty")),
+                    OriginalPrice: ParseDecimal(item.GetProperty("price")),
+                    AveragePrice: TryParseDecimal(item, "avgPrice"),
+                    StopPrice: TryParseDecimal(item, "stopPrice"),
+                    LastFilledQuantity: 0,
+                    AccumulatedFilledQuantity: TryParseDecimal(item, "executedQty"),
+                    LastFilledPrice: 0,
+                    RealizedProfit: 0,
+                    ReduceOnly: item.TryGetProperty("reduceOnly", out var reduceOnly) && reduceOnly.GetBoolean(),
+                    PositionSide: item.TryGetProperty("positionSide", out var positionSide) ? positionSide.GetString() ?? "" : "",
+                    WorkingType: item.TryGetProperty("workingType", out var workingType) ? workingType.GetString() ?? "" : "",
+                    OrderTradeTime: orderTime,
+                    EventTime: now);
+            })
             .ToList();
     }
 
@@ -96,6 +144,36 @@ public sealed class BinanceFuturesAccountWebSocketApiClient(
         }
 
         return document;
+    }
+
+    private async Task<JsonDocument> InvokeSignedRestAsync(
+        HttpMethod method,
+        string path,
+        Dictionary<string, object?> parameters,
+        CancellationToken cancellationToken)
+    {
+        var settings = runtimeSettings.GetRuntimeSettings();
+        var apiKey = !string.IsNullOrWhiteSpace(settings.ApiKey) ? settings.ApiKey : _options.ApiKey;
+        parameters["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        parameters["recvWindow"] = 5000;
+        parameters["signature"] = Sign(parameters, settings);
+
+        var query = string.Join("&", parameters
+            .Where(pair => pair.Value is not null)
+            .Select(pair => $"{pair.Key}={Uri.EscapeDataString(FormatValue(pair.Value!))}"));
+
+        using var request = new HttpRequestMessage(method, $"{_options.RestBaseUrl.TrimEnd('/')}{path}?{query}");
+        request.Headers.Add("X-MBX-APIKEY", apiKey);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var response = await httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(body);
+        }
+
+        return JsonDocument.Parse(body);
     }
 
     private static async Task<string> ReceiveTextAsync(ClientWebSocket socket, CancellationToken cancellationToken)
@@ -146,6 +224,16 @@ public sealed class BinanceFuturesAccountWebSocketApiClient(
     private static decimal TryParseDecimal(JsonElement root, string propertyName)
     {
         return root.TryGetProperty(propertyName, out var value) ? ParseDecimal(value) : 0;
+    }
+
+    private static long? TryParseLong(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var value)) return null;
+        return value.ValueKind == JsonValueKind.Number
+            ? value.GetInt64()
+            : long.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                ? parsed
+                : null;
     }
 
     private static decimal ParseDecimal(JsonElement value)

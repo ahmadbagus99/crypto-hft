@@ -195,6 +195,38 @@ public sealed class BinanceFuturesTradingExecutor(
         }
     }
 
+    // Places an order via REST POST /fapi/v1/order. Signs the EXACT query string that is sent, so
+    // the signature always matches (unlike the WS order.place path where JSON re-serialization of
+    // decimals differs from the signed form). Used for protective SL/TP orders.
+    private async Task<JsonDocument> InvokeSignedRestOrderAsync(Dictionary<string, object?> parameters, CancellationToken cancellationToken)
+    {
+        var settings = runtimeSettings.GetRuntimeSettings();
+        parameters["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        parameters["recvWindow"] = 5000;
+
+        var signedParams = parameters
+            .Where(pair => pair.Value is not null && pair.Key != "signature")
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => $"{pair.Key}={FormatValue(pair.Value!)}")
+            .ToList();
+        var payload = string.Join("&", signedParams);
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(settings.ApiSecret!));
+        var signature = Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
+        var query = $"{payload}&signature={signature}";
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_options.RestBaseUrl.TrimEnd('/')}/fapi/v1/order?{query}");
+        request.Headers.Add("X-MBX-APIKEY", settings.ApiKey!);
+        using var client = httpClientFactory.CreateClient();
+        using var response = await client.SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(body);
+        }
+
+        return JsonDocument.Parse(body);
+    }
+
     private async Task<decimal> GetMarkPriceAsync(string symbol, CancellationToken cancellationToken)
     {
         var url = $"{_options.RestBaseUrl.TrimEnd('/')}/fapi/v1/premiumIndex?symbol={symbol.ToUpperInvariant()}";
@@ -340,8 +372,12 @@ public sealed class BinanceFuturesTradingExecutor(
     {
         request = (await exchangeRuleValidator.NormalizeAndValidateAsync(request, cancellationToken)).Request;
         var parameters = BuildOrderParameters(request);
-        using var document = await InvokeSignedAsync("order.place", parameters, cancellationToken);
-        var result = ParseOrderResult(request, document.RootElement.GetProperty("result"), isPaper: false);
+        // Protective SL/TP go over REST POST /fapi/v1/order. The REST signature is HMAC over the exact
+        // query string sent, so there is no JSON serialization mismatch (the WS order.place path signs
+        // decimals/booleans in a form System.Text.Json re-emits differently, which Binance rejects with
+        // -1022 for stop orders).
+        using var document = await InvokeSignedRestOrderAsync(parameters, cancellationToken);
+        var result = ParseOrderResult(request, document.RootElement, isPaper: false);
 
         await SaveOrderAsync(request, result, cancellationToken);
         await publisher.PublishOrderAsync(result, cancellationToken);

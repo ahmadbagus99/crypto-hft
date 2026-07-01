@@ -41,9 +41,19 @@ public sealed class AutoTradingWorker(
     {
         var settings = settingsService.GetRuntimeSettings();
 
-        // Run the analysis once per tick regardless of mode and cache it — this is the
-        // single place that may call Claude. The dashboard reads the cached result so
-        // opening it never triggers extra (billed) analyses.
+        // While a position is open, run NO analysis at all — this is the single place that may call
+        // Claude, and the single-position rule means we can't trade anyway. Pausing here means zero
+        // Claude cost while holding; analysis resumes automatically on the first tick after the
+        // position closes. The dashboard keeps showing the decision that opened the trade.
+        if (await HasOpenPositionAsync(cancellationToken))
+        {
+            logger.LogDebug("Analysis + trading paused: position open, waiting for it to close");
+            return;
+        }
+
+        // Run the analysis once per tick and cache it — this is the single place that may call
+        // Claude. The dashboard reads the cached result so opening it never triggers extra
+        // (billed) analyses.
         var decision = await aiDecisionService.AnalyzeAsync(Symbol, cancellationToken);
         decisionStore.Set(Symbol, decision);
 
@@ -53,14 +63,6 @@ public sealed class AutoTradingWorker(
 
         // Order placement only in Auto mode.
         if (!settings.AutoTradingEnabled) return;
-
-        // Don't open a new position if one is already active (MaxOpenPositions = 1).
-        if (await HasOpenPositionAsync(cancellationToken))
-        {
-            logger.LogDebug("Auto-trade skipped: position already open");
-            return;
-        }
-
         if (!decision.ShouldTrade) return;
         if (decision.PositionSizeQuantity <= 0)
         {

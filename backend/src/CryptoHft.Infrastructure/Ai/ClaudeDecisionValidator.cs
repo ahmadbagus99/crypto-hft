@@ -41,10 +41,16 @@ public sealed class ClaudeDecisionValidator(
         "confidences, the detected market regime, derivatives data, orderbook liquidity, and news/social sentiment. " +
         "Some categories (on-chain, macro) have no live data source and are scored neutral (50) — never invent values for them; " +
         "treat them as unknown. Decide whether to CONFIRM or VETO the proposed action and give an adjusted confidence (0-100) " +
-        "for that action's side. Be conservative: veto if signals conflict, funding is extreme, liquidity is thin, " +
-        "higher-timeframe trend disagrees, or conviction is marginal. " +
+        "for that action's side. Be conservative: withhold confirmation if signals conflict, funding is extreme, " +
+        "liquidity is thin, higher-timeframe trend disagrees, or conviction is marginal. " +
+        "IMPORTANT: the system still opens the trade whenever it clears the confidence threshold — your role is to " +
+        "size the risk, not to block. When you are NOT fully confident but the trade is still acceptable, return " +
+        "defensive execution params for the proposed side: size_multiplier (0.1-1.5 of the baseline size — go below " +
+        "1.0 when hesitant), leverage (integer 1-10), and stop_loss / take_profit (absolute prices on the correct " +
+        "side of entry, keeping risk/reward sound). If you fully confirm, keep the baseline (size_multiplier 1). " +
         "Respond ONLY with minified JSON: " +
-        "{\"confirmed\":bool,\"adjusted_confidence\":number,\"narrative\":string,\"risks\":[string]}";
+        "{\"confirmed\":bool,\"adjusted_confidence\":number,\"size_multiplier\":number,\"leverage\":number," +
+        "\"stop_loss\":number,\"take_profit\":number,\"narrative\":string,\"risks\":[string]}";
 
     public async Task<LlmValidation> ValidateAsync(
         AdvancedDecision decision, AdvancedDecisionInput input, CancellationToken cancellationToken)
@@ -97,6 +103,7 @@ public sealed class ClaudeDecisionValidator(
         Confidence — BUY: {{d.ConfidenceBuy:F0}}, SELL: {{d.ConfidenceSell:F0}}, HOLD: {{d.ConfidenceHold:F0}} (action-side conviction: {{d.Confidence:F0}})
         Market regime: {{d.Regime}}
         Entry: {{d.EntryPrice}}, StopLoss: {{d.StopLoss}}, TakeProfit: {{d.TakeProfit}}, RiskReward: {{d.RiskReward:F2}}
+        Baseline size (qty): {{d.PositionSizeQuantity}}, baseline leverage: {{d.Leverage}}x (size_multiplier scales this qty)
         Category scores (0-100, >50 bullish): {{scores}}
         Funding rate: {{input.Derivatives.FundingRate * 100:F4}}%
         Open interest change: {{input.Derivatives.OpenInterestChangePercent:F2}}%
@@ -127,7 +134,19 @@ public sealed class ClaudeDecisionValidator(
                 ? r.EnumerateArray().Select(x => x.GetString() ?? "").Where(s => s.Length > 0).ToList()
                 : new List<string>();
 
-            return new LlmValidation(confirmed, Math.Clamp(adjusted, 0m, 100m), narrative, risks, true);
+            // Optional defensive execution overrides (applied only when not confirmed, within caps downstream).
+            var sizeMultiplier = root.TryGetProperty("size_multiplier", out var sm) && sm.ValueKind == JsonValueKind.Number
+                ? sm.GetDecimal() : 1m;
+            int? leverage = root.TryGetProperty("leverage", out var lv) && lv.ValueKind == JsonValueKind.Number
+                ? (int)Math.Round(lv.GetDecimal()) : null;
+            decimal? stopLoss = root.TryGetProperty("stop_loss", out var sl) && sl.ValueKind == JsonValueKind.Number
+                ? sl.GetDecimal() : null;
+            decimal? takeProfit = root.TryGetProperty("take_profit", out var tp) && tp.ValueKind == JsonValueKind.Number
+                ? tp.GetDecimal() : null;
+
+            return new LlmValidation(
+                confirmed, Math.Clamp(adjusted, 0m, 100m), narrative, risks, true,
+                sizeMultiplier, leverage, stopLoss, takeProfit);
         }
         catch (Exception ex)
         {

@@ -65,7 +65,7 @@ public sealed class AiDecisionService(
         if (decision.Confidence >= settings.ConfidenceThreshold && decision.Action != DecisionAction.NoTrade)
         {
             var validation = await llmValidator.ValidateAsync(decision, input, cancellationToken);
-            decision = ApplyValidation(decision, validation);
+            decision = ApplyValidation(decision, validation, profile.MinimumRiskReward);
         }
 
         // Log the decision for online evaluation (fire-and-forget against the DB)
@@ -75,23 +75,59 @@ public sealed class AiDecisionService(
         return decision;
     }
 
-    private static AdvancedDecision ApplyValidation(AdvancedDecision d, LlmValidation v)
+    // Hard safety caps for Claude's defensive resizing when it is hesitant.
+    private const decimal MinSizeMultiplier = 0.1m;
+    private const decimal MaxSizeMultiplier = 1.5m;
+    private const int MinLeverage = 1;
+    private const int MaxLeverage = 10;
+
+    // Claude is advisory only: it never blocks a trade that clears the confidence threshold.
+    // When it does NOT fully confirm, it may resize the trade defensively (size / leverage /
+    // SL / TP) within hard caps; on full confirmation the rule-engine baseline is kept.
+    // Its narrative + risks are always attached for the dashboard and DB learning log.
+    private static AdvancedDecision ApplyValidation(AdvancedDecision d, LlmValidation v, decimal minRiskReward)
     {
-        if (!v.Used) return d with { Llm = v };
+        if (!v.Used || !d.ShouldTrade || v.Confirmed)
+            return d with { Llm = v };
 
-        var shouldTrade = d.ShouldTrade && v.Confirmed;
-        var noTradeReason = d.NoTradeReason;
-        if (!v.Confirmed)
-            noTradeReason = string.IsNullOrEmpty(noTradeReason) ? "LLM vetoed the signal" : $"{noTradeReason}; LLM vetoed";
+        var isBuy = d.Action is DecisionAction.WeakBuy or DecisionAction.Buy or DecisionAction.StrongBuy;
 
-        // Blend confidence: average rule-based and LLM-adjusted
-        var blended = Math.Round((d.Confidence + v.AdjustedConfidence) / 2m, 1);
+        // Size: clamp the multiplier, then scale the baseline qty.
+        var mult = Math.Clamp(v.SizeMultiplier, MinSizeMultiplier, MaxSizeMultiplier);
+        var qty = Math.Round(d.PositionSizeQuantity * mult, 3);
+
+        // Leverage: clamp to the hard range, else keep baseline.
+        var leverage = v.Leverage is int l ? Math.Clamp(l, MinLeverage, MaxLeverage) : d.Leverage;
+
+        // SL/TP: accept Claude's pair only if both sit on the correct side of entry and the
+        // resulting risk/reward still clears the minimum; otherwise keep the rule baseline.
+        var stopLoss = d.StopLoss;
+        var takeProfit = d.TakeProfit;
+        if (v.StopLoss is decimal cSl && v.TakeProfit is decimal cTp)
+        {
+            var slOk = isBuy ? cSl < d.EntryPrice : cSl > d.EntryPrice;
+            var tpOk = isBuy ? cTp > d.EntryPrice : cTp < d.EntryPrice;
+            var risk = Math.Abs(d.EntryPrice - cSl);
+            var reward = Math.Abs(cTp - d.EntryPrice);
+            var rr = risk <= 0 ? 0 : reward / risk;
+            if (slOk && tpOk && rr >= minRiskReward)
+            {
+                stopLoss = Math.Round(cSl, 2);
+                takeProfit = Math.Round(cTp, 2);
+            }
+        }
+
+        var finalRisk = Math.Abs(d.EntryPrice - stopLoss);
+        var finalReward = Math.Abs(takeProfit - d.EntryPrice);
+        var riskReward = finalRisk <= 0 ? d.RiskReward : Math.Round(finalReward / finalRisk, 2);
 
         return d with
         {
-            Confidence = blended,
-            ShouldTrade = shouldTrade,
-            NoTradeReason = noTradeReason,
+            PositionSizeQuantity = qty,
+            Leverage = leverage,
+            StopLoss = stopLoss,
+            TakeProfit = takeProfit,
+            RiskReward = riskReward,
             Llm = v
         };
     }

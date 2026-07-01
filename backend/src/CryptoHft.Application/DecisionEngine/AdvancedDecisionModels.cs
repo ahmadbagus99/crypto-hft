@@ -70,13 +70,19 @@ public sealed record AdvancedDecisionInput(
 // A single 0-100 factor score with explanation
 public sealed record ScoreComponent(string Name, decimal Score, decimal Weight, string Reason);
 
-// Result of an LLM (Claude) validation pass
+// Result of an LLM (Claude) validation pass. When Claude does not fully confirm but the
+// trade still clears the confidence threshold, it may resize the trade defensively via the
+// optional override fields (applied within hard safety caps). Nulls / defaults = keep baseline.
 public sealed record LlmValidation(
     bool Confirmed,
     decimal AdjustedConfidence,
     string Narrative,
     IReadOnlyList<string> Risks,
-    bool Used);
+    bool Used,
+    decimal SizeMultiplier = 1m,
+    int? Leverage = null,
+    decimal? StopLoss = null,
+    decimal? TakeProfit = null);
 
 // The full explainable decision output
 public sealed record AdvancedDecision(

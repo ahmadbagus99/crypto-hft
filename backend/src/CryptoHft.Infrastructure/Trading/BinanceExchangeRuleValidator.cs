@@ -21,14 +21,30 @@ public sealed class BinanceExchangeRuleValidator(IFuturesExchangeInfoClient exch
         var maxQuantity = request.Kind == OrderKind.Market && rules.MarketMaxQuantity > 0 ? rules.MarketMaxQuantity : rules.MaxQuantity;
         var quantity = RoundDown(request.Quantity, quantityStep);
 
-        if (quantity != request.Quantity)
+        // Raise a too-small order up to the smallest allowed quantity instead of rejecting it —
+        // a deliberately small size (e.g. AI-reduced when hesitant) should still open at the floor.
+        // The floor is the greater of LOT_SIZE minQty and the qty needed to meet MIN_NOTIONAL.
+        var referencePrice = request.Price ?? request.StopPrice;
+        var minFloor = minQuantity;
+        if (rules.MinNotional > 0 && referencePrice is > 0)
+        {
+            var notionalFloor = RoundUp(rules.MinNotional / referencePrice.Value, quantityStep);
+            if (notionalFloor > minFloor) minFloor = notionalFloor;
+        }
+
+        if (minFloor > 0 && quantity < minFloor)
+        {
+            quantity = RoundUp(minFloor, quantityStep);
+            adjustments.Add($"quantity {request.Quantity} raised to exchange minimum {quantity}");
+        }
+        else if (quantity != request.Quantity)
         {
             adjustments.Add($"quantity {request.Quantity} -> {quantity}");
         }
 
-        if (quantity <= 0 || quantity < minQuantity)
+        if (quantity <= 0)
         {
-            throw new InvalidOperationException($"Quantity {quantity} below Binance minQty {minQuantity} for {request.Symbol}.");
+            throw new InvalidOperationException($"Quantity resolves to zero for {request.Symbol}.");
         }
 
         if (maxQuantity > 0 && quantity > maxQuantity)
@@ -114,6 +130,12 @@ public sealed class BinanceExchangeRuleValidator(IFuturesExchangeInfoClient exch
     {
         if (step <= 0) return value;
         return Math.Floor(value / step) * step;
+    }
+
+    private static decimal RoundUp(decimal value, decimal step)
+    {
+        if (step <= 0) return value;
+        return Math.Ceiling(value / step) * step;
     }
 }
 

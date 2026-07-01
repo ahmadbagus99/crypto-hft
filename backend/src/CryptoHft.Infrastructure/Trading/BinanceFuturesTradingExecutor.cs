@@ -23,7 +23,6 @@ public sealed class BinanceFuturesTradingExecutor(
     IRuntimeTradingSettingsService runtimeSettings,
     IFuturesAccountClient accountClient,
     IHttpClientFactory httpClientFactory,
-    ILogger<BinanceFuturesTradingExecutor> logger,
     IOptions<BinanceOptions> options) : ITradingExecutor
 {
     private readonly BinanceOptions _options = options.Value;
@@ -194,38 +193,6 @@ public sealed class BinanceFuturesTradingExecutor(
         {
             return chosenLeverage; // never block the order over a sizing lookup
         }
-    }
-
-    // Places an order via REST POST /fapi/v1/order. Signs the EXACT query string that is sent, so
-    // the signature always matches (unlike the WS order.place path where JSON re-serialization of
-    // decimals differs from the signed form). Used for protective SL/TP orders.
-    private async Task<JsonDocument> InvokeSignedRestOrderAsync(Dictionary<string, object?> parameters, CancellationToken cancellationToken)
-    {
-        var settings = runtimeSettings.GetRuntimeSettings();
-        parameters["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        parameters["recvWindow"] = 5000;
-
-        var signedParams = parameters
-            .Where(pair => pair.Value is not null && pair.Key != "signature")
-            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
-            .Select(pair => $"{pair.Key}={FormatValue(pair.Value!)}")
-            .ToList();
-        var payload = string.Join("&", signedParams);
-        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(settings.ApiSecret!));
-        var signature = Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
-        var query = $"{payload}&signature={signature}";
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_options.RestBaseUrl.TrimEnd('/')}/fapi/v1/order?{query}");
-        request.Headers.Add("X-MBX-APIKEY", settings.ApiKey!);
-        using var client = httpClientFactory.CreateClient();
-        using var response = await client.SendAsync(request, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException(body);
-        }
-
-        return JsonDocument.Parse(body);
     }
 
     private async Task<decimal> GetMarkPriceAsync(string symbol, CancellationToken cancellationToken)
@@ -449,21 +416,6 @@ public sealed class BinanceFuturesTradingExecutor(
             method,
             @params = parameters
         });
-
-        // TEMP DIAGNOSTIC: for protective (stop) orders, log the exact signed payload vs the JSON sent
-        // so we can see where the -1022 signature mismatch comes from. apiKey/signature masked.
-        if (parameters.ContainsKey("stopPrice") || parameters.ContainsKey("triggerPrice"))
-        {
-            var signedPayload = string.Join("&", parameters
-                .Where(pair => pair.Value is not null && pair.Key != "signature")
-                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
-                .Select(pair => $"{pair.Key}={(pair.Key == "apiKey" ? "***" : FormatValue(pair.Value!))}"));
-            var maskedJson = request
-                .Replace(parameters["apiKey"]?.ToString() ?? "\0", "***")
-                .Replace(parameters["signature"]?.ToString() ?? "\0", "***");
-            logger.LogWarning("WS SIGNED PAYLOAD (masked): {Payload}", signedPayload);
-            logger.LogWarning("WS JSON SENT (masked): {Json}", maskedJson);
-        }
 
         using var socket = new ClientWebSocket();
         await socket.ConnectAsync(new Uri(_options.WebSocketApiBaseUrl), cancellationToken);

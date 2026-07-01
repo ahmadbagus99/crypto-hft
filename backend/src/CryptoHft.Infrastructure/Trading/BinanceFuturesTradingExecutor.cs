@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using CryptoHft.Application.Abstractions;
+using CryptoHft.Application.Account;
 using CryptoHft.Application.Trading;
 using CryptoHft.Domain.Entities;
 using CryptoHft.Domain.Enums;
@@ -49,6 +50,8 @@ public sealed class BinanceFuturesTradingExecutor(
 
         // Set leverage on Binance before placing order
         var leverage = request.Leverage > 0 ? request.Leverage : settings.DefaultLeverage;
+        if (!request.ReduceOnly)
+            leverage = await ResolveAffordableLeverageAsync(request, leverage, cancellationToken);
         await SetLeverageAsync(request.Symbol, leverage, settings, cancellationToken);
 
         var parameters = BuildOrderParameters(request);
@@ -152,6 +155,55 @@ public sealed class BinanceFuturesTradingExecutor(
 
         using var response = await client.PostAsync(url, null, cancellationToken);
         // Leverage change failure (e.g. sudah di leverage yang sama) tidak perlu throw — order tetap jalan
+    }
+
+    // Target margin per new position (USDT). The exchange forces a minimum order (~0.001 BTC ≈ $60
+    // notional), so on a small account we raise leverage until that order's margin lands near this
+    // target and fits the available balance. Capped for safety.
+    private const decimal TargetMarginUsdt = 3m;
+    private const int MaxAffordableLeverage = 20;
+
+    // If the order's margin at the chosen leverage would not fit the wallet, bump leverage up so the
+    // required margin ≈ TargetMarginUsdt (and always fits available balance), clamped to the cap.
+    // Large accounts where the margin already fits are left untouched.
+    private async Task<int> ResolveAffordableLeverageAsync(TradeOrderRequest request, int chosenLeverage, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var markPrice = await GetMarkPriceAsync(request.Symbol, cancellationToken);
+            if (markPrice <= 0) return chosenLeverage;
+
+            var notional = request.Quantity * markPrice;
+            if (notional <= 0) return chosenLeverage;
+
+            var wallets = await accountClient.GetWalletBalancesAsync(cancellationToken);
+            var available = wallets.UsdAvailableBalance();
+
+            var marginAtChosen = notional / chosenLeverage;
+            if (available > 0 && marginAtChosen <= available)
+                return chosenLeverage; // already affordable — don't over-leverage
+
+            // Aim for the target margin, but never leave the order unaffordable (95% of balance as buffer).
+            var byTarget = (int)Math.Ceiling(notional / TargetMarginUsdt);
+            var byBalance = available > 0 ? (int)Math.Ceiling(notional / (available * 0.95m)) : byTarget;
+            var needed = Math.Max(chosenLeverage, Math.Max(byTarget, byBalance));
+            return Math.Clamp(needed, 1, MaxAffordableLeverage);
+        }
+        catch
+        {
+            return chosenLeverage; // never block the order over a sizing lookup
+        }
+    }
+
+    private async Task<decimal> GetMarkPriceAsync(string symbol, CancellationToken cancellationToken)
+    {
+        var url = $"{_options.RestBaseUrl.TrimEnd('/')}/fapi/v1/premiumIndex?symbol={symbol.ToUpperInvariant()}";
+        using var client = httpClientFactory.CreateClient();
+        using var response = await client.GetAsync(url, cancellationToken);
+        if (!response.IsSuccessStatusCode) return 0m;
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        using var document = JsonDocument.Parse(body);
+        return TryParseNullableDecimal(document.RootElement, "markPrice") ?? 0m;
     }
 
     private Dictionary<string, object?> BuildOrderParameters(TradeOrderRequest request)

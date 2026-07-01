@@ -48,7 +48,7 @@ public sealed class ClaudeDecisionValidator(
         "as how large and how leveraged the entry should be. Give an adjusted confidence (0-100) for the side. " +
         "ALWAYS return the execution params for the proposed side, and they are ALWAYS applied: size_multiplier " +
         "(0.1-1.5 of the baseline size — use ~1.0 for a clean setup, go below 1.0 the more hesitant you are, and only " +
-        "above 1.0 for an exceptionally strong setup), leverage (integer 1-10), and stop_loss / take_profit (absolute " +
+        "above 1.0 for an exceptionally strong setup), leverage (integer 1-20), and stop_loss / take_profit (absolute " +
         "prices on the correct side of entry, keeping risk/reward sound). Whatever size_multiplier and leverage you " +
         "state in the narrative MUST equal the JSON fields, since the system executes exactly those. " +
         "Respond ONLY with minified JSON: " +

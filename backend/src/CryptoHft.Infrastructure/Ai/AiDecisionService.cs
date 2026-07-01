@@ -79,7 +79,7 @@ public sealed class AiDecisionService(
     private const decimal MinSizeMultiplier = 0.1m;
     private const decimal MaxSizeMultiplier = 1.5m;
     private const int MinLeverage = 1;
-    private const int MaxLeverage = 10;
+    private const int MaxLeverage = 20;
 
     // Claude is advisory only: it never blocks a trade that clears the confidence threshold.
     // It ALWAYS sizes the execution (size / leverage / SL / TP) within hard caps — regardless of
@@ -93,9 +93,11 @@ public sealed class AiDecisionService(
 
         var isBuy = d.Action is DecisionAction.WeakBuy or DecisionAction.Buy or DecisionAction.StrongBuy;
 
-        // Size: clamp the multiplier, then scale the baseline qty.
+        // Size: clamp the multiplier, then scale the baseline qty. Keep 6-dp precision (matching the
+        // engine baseline) so a small budget is not re-zeroed here — the exchange rule validator
+        // raises the final qty up to the venue minimum before placement.
         var mult = Math.Clamp(v.SizeMultiplier, MinSizeMultiplier, MaxSizeMultiplier);
-        var qty = Math.Round(d.PositionSizeQuantity * mult, 3);
+        var qty = Math.Round(d.PositionSizeQuantity * mult, 6);
 
         // Leverage: clamp to the hard range, else keep baseline.
         var leverage = v.Leverage is int l ? Math.Clamp(l, MinLeverage, MaxLeverage) : d.Leverage;

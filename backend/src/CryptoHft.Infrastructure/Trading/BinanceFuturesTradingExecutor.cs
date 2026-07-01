@@ -255,11 +255,12 @@ public sealed class BinanceFuturesTradingExecutor(
         var isProtectiveMarket = request.Kind is OrderKind.StopMarket or OrderKind.TakeProfit;
         if (isProtectiveMarket)
         {
-            parameters["closePosition"] = true;
-            // stopPrice MUST be sent as a string. As a JSON number, Binance re-serializes it for
-            // signature verification and drops the tick trailing zeros (61777.00 -> 61777), so the
-            // signature computed over "stopPrice=61777.00" no longer matches -> -1022. A string is
-            // used verbatim on both sides.
+            // Reduce-only close of the whole position. closePosition=true made Binance route the order
+            // to the Algo endpoint (-4120) on this account, so use quantity + reduceOnly instead.
+            // stopPrice MUST be a string: as a JSON number Binance re-serializes it for signature
+            // verification and drops tick trailing zeros (61777.00 -> 61777), breaking the signature (-1022).
+            parameters["quantity"] = request.Quantity;
+            parameters["reduceOnly"] = true;
             parameters["stopPrice"] = PriceParam(request.StopPrice!.Value);
             parameters["workingType"] = "MARK_PRICE";
             return parameters;

@@ -23,6 +23,7 @@ public sealed class BinanceFuturesTradingExecutor(
     IRuntimeTradingSettingsService runtimeSettings,
     IFuturesAccountClient accountClient,
     IHttpClientFactory httpClientFactory,
+    ILogger<BinanceFuturesTradingExecutor> logger,
     IOptions<BinanceOptions> options) : ITradingExecutor
 {
     private readonly BinanceOptions _options = options.Value;
@@ -372,12 +373,8 @@ public sealed class BinanceFuturesTradingExecutor(
     {
         request = (await exchangeRuleValidator.NormalizeAndValidateAsync(request, cancellationToken)).Request;
         var parameters = BuildOrderParameters(request);
-        // Protective SL/TP go over REST POST /fapi/v1/order. The REST signature is HMAC over the exact
-        // query string sent, so there is no JSON serialization mismatch (the WS order.place path signs
-        // decimals/booleans in a form System.Text.Json re-emits differently, which Binance rejects with
-        // -1022 for stop orders).
-        using var document = await InvokeSignedRestOrderAsync(parameters, cancellationToken);
-        var result = ParseOrderResult(request, document.RootElement, isPaper: false);
+        using var document = await InvokeSignedAsync("order.place", parameters, cancellationToken);
+        var result = ParseOrderResult(request, document.RootElement.GetProperty("result"), isPaper: false);
 
         await SaveOrderAsync(request, result, cancellationToken);
         await publisher.PublishOrderAsync(result, cancellationToken);
@@ -438,6 +435,21 @@ public sealed class BinanceFuturesTradingExecutor(
             method,
             @params = parameters
         });
+
+        // TEMP DIAGNOSTIC: for protective (stop) orders, log the exact signed payload vs the JSON sent
+        // so we can see where the -1022 signature mismatch comes from. apiKey/signature masked.
+        if (parameters.ContainsKey("stopPrice"))
+        {
+            var signedPayload = string.Join("&", parameters
+                .Where(pair => pair.Value is not null && pair.Key != "signature")
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => $"{pair.Key}={(pair.Key == "apiKey" ? "***" : FormatValue(pair.Value!))}"));
+            var maskedJson = request
+                .Replace(parameters["apiKey"]?.ToString() ?? "\0", "***")
+                .Replace(parameters["signature"]?.ToString() ?? "\0", "***");
+            logger.LogWarning("WS SIGNED PAYLOAD (masked): {Payload}", signedPayload);
+            logger.LogWarning("WS JSON SENT (masked): {Json}", maskedJson);
+        }
 
         using var socket = new ClientWebSocket();
         await socket.ConnectAsync(new Uri(_options.WebSocketApiBaseUrl), cancellationToken);

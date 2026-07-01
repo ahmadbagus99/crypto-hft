@@ -222,7 +222,10 @@ public sealed class BinanceFuturesTradingExecutor(
         var isProtectiveMarket = request.Kind is OrderKind.StopMarket or OrderKind.TakeProfit;
         if (isProtectiveMarket)
         {
-            parameters["closePosition"] = "true";
+            // Boolean params MUST be real JSON booleans, not the string "true": the WS API signature
+            // is computed over key=true (unquoted) while a string serializes to "true" (quoted),
+            // which makes Binance reject the order with -1022 "Signature not valid".
+            parameters["closePosition"] = true;
             parameters["stopPrice"] = request.StopPrice!.Value;
             parameters["workingType"] = "MARK_PRICE";
             return parameters;
@@ -232,7 +235,7 @@ public sealed class BinanceFuturesTradingExecutor(
 
         if (request.ReduceOnly)
         {
-            parameters["reduceOnly"] = "true";
+            parameters["reduceOnly"] = true;
         }
 
         if (request.Price is not null)

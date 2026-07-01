@@ -82,12 +82,13 @@ public sealed class AiDecisionService(
     private const int MaxLeverage = 10;
 
     // Claude is advisory only: it never blocks a trade that clears the confidence threshold.
-    // When it does NOT fully confirm, it may resize the trade defensively (size / leverage /
-    // SL / TP) within hard caps; on full confirmation the rule-engine baseline is kept.
-    // Its narrative + risks are always attached for the dashboard and DB learning log.
+    // It ALWAYS sizes the execution (size / leverage / SL / TP) within hard caps — regardless of
+    // the confirmed flag, which is now just a display signal for "clean backdrop vs hesitant".
+    // Decoupling sizing from confirmation keeps the narrative ("trading at 0.65x") consistent with
+    // what actually gets placed. Its narrative + risks are always attached for the dashboard/DB log.
     private static AdvancedDecision ApplyValidation(AdvancedDecision d, LlmValidation v, decimal minRiskReward)
     {
-        if (!v.Used || !d.ShouldTrade || v.Confirmed)
+        if (!v.Used || !d.ShouldTrade)
             return d with { Llm = v };
 
         var isBuy = d.Action is DecisionAction.WeakBuy or DecisionAction.Buy or DecisionAction.StrongBuy;

@@ -40,14 +40,17 @@ public sealed class ClaudeDecisionValidator(
         "You receive pre-computed category scores (0-100, where >50 is bullish), separate BUY/SELL/HOLD " +
         "confidences, the detected market regime, derivatives data, orderbook liquidity, and news/social sentiment. " +
         "Some categories (on-chain, macro) have no live data source and are scored neutral (50) — never invent values for them; " +
-        "treat them as unknown. Decide whether to CONFIRM or VETO the proposed action and give an adjusted confidence (0-100) " +
-        "for that action's side. Be conservative: withhold confirmation if signals conflict, funding is extreme, " +
-        "liquidity is thin, higher-timeframe trend disagrees, or conviction is marginal. " +
-        "IMPORTANT: the system still opens the trade whenever it clears the confidence threshold — your role is to " +
-        "size the risk, not to block. When you are NOT fully confident but the trade is still acceptable, return " +
-        "defensive execution params for the proposed side: size_multiplier (0.1-1.5 of the baseline size — go below " +
-        "1.0 when hesitant), leverage (integer 1-10), and stop_loss / take_profit (absolute prices on the correct " +
-        "side of entry, keeping risk/reward sound). If you fully confirm, keep the baseline (size_multiplier 1). " +
+        "treat them as unknown. You do NOT decide whether to trade and you CANNOT reject or veto it — the system " +
+        "already opens this position because it cleared the confidence threshold. Your ONLY job is to size the risk. " +
+        "confirmed is ONLY a backdrop label: true = clean setup, false = conflicted/marginal (funding extreme, thin " +
+        "liquidity, higher-timeframe disagrees, weak conviction). It does NOT change whether the trade happens and does " +
+        "NOT by itself change the size. Never use words like reject/veto/skip/avoid in the narrative; frame everything " +
+        "as how large and how leveraged the entry should be. Give an adjusted confidence (0-100) for the side. " +
+        "ALWAYS return the execution params for the proposed side, and they are ALWAYS applied: size_multiplier " +
+        "(0.1-1.5 of the baseline size — use ~1.0 for a clean setup, go below 1.0 the more hesitant you are, and only " +
+        "above 1.0 for an exceptionally strong setup), leverage (integer 1-10), and stop_loss / take_profit (absolute " +
+        "prices on the correct side of entry, keeping risk/reward sound). Whatever size_multiplier and leverage you " +
+        "state in the narrative MUST equal the JSON fields, since the system executes exactly those. " +
         "Respond ONLY with minified JSON: " +
         "{\"confirmed\":bool,\"adjusted_confidence\":number,\"size_multiplier\":number,\"leverage\":number," +
         "\"stop_loss\":number,\"take_profit\":number,\"narrative\":string,\"risks\":[string]}";

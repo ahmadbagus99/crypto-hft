@@ -1664,7 +1664,7 @@ function AiDecisionPanel({ decision }: { decision?: AiDecision | null }) {
       {decision.llm.used && (
         <div className="rounded-md border border-indigo-500/30 bg-indigo-950/30 p-3">
           <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-indigo-300">
-            <Bot className="h-3.5 w-3.5" /> Claude validation: {decision.llm.confirmed ? "CONFIRMED" : "VETOED"}
+            <Bot className="h-3.5 w-3.5" /> Claude validation: {decision.llm.confirmed ? "CONFIRMED" : "HESITANT — DEFENSIVE SIZING"}
           </div>
           {decision.llm.narrative && <div className="text-xs text-slate-300">{decision.llm.narrative}</div>}
           {decision.llm.risks.length > 0 && (

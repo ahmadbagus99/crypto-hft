@@ -113,26 +113,34 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         var rewardDistance = Math.Abs(takeProfit - entry);
         var riskReward = riskDistance == 0 ? 0 : rewardDistance / riskDistance;
 
-        // Position sizing from risk-per-trade budget
+        // Position sizing from risk-per-trade budget. Keep 6-dp precision so a small budget is
+        // not prematurely rounded to zero — the AI multiplier scales this and the exchange rule
+        // validator raises the final qty up to the venue minimum before the order is placed.
         var riskBudget = equity * profile.RiskPerTrade;
-        var quantity = riskDistance <= 0 ? 0 : Math.Round(riskBudget / riskDistance, 3);
+        var quantity = riskDistance <= 0 ? 0 : Math.Round(riskBudget / riskDistance, 6);
         var leverage = confidence >= 90 ? 10 : confidence >= 80 ? 5 : 3;
 
         // Probability of success: blend of confidence and multi-timeframe trend agreement
         var mtfAgreement = MultiTimeframeAgreement(input, isBuy);
         var probability = Math.Clamp(confidence * 0.7m + mtfAgreement * 30m, 0m, 100m);
 
-        // Entry gate checks
+        // Entry gate. Per design, confidence is the SOLE hard gate that opens an order: an
+        // actionable side whose conviction clears the threshold trades. The remaining quality
+        // checks (RR, trend, funding, spread) are advisory "cautions" — they no longer block;
+        // instead they are surfaced to the AI validator, which defensively downsizes leverage
+        // and quantity when the backdrop is weak.
         var reasons = new List<string>();
         var noTradeReasons = new List<string>();
+        var cautionReasons = new List<string>();
 
         var trendAligned = isBuy ? mtfAgreement >= 0.5m : isSell ? mtfAgreement >= 0.5m : false;
         if (!isBuy && !isSell) noTradeReasons.Add("Signal is neutral (Hold)");
-        if (riskReward < profile.MinimumRiskReward) noTradeReasons.Add($"Risk/reward {riskReward:F2} below minimum {profile.MinimumRiskReward:F2}");
         if (confidence < profile.AutoTradeConfidenceThreshold) noTradeReasons.Add($"Confidence {confidence:F0} below threshold {profile.AutoTradeConfidenceThreshold:F0}");
-        if (!trendAligned && (isBuy || isSell)) noTradeReasons.Add("Higher timeframe trend not aligned");
-        if (Math.Abs(input.Derivatives.FundingRate) > 0.0010m) noTradeReasons.Add("Funding rate unhealthy (crowded)");
-        if (input.Derivatives.BidAskSpread > entry * 0.0005m) noTradeReasons.Add("Spread too wide / thin liquidity");
+
+        if (riskReward < profile.MinimumRiskReward) cautionReasons.Add($"Risk/reward {riskReward:F2} below preferred {profile.MinimumRiskReward:F2}");
+        if (!trendAligned && (isBuy || isSell)) cautionReasons.Add("Higher timeframe trend not aligned");
+        if (Math.Abs(input.Derivatives.FundingRate) > 0.0010m) cautionReasons.Add("Funding rate unhealthy (crowded)");
+        if (input.Derivatives.BidAskSpread > entry * 0.0005m) cautionReasons.Add("Spread too wide / thin liquidity");
 
         var shouldTrade = noTradeReasons.Count == 0;
 
@@ -168,6 +176,7 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
             Leverage: leverage,
             ShouldTrade: shouldTrade,
             NoTradeReason: noTradeReasons.Count == 0 ? "" : string.Join("; ", noTradeReasons),
+            Cautions: cautionReasons,
             Scores: scores,
             Weights: weights,
             Components: components,

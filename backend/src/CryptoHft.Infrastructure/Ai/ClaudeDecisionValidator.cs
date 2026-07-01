@@ -96,6 +96,7 @@ public sealed class ClaudeDecisionValidator(
         var headlines = input.Sentiment.Headlines.Count > 0
             ? string.Join(" | ", input.Sentiment.Headlines.Take(5))
             : "none";
+        var cautions = d.Cautions.Count > 0 ? string.Join(" | ", d.Cautions) : "none";
 
         return $$"""
         Symbol: {{d.Symbol}}
@@ -111,6 +112,7 @@ public sealed class ClaudeDecisionValidator(
         Order book imbalance: {{input.Derivatives.OrderBookImbalance:F3}}
         Fear & Greed: {{input.Sentiment.FearGreedIndex}} ({{input.Sentiment.FearGreedLabel}})
         Recent headlines: {{headlines}}
+        Quality cautions (do not block the trade — use them to size defensively): {{cautions}}
 
         Validate this signal. Respond with the JSON schema only.
         """;

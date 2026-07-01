@@ -103,6 +103,7 @@ public sealed record AdvancedDecision(
     int Leverage,
     bool ShouldTrade,
     string NoTradeReason,
+    IReadOnlyList<string> Cautions,   // advisory quality warnings (weak RR/trend/funding/spread); do not block, drive AI downsizing
     IReadOnlyDictionary<string, decimal> Scores,
     IReadOnlyDictionary<string, decimal> Weights,
     IReadOnlyList<ScoreComponent> Components,

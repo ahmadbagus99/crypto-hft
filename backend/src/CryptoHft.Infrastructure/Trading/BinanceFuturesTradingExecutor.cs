@@ -252,20 +252,6 @@ public sealed class BinanceFuturesTradingExecutor(
         // the robust way: it does not require the position to already exist at placement time (so it
         // is not rejected with -2022 when sent right after the entry market order), and Binance
         // forbids sending quantity/reduceOnly alongside closePosition.
-        var isProtectiveMarket = request.Kind is OrderKind.StopMarket or OrderKind.TakeProfit;
-        if (isProtectiveMarket)
-        {
-            // Reduce-only close of the whole position. closePosition=true made Binance route the order
-            // to the Algo endpoint (-4120) on this account, so use quantity + reduceOnly instead.
-            // stopPrice MUST be a string: as a JSON number Binance re-serializes it for signature
-            // verification and drops tick trailing zeros (61777.00 -> 61777), breaking the signature (-1022).
-            parameters["quantity"] = request.Quantity;
-            parameters["reduceOnly"] = true;
-            parameters["stopPrice"] = PriceParam(request.StopPrice!.Value);
-            parameters["workingType"] = "MARK_PRICE";
-            return parameters;
-        }
-
         parameters["quantity"] = request.Quantity;
 
         if (request.ReduceOnly)
@@ -371,16 +357,42 @@ public sealed class BinanceFuturesTradingExecutor(
         return messages.Count == 0 ? string.Empty : $"Protective orders submitted: {string.Join(", ", messages)}";
     }
 
+    // Places a protective SL/TP order. Stop-type orders are rejected by the plain order.place endpoint
+    // (-4120) on this account, so they go through the Algo Order API: method "algoOrder.place" with
+    // algoType=CONDITIONAL and triggerPrice (NOT stopPrice). triggerPrice is a string so Binance uses
+    // it verbatim for signature verification (a JSON number drops tick trailing zeros -> -1022).
     private async Task<TradeOrderResult> PlaceExchangeOrderAsync(TradeOrderRequest request, CancellationToken cancellationToken)
     {
         request = (await exchangeRuleValidator.NormalizeAndValidateAsync(request, cancellationToken)).Request;
-        var parameters = BuildOrderParameters(request);
-        using var document = await InvokeSignedAsync("order.place", parameters, cancellationToken);
-        var result = ParseOrderResult(request, document.RootElement.GetProperty("result"), isPaper: false);
+        var parameters = new Dictionary<string, object?>
+        {
+            ["algoType"] = "CONDITIONAL",
+            ["symbol"] = request.Symbol.ToUpperInvariant(),
+            ["side"] = ToBinanceSide(request.Side),
+            ["type"] = ToBinanceOrderType(request.Kind),
+            ["closePosition"] = "true",
+            ["triggerPrice"] = PriceParam(request.StopPrice!.Value),
+            ["workingType"] = "MARK_PRICE"
+        };
+        using var document = await InvokeSignedAsync("algoOrder.place", parameters, cancellationToken);
+        var result = ParseAlgoOrderResult(request, document.RootElement.GetProperty("result"));
 
         await SaveOrderAsync(request, result, cancellationToken);
         await publisher.PublishOrderAsync(result, cancellationToken);
         return result;
+    }
+
+    private static TradeOrderResult ParseAlgoOrderResult(TradeOrderRequest request, JsonElement result)
+    {
+        return new TradeOrderResult(
+            Symbol: result.TryGetProperty("symbol", out var symbol) ? symbol.GetString() ?? request.Symbol : request.Symbol,
+            OrderId: result.TryGetProperty("algoId", out var algoId) ? FormatJsonValue(algoId) : Guid.NewGuid().ToString("N"),
+            Status: result.TryGetProperty("algoStatus", out var status) ? ParseStatus(status.GetString()) : OrderStatus.New,
+            Quantity: request.Quantity,
+            Price: TryParseNullableDecimal(result, "triggerPrice") ?? request.StopPrice,
+            IsPaper: false,
+            Message: request.Reason,
+            Time: DateTimeOffset.UtcNow);
     }
 
     private async Task<TradeOrderResult> PlacePaperProtectiveOrderAsync(TradeOrderRequest request, CancellationToken cancellationToken)
@@ -440,7 +452,7 @@ public sealed class BinanceFuturesTradingExecutor(
 
         // TEMP DIAGNOSTIC: for protective (stop) orders, log the exact signed payload vs the JSON sent
         // so we can see where the -1022 signature mismatch comes from. apiKey/signature masked.
-        if (parameters.ContainsKey("stopPrice"))
+        if (parameters.ContainsKey("stopPrice") || parameters.ContainsKey("triggerPrice"))
         {
             var signedPayload = string.Join("&", parameters
                 .Where(pair => pair.Value is not null && pair.Key != "signature")

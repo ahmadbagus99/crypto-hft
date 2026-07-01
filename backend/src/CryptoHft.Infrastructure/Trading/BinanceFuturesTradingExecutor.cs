@@ -255,11 +255,12 @@ public sealed class BinanceFuturesTradingExecutor(
         var isProtectiveMarket = request.Kind is OrderKind.StopMarket or OrderKind.TakeProfit;
         if (isProtectiveMarket)
         {
-            // Boolean params MUST be real JSON booleans, not the string "true": the WS API signature
-            // is computed over key=true (unquoted) while a string serializes to "true" (quoted),
-            // which makes Binance reject the order with -1022 "Signature not valid".
             parameters["closePosition"] = true;
-            parameters["stopPrice"] = request.StopPrice!.Value;
+            // stopPrice MUST be sent as a string. As a JSON number, Binance re-serializes it for
+            // signature verification and drops the tick trailing zeros (61777.00 -> 61777), so the
+            // signature computed over "stopPrice=61777.00" no longer matches -> -1022. A string is
+            // used verbatim on both sides.
+            parameters["stopPrice"] = PriceParam(request.StopPrice!.Value);
             parameters["workingType"] = "MARK_PRICE";
             return parameters;
         }
@@ -273,12 +274,12 @@ public sealed class BinanceFuturesTradingExecutor(
 
         if (request.Price is not null)
         {
-            parameters["price"] = request.Price.Value;
+            parameters["price"] = PriceParam(request.Price.Value);
         }
 
         if (request.StopPrice is not null)
         {
-            parameters["stopPrice"] = request.StopPrice.Value;
+            parameters["stopPrice"] = PriceParam(request.StopPrice.Value);
         }
 
         if (request.Kind is OrderKind.Limit or OrderKind.StopLimit)
@@ -546,6 +547,10 @@ public sealed class BinanceFuturesTradingExecutor(
         if (string.IsNullOrWhiteSpace(message)) return addition;
         return $"{message}. {addition}";
     }
+
+    // Prices are sent as strings so Binance uses them verbatim for signature verification instead of
+    // re-serializing the JSON number (which drops tick trailing zeros and breaks the signature, -1022).
+    private static string PriceParam(decimal value) => value.ToString(CultureInfo.InvariantCulture);
 
     private static string FormatValue(object value)
     {

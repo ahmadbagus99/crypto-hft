@@ -212,9 +212,23 @@ public sealed class BinanceFuturesTradingExecutor(
         {
             ["symbol"] = request.Symbol.ToUpperInvariant(),
             ["side"] = ToBinanceSide(request.Side),
-            ["type"] = ToBinanceOrderType(request.Kind),
-            ["quantity"] = request.Quantity
+            ["type"] = ToBinanceOrderType(request.Kind)
         };
+
+        // Protective SL/TP (*_MARKET) attach to the whole position via closePosition=true. This is
+        // the robust way: it does not require the position to already exist at placement time (so it
+        // is not rejected with -2022 when sent right after the entry market order), and Binance
+        // forbids sending quantity/reduceOnly alongside closePosition.
+        var isProtectiveMarket = request.Kind is OrderKind.StopMarket or OrderKind.TakeProfit;
+        if (isProtectiveMarket)
+        {
+            parameters["closePosition"] = "true";
+            parameters["stopPrice"] = request.StopPrice!.Value;
+            parameters["workingType"] = "MARK_PRICE";
+            return parameters;
+        }
+
+        parameters["quantity"] = request.Quantity;
 
         if (request.ReduceOnly)
         {
@@ -229,11 +243,6 @@ public sealed class BinanceFuturesTradingExecutor(
         if (request.StopPrice is not null)
         {
             parameters["stopPrice"] = request.StopPrice.Value;
-        }
-
-        if (request.Kind is OrderKind.StopMarket or OrderKind.TakeProfit)
-        {
-            parameters["workingType"] = "MARK_PRICE";
         }
 
         if (request.Kind is OrderKind.Limit or OrderKind.StopLimit)

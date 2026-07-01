@@ -51,23 +51,26 @@ public sealed class BinanceFuturesAccountWebSocketApiClient(
             parameters["symbol"] = symbol.ToUpperInvariant();
         }
 
-        using var document = await InvokeSignedAsync("v2/account.position", parameters, cancellationToken);
-        return document.RootElement.GetProperty("result").EnumerateArray()
+        // Read position risk over REST (/fapi/v2/positionRisk) — the stable, documented endpoint.
+        // The response is a bare JSON array. Field reads are defensive so a missing/renamed field
+        // never throws a 500 and hides an open position.
+        using var document = await InvokeSignedRestAsync(HttpMethod.Get, "/fapi/v2/positionRisk", parameters, cancellationToken);
+        return document.RootElement.EnumerateArray()
             .Select(item => new FuturesPositionInfo(
-                Symbol: item.GetProperty("symbol").GetString() ?? "",
-                PositionSide: item.GetProperty("positionSide").GetString() ?? "",
-                PositionAmount: ParseDecimal(item.GetProperty("positionAmt")),
-                EntryPrice: ParseDecimal(item.GetProperty("entryPrice")),
+                Symbol: TryGetString(item, "symbol") ?? "",
+                PositionSide: TryGetString(item, "positionSide") ?? "",
+                PositionAmount: TryParseDecimal(item, "positionAmt"),
+                EntryPrice: TryParseDecimal(item, "entryPrice"),
                 BreakEvenPrice: TryParseDecimal(item, "breakEvenPrice"),
                 MarkPrice: TryParseDecimal(item, "markPrice"),
-                UnrealizedProfit: ParseDecimal(item.GetProperty("unRealizedProfit")),
-                LiquidationPrice: ParseDecimal(item.GetProperty("liquidationPrice")),
-                Leverage: ParseDecimal(item.GetProperty("leverage")),
-                MaxNotionalValue: ParseDecimal(item.GetProperty("maxNotionalValue")),
-                MarginType: item.GetProperty("marginType").GetString() ?? "",
-                IsolatedMargin: ParseDecimal(item.GetProperty("isolatedMargin")),
-                IsAutoAddMargin: item.GetProperty("isAutoAddMargin").GetString() == "true",
-                UpdateTime: DateTimeOffset.FromUnixTimeMilliseconds(item.GetProperty("updateTime").GetInt64())))
+                UnrealizedProfit: TryParseDecimal(item, "unRealizedProfit"),
+                LiquidationPrice: TryParseDecimal(item, "liquidationPrice"),
+                Leverage: TryParseDecimal(item, "leverage"),
+                MaxNotionalValue: TryParseDecimal(item, "maxNotionalValue"),
+                MarginType: TryGetString(item, "marginType") ?? "",
+                IsolatedMargin: TryParseDecimal(item, "isolatedMargin"),
+                IsAutoAddMargin: string.Equals(TryGetString(item, "isAutoAddMargin"), "true", StringComparison.OrdinalIgnoreCase),
+                UpdateTime: DateTimeOffset.FromUnixTimeMilliseconds(TryParseLong(item, "updateTime") ?? 0)))
             .ToList();
     }
 
@@ -156,11 +159,20 @@ public sealed class BinanceFuturesAccountWebSocketApiClient(
         var apiKey = !string.IsNullOrWhiteSpace(settings.ApiKey) ? settings.ApiKey : _options.ApiKey;
         parameters["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         parameters["recvWindow"] = 5000;
-        parameters["signature"] = Sign(parameters, settings);
 
-        var query = string.Join("&", parameters
-            .Where(pair => pair.Value is not null)
-            .Select(pair => $"{pair.Key}={Uri.EscapeDataString(FormatValue(pair.Value!))}"));
+        // Binance validates the signature against the EXACT query string received. Build the signed
+        // payload and the sent query from the same ordered, unescaped key=value list so they match —
+        // signing a differently-ordered/escaped string yields -1022 "Signature not valid".
+        var signedParams = parameters
+            .Where(pair => pair.Value is not null && pair.Key != "signature")
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => $"{pair.Key}={FormatValue(pair.Value!)}")
+            .ToList();
+        var payload = string.Join("&", signedParams);
+        var secret = !string.IsNullOrWhiteSpace(settings.ApiSecret) ? settings.ApiSecret : _options.ApiSecret;
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret!));
+        var signature = Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
+        var query = $"{payload}&signature={signature}";
 
         using var request = new HttpRequestMessage(method, $"{_options.RestBaseUrl.TrimEnd('/')}{path}?{query}");
         request.Headers.Add("X-MBX-APIKEY", apiKey);
@@ -224,6 +236,11 @@ public sealed class BinanceFuturesAccountWebSocketApiClient(
     private static decimal TryParseDecimal(JsonElement root, string propertyName)
     {
         return root.TryGetProperty(propertyName, out var value) ? ParseDecimal(value) : 0;
+    }
+
+    private static string? TryGetString(JsonElement root, string propertyName)
+    {
+        return root.TryGetProperty(propertyName, out var value) ? value.GetString() : null;
     }
 
     private static long? TryParseLong(JsonElement root, string propertyName)

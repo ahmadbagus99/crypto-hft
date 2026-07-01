@@ -96,8 +96,8 @@ public sealed class AutoTradingWorker(
         try
         {
             var result = await executor.PlaceAsync(order, cancellationToken);
-            logger.LogInformation("Auto-trade placed: {Side} {Qty} {Symbol} order {OrderId} (paper={Paper})",
-                side, decision.PositionSizeQuantity, Symbol, result.OrderId, result.IsPaper);
+            logger.LogInformation("Auto-trade placed: {Side} {Qty} {Symbol} order {OrderId} (paper={Paper}) {Message}",
+                side, decision.PositionSizeQuantity, Symbol, result.OrderId, result.IsPaper, result.Message);
         }
         catch (InvalidOperationException ex)
         {

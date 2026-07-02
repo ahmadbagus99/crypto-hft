@@ -1,5 +1,7 @@
 using CryptoHft.Application.Abstractions;
+using CryptoHft.Application.Account;
 using CryptoHft.Application.DecisionEngine;
+using CryptoHft.Application.Risk;
 using CryptoHft.Application.Trading;
 using CryptoHft.Domain.Enums;
 
@@ -13,11 +15,16 @@ public sealed class AutoTradingWorker(
     IAiDecisionService aiDecisionService,
     IRuntimeTradingSettingsService settingsService,
     IFuturesAccountClient accountClient,
+    IAutoTradeRiskGate riskGate,
     ILatestDecisionStore decisionStore,
     ILogger<AutoTradingWorker> logger) : BackgroundService
 {
     private const string Symbol = "BTCUSDT";
     private static readonly TimeSpan Interval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan OpenPositionRevalidationInterval = TimeSpan.FromMinutes(30);
+    private DateTimeOffset _nextOpenPositionRevalidationAt = DateTimeOffset.MinValue;
+    private int _openPositionWarningCount;
+    private TradeSide? _lastOpenPositionSide;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -41,15 +48,18 @@ public sealed class AutoTradingWorker(
     {
         var settings = settingsService.GetRuntimeSettings();
 
-        // While a position is open, run NO analysis at all — this is the single place that may call
-        // Claude, and the single-position rule means we can't trade anyway. Pausing here means zero
-        // Claude cost while holding; analysis resumes automatically on the first tick after the
-        // position closes. The dashboard keeps showing the decision that opened the trade.
-        if (await HasOpenPositionAsync(cancellationToken))
+        var (positionStateKnown, openPosition) = await GetOpenPositionAsync(cancellationToken);
+        if (!positionStateKnown) return;
+
+        // While a position is open, keep entry analysis paused so no new trade can be opened and
+        // no Claude tokens are spent. Every 30 minutes, run a rule-based health check only; if the
+        // opposite side confirms twice (or becomes extremely strong once), close via reduce-only.
+        if (openPosition is not null)
         {
-            logger.LogDebug("Analysis + trading paused: position open, waiting for it to close");
+            await RevalidateOpenPositionAsync(settings, openPosition, cancellationToken);
             return;
         }
+        ResetOpenPositionRevalidationState();
 
         // Run the analysis once per tick and cache it — this is the single place that may call
         // Claude. The dashboard reads the cached result so opening it never triggers extra
@@ -70,6 +80,20 @@ public sealed class AutoTradingWorker(
             return;
         }
 
+        // Account-level risk gate: daily loss / consecutive losses pause trading; the exposure
+        // cap only trims the quantity. The signal itself is never re-judged here — confidence
+        // above the threshold already decided that the position opens.
+        var verdict = await riskGate.EvaluateAsync(
+            Symbol, decision.PositionSizeQuantity, decision.EntryPrice, decision.Leverage, cancellationToken);
+        if (!verdict.Allowed)
+        {
+            logger.LogWarning("Auto-trade blocked by risk gate: {Reason}", verdict.Reason);
+            return;
+        }
+        var quantity = verdict.AdjustedQuantity ?? decision.PositionSizeQuantity;
+        if (verdict.AdjustedQuantity is not null)
+            logger.LogInformation("Risk gate resized order: {Reason}", verdict.Reason);
+
         var side = decision.Action is DecisionAction.WeakBuy or DecisionAction.Buy or DecisionAction.StrongBuy
             ? TradeSide.Long
             : TradeSide.Short;
@@ -83,7 +107,7 @@ public sealed class AutoTradingWorker(
             Symbol,
             side,
             OrderKind.Market,
-            decision.PositionSizeQuantity,
+            quantity,
             Price: null,
             StopPrice: null,
             TakeProfit: decision.TakeProfit,
@@ -97,7 +121,7 @@ public sealed class AutoTradingWorker(
         {
             var result = await executor.PlaceAsync(order, cancellationToken);
             logger.LogInformation("Auto-trade placed: {Side} {Qty} {Symbol} order {OrderId} (paper={Paper}) {Message}",
-                side, decision.PositionSizeQuantity, Symbol, result.OrderId, result.IsPaper, result.Message);
+                side, quantity, Symbol, result.OrderId, result.IsPaper, result.Message);
         }
         catch (InvalidOperationException ex)
         {
@@ -105,17 +129,97 @@ public sealed class AutoTradingWorker(
         }
     }
 
-    private async Task<bool> HasOpenPositionAsync(CancellationToken cancellationToken)
+    private async Task<(bool StateKnown, FuturesPositionInfo? Position)> GetOpenPositionAsync(CancellationToken cancellationToken)
     {
         try
         {
             var positions = await accountClient.GetPositionsAsync(Symbol, cancellationToken);
-            return positions.Any(p => Math.Abs(p.PositionAmount) > 0);
+            return (true, positions.FirstOrDefault(p => Math.Abs(p.PositionAmount) > 0));
         }
-        catch
+        catch (Exception ex)
         {
             // If we can't confirm position state, err on the safe side and skip trading.
-            return true;
+            logger.LogWarning(ex, "Position state unavailable; skipping this auto-trading tick");
+            return (false, null);
         }
+    }
+
+    private async Task RevalidateOpenPositionAsync(
+        RuntimeTradingSettings settings,
+        FuturesPositionInfo position,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var openSide = position.PositionAmount > 0 ? TradeSide.Long : TradeSide.Short;
+        var quantity = Math.Abs(position.PositionAmount);
+
+        if (_lastOpenPositionSide != openSide || _nextOpenPositionRevalidationAt == DateTimeOffset.MinValue)
+        {
+            _lastOpenPositionSide = openSide;
+            _openPositionWarningCount = 0;
+            _nextOpenPositionRevalidationAt = now.Add(OpenPositionRevalidationInterval);
+            logger.LogInformation(
+                "Position open ({Side} {Qty} {Symbol}); entry analysis paused, first rule-based revalidation at {NextCheck:u}",
+                openSide, quantity, Symbol, _nextOpenPositionRevalidationAt);
+            return;
+        }
+
+        if (now < _nextOpenPositionRevalidationAt)
+        {
+            logger.LogDebug(
+                "Analysis paused: position open ({Side} {Qty} {Symbol}); next rule-based revalidation at {NextCheck:u}",
+                openSide, quantity, Symbol, _nextOpenPositionRevalidationAt);
+            return;
+        }
+
+        _nextOpenPositionRevalidationAt = now.Add(OpenPositionRevalidationInterval);
+
+        var decision = await aiDecisionService.AnalyzeRuleBasedAsync(Symbol, cancellationToken);
+        var verdict = OpenPositionRevalidationPolicy.Evaluate(
+            openSide,
+            decision,
+            settings.ConfidenceThreshold,
+            _openPositionWarningCount);
+        _openPositionWarningCount = verdict.WarningCount;
+
+        logger.LogInformation(
+            "Open-position revalidation: position={Side} oppositeConf={OppositeConfidence:F0} action={Action} reason={Reason}",
+            openSide, verdict.OppositeConfidence, verdict.Action, verdict.Reason);
+
+        if (verdict.Action != OpenPositionRevalidationAction.Close)
+            return;
+
+        if (!settings.AutoTradingEnabled)
+        {
+            logger.LogWarning("Open-position close signal ignored because auto trading is disabled: {Reason}", verdict.Reason);
+            return;
+        }
+
+        using var scope = scopeFactory.CreateScope();
+        var executor = scope.ServiceProvider.GetRequiredService<ITradingExecutor>();
+        var closeReason =
+            $"Auto close: rule-based revalidation invalidated {openSide} position ({verdict.Reason})";
+
+        try
+        {
+            var result = await executor.ClosePositionAsync(
+                new ClosePositionRequest(Symbol, openSide, quantity, closeReason),
+                cancellationToken);
+            ResetOpenPositionRevalidationState();
+            logger.LogWarning(
+                "Auto-closed open position: {Side} {Qty} {Symbol} order {OrderId} (paper={Paper}) {Message}",
+                openSide, quantity, Symbol, result.OrderId, result.IsPaper, result.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            logger.LogWarning(ex, "Auto-close rejected after open-position revalidation");
+        }
+    }
+
+    private void ResetOpenPositionRevalidationState()
+    {
+        _nextOpenPositionRevalidationAt = DateTimeOffset.MinValue;
+        _openPositionWarningCount = 0;
+        _lastOpenPositionSide = null;
     }
 }

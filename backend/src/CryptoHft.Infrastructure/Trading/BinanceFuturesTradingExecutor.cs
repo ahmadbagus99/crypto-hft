@@ -11,6 +11,7 @@ using CryptoHft.Domain.Entities;
 using CryptoHft.Domain.Enums;
 using CryptoHft.Infrastructure.Binance;
 using CryptoHft.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -65,10 +66,10 @@ public sealed class BinanceFuturesTradingExecutor(
         return result with { Message = AppendMessage(result.Message, protectiveMessage) };
     }
 
-    public Task<TradeOrderResult> ClosePositionAsync(ClosePositionRequest request, CancellationToken cancellationToken)
+    public async Task<TradeOrderResult> ClosePositionAsync(ClosePositionRequest request, CancellationToken cancellationToken)
     {
         var closeSide = request.Side == TradeSide.Long ? TradeSide.Short : TradeSide.Long;
-        return PlaceAsync(new TradeOrderRequest(
+        var result = await PlaceAsync(new TradeOrderRequest(
             request.Symbol,
             closeSide,
             OrderKind.Market,
@@ -81,6 +82,9 @@ public sealed class BinanceFuturesTradingExecutor(
             ReduceOnly: true,
             TradingMode.Manual,
             request.Reason), cancellationToken);
+
+        var cleanupMessage = await CancelOutstandingProtectiveOrdersAsync(request.Symbol, cancellationToken);
+        return result with { Message = AppendMessage(result.Message, cleanupMessage) };
     }
 
     public async Task<TradeOrderResult> CancelOrderAsync(string symbol, string orderId, CancellationToken cancellationToken)
@@ -324,6 +328,59 @@ public sealed class BinanceFuturesTradingExecutor(
         return messages.Count == 0 ? string.Empty : $"Protective orders submitted: {string.Join(", ", messages)}";
     }
 
+    private async Task<string> CancelOutstandingProtectiveOrdersAsync(string symbol, CancellationToken cancellationToken)
+    {
+        var normalizedSymbol = symbol.ToUpperInvariant();
+        var protectiveOrders = await dbContext.Orders
+            .Where(o => o.Symbol == normalizedSymbol
+                        && o.ReduceOnly
+                        && (o.Kind == OrderKind.TakeProfit || o.Kind == OrderKind.StopMarket)
+                        && o.Status == OrderStatus.New
+                        && o.ExchangeOrderId != null)
+            .OrderByDescending(o => o.CreatedAt)
+            .ToListAsync(cancellationToken);
+
+        if (protectiveOrders.Count == 0)
+            return string.Empty;
+
+        var settings = runtimeSettings.GetRuntimeSettings();
+        var messages = new List<string>();
+        foreach (var order in protectiveOrders)
+        {
+            try
+            {
+                TradeOrderResult result;
+                if (order.IsPaper || settings.PaperTradingOnly || !HasCredentials(settings))
+                {
+                    result = new TradeOrderResult(
+                        symbol,
+                        order.ExchangeOrderId!,
+                        OrderStatus.Cancelled,
+                        order.Quantity,
+                        order.StopPrice,
+                        true,
+                        "Protective order cancelled after position close",
+                        DateTimeOffset.UtcNow);
+                }
+                else
+                {
+                    result = await CancelAlgoOrderAsync(symbol, order.ExchangeOrderId!, cancellationToken);
+                }
+
+                order.Status = OrderStatus.Cancelled;
+                await publisher.PublishOrderAsync(result, cancellationToken);
+                messages.Add($"{order.Kind} {order.ExchangeOrderId} cancelled");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                messages.Add($"{order.Kind} {order.ExchangeOrderId} cancel failed: {ex.Message}");
+            }
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return messages.Count == 0 ? string.Empty : $"Protective cleanup: {string.Join(", ", messages)}";
+    }
+
     // Places a protective SL/TP order. Stop-type orders are rejected by the plain order.place endpoint
     // (-4120) on this account, so they go through the Algo Order API: method "algoOrder.place" with
     // algoType=CONDITIONAL and triggerPrice (NOT stopPrice). triggerPrice is a string so Binance uses
@@ -347,6 +404,29 @@ public sealed class BinanceFuturesTradingExecutor(
         await SaveOrderAsync(request, result, cancellationToken);
         await publisher.PublishOrderAsync(result, cancellationToken);
         return result;
+    }
+
+    private async Task<TradeOrderResult> CancelAlgoOrderAsync(
+        string symbol,
+        string algoId,
+        CancellationToken cancellationToken)
+    {
+        using var document = await InvokeSignedAsync("algoOrder.cancel", new Dictionary<string, object?>
+        {
+            ["symbol"] = symbol.ToUpperInvariant(),
+            ["algoId"] = algoId
+        }, cancellationToken);
+
+        var result = document.RootElement.GetProperty("result");
+        return new TradeOrderResult(
+            Symbol: result.TryGetProperty("symbol", out var resultSymbol) ? resultSymbol.GetString() ?? symbol : symbol,
+            OrderId: result.TryGetProperty("algoId", out var resultAlgoId) ? FormatJsonValue(resultAlgoId) : algoId,
+            Status: result.TryGetProperty("algoStatus", out var status) ? ParseStatus(status.GetString()) : OrderStatus.Cancelled,
+            Quantity: 0m,
+            Price: TryParseNullableDecimal(result, "triggerPrice"),
+            IsPaper: false,
+            Message: "Protective algo order cancelled after position close",
+            Time: DateTimeOffset.UtcNow);
     }
 
     private static TradeOrderResult ParseAlgoOrderResult(TradeOrderRequest request, JsonElement result)

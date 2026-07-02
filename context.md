@@ -1,10 +1,13 @@
 # Context — Penggunaan & Biaya API (Anthropic + LunarCrush)
 
-> Update terakhir: scoring engine 10-kategori (institusional), confidence
-> BUY/SELL/HOLD simetris, gate berbasis conviction, + sumber data gratis baru
-> (macro Yahoo Finance, on-chain mempool.space). Lihat Bagian 6.
-> Sebelumnya: model dropdown, confidence configurable, persistence settings ke DB,
-> usage tracking, LunarCrush, decision caching.
+> Update terakhir (2026-07-02): eksekusi auto-trade dirombak — confidence jadi
+> SATU-SATUNYA gate buka order, Claude advisory murni (tak bisa veto) & selalu
+> menentukan size/leverage/SL-TP, affordable-leverage untuk akun kecil, analisa
+> di-PAUSE selama posisi terbuka (hemat Claude), dan SL/TP dipasang lewat Binance
+> **Algo Order API**. Lihat Bagian 7.
+> Sebelumnya: scoring engine 10-kategori simetris (Bagian 6), model dropdown,
+> confidence configurable, persistence settings ke DB, usage tracking, LunarCrush,
+> decision caching.
 
 ## 1. Anthropic API key dipakai untuk apa saja?
 
@@ -24,9 +27,12 @@ File: `backend/src/CryptoHft.Infrastructure/Ai/ClaudeDecisionValidator.cs`
   funding rate, open interest, long/short ratio, orderbook imbalance, Fear & Greed,
   headline berita. Kategori tanpa data (saat provider gagal) ditandai netral, Claude
   diminta tidak mengarang nilainya.
-- Claude balas JSON: `{confirmed, adjusted_confidence, narrative, risks}`.
-- Hasil dipakai: CONFIRM/VETO (veto → `shouldTrade=false`), blend confidence
-  (rata-rata rule-based + Claude), narasi + risiko tampil di panel AI Decision.
+- Claude balas JSON: `{confirmed, adjusted_confidence, size_multiplier, leverage,
+  stop_loss, take_profit, narrative, risks}`.
+- **Claude TIDAK bisa veto** (sejak 2026-07-01/02). `confirmed` cuma label backdrop
+  (bersih vs ragu). Sizing SELALU dari Claude (size_multiplier/leverage/SL-TP,
+  dalam hard cap), lepas dari confirmed — lihat Bagian 7. Narasi + risiko tampil
+  di panel AI Decision. Frontend label: CONFIRMED / "HESITANT — DEFENSIVE SIZING".
 - **Model bisa dipilih** dari dashboard (Settings → dropdown): Opus / Sonnet / Haiku.
 - **Tiap call dicatat** ke tabel `trading.AiUsage` (token + cost) → tampil di panel
   "Claude API Usage".
@@ -58,6 +64,12 @@ Sejak decision caching, **hanya 1 sumber**: `AutoTradingWorker` (tiap 30 detik).
 dari jumlah dashboard. Analisa jalan di kedua mode (Manual & Auto) — kalau mau Manual
 benar-benar $0 saat idle, tambahkan gate `if (!AutoTradingEnabled) return;` sebelum
 analisa di `AutoTradingWorker`.
+
+**PAUSE saat posisi terbuka (2026-07-02):** `AutoTradingWorker` cek posisi di AWAL tiap
+tick; kalau ADA posisi terbuka → langsung `return` SEBELUM `AnalyzeAsync`, jadi **nol
+panggilan Claude & nol biaya selama memegang posisi** (toh aturan 1-posisi bikin tak
+bisa trade lagi). Analisa lanjut otomatis di tick pertama setelah posisi closed;
+dashboard tetap menampilkan decision terakhir yang membuka trade.
 
 ---
 
@@ -178,5 +190,49 @@ File inti: `backend/src/CryptoHft.Application/DecisionEngine/AdvancedDecisionEng
 - Min Confidence default masih **80** → dgn semantik baru artinya butuh D ≥ 80 (long) /
   D ≤ 20 (short), sangat ketat & jarang tercapai. Spec menyarankan **65**. Belum diubah
   di kode (default `TradingEntities.cs` / `RuntimeTradingSettingsService.cs` = 80) —
-  bisa diturunkan via dashboard atau ubah default.
+  bisa diturunkan via dashboard atau ubah default. (Server live saat ini di-set ~62.)
 - Frontend: `AiDecision` type + panel sudah menampilkan baris BUY/HOLD/SELL confidence.
+
+---
+
+## 7. Eksekusi auto-trade (gate, sizing, leverage, SL/TP) — rombakan 2026-07-02
+
+File: `AiDecisionService.cs`, `AdvancedDecisionEngine.cs`, `AutoTradingWorker.cs`,
+`BinanceFuturesTradingExecutor.cs`.
+
+### Gate buka order (disederhanakan)
+- **Confidence = SATU-SATUNYA hard gate.** `ShouldTrade` di engine hanya blok kalau
+  (a) sinyal netral/Hold, atau (b) conviction < Min Confidence. Cek kualitas lama
+  (RR<2, trend HTF tidak selaras, funding ekstrem, spread lebar) TIDAK lagi memblok —
+  jadi `Cautions` yang dikirim ke Claude supaya dia kecilkan size defensif.
+
+### Claude advisory + sizing (tidak bisa veto)
+- `ApplyValidation`: selama `Used && ShouldTrade`, size/leverage/SL-TP dari Claude
+  SELALU diterapkan (dalam hard cap: size 0.1–1.5× baseline, leverage 1–20x, SL/TP
+  hanya dipakai bila sisi benar & RR ≥ 2.0). `confirmed` cuma label.
+- qty dibulatkan 6 dp (bukan 3) supaya baseline kecil tak jadi 0.
+
+### Affordable leverage (akun kecil)
+- `ResolveAffordableLeverageAsync` di executor: order minimum exchange ≈ 0.001 BTC
+  (~$60 notional). Kalau margin di leverage terpilih tak muat `UsdAvailableBalance`,
+  leverage dinaikkan otomatis sampai margin ≈ `TargetMarginUsdt` (const 3) & muat,
+  clamp ke `MaxAffordableLeverage` (20). Akun besar (margin sudah muat) tak diubah.
+- `BinanceExchangeRuleValidator` menaikkan qty terlalu kecil ke floor exchange.
+
+### Aturan 1 posisi + pause analisa
+- `AutoTradingWorker`: kalau ada posisi terbuka → return di awal tick (tak buka posisi
+  ke-2, dan tak panggil Claude). Lihat Bagian 2.
+
+### SL/TP via Binance Algo Order API (PENTING — quirk akun)
+- Akun futures live ini **menolak stop order di endpoint biasa** (`order.place` /
+  `/fapi/v1/order`) dgn **-4120** ("use Algo Order API"). Hanya MARKET/LIMIT diterima.
+- Solusi: protective SL/TP dipasang lewat WS **`algoOrder.place`**, param
+  **`algoType:"CONDITIONAL"`**, trigger pakai **`triggerPrice`** (BUKAN `stopPrice`),
+  `closePosition:"true"`, `workingType:MARK_PRICE`. Response balikkan `algoId`.
+- **Signing:** semua harga dikirim sebagai STRING (`PriceParam`) — kalau angka JSON,
+  Binance buang trailing-zero tick (`61777.00`→`61777`) saat verifikasi → **-1022**.
+- Order entry (MARKET) tetap lewat `order.place`.
+- Read posisi pakai REST `/fapi/v2/positionRisk`; order-updates pakai REST
+  `/fapi/v1/allOrders` (signing REST men-sign query string persis yang dikirim).
+
+> Detail quirk & langkah debug tersimpan di memory `binance-sltp-quirks`.

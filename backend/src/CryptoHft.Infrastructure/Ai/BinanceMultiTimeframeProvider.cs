@@ -23,16 +23,32 @@ public sealed class BinanceMultiTimeframeProvider(
 
         var tasks = Intervals.Select(async interval =>
         {
-            var url = $"{baseUrl}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit=250";
+            // limit=251 so ~250 candles remain after the still-forming one is dropped.
+            var url = $"{baseUrl}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit=251";
             var body = await client.GetStringAsync(url, cancellationToken);
             using var doc = JsonDocument.Parse(body);
-            var candles = doc.RootElement.EnumerateArray().Select(item => new Candle(
-                DateTimeOffset.FromUnixTimeMilliseconds(item[0].GetInt64()),
-                Parse(item[1]), Parse(item[2]), Parse(item[3]), Parse(item[4]), Parse(item[5]))).ToList();
-            return new TimeframeData(interval, candles);
+            return new TimeframeData(interval, ParseClosedCandles(doc.RootElement, DateTimeOffset.UtcNow));
         });
 
         return await Task.WhenAll(tasks);
+    }
+
+    // Binance klines include the still-forming candle as the last element. Feeding it to the
+    // indicators repaints signals (a liquidity sweep or impulse candle can vanish before close)
+    // and makes live behavior diverge from any closed-candle backtest, so only candles whose
+    // close time (kline field 6) has passed are returned.
+    internal static List<Candle> ParseClosedCandles(JsonElement root, DateTimeOffset nowUtc)
+    {
+        var candles = new List<Candle>();
+        foreach (var item in root.EnumerateArray())
+        {
+            var closeTime = DateTimeOffset.FromUnixTimeMilliseconds(item[6].GetInt64());
+            if (closeTime > nowUtc) continue;
+            candles.Add(new Candle(
+                DateTimeOffset.FromUnixTimeMilliseconds(item[0].GetInt64()),
+                Parse(item[1]), Parse(item[2]), Parse(item[3]), Parse(item[4]), Parse(item[5])));
+        }
+        return candles;
     }
 
     public async Task<decimal> GetLastPriceAsync(string symbol, CancellationToken cancellationToken)

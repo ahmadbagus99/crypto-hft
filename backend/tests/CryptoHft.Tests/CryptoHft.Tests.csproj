@@ -12,5 +12,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\CryptoHft.Application\CryptoHft.Application.csproj" />
+    <ProjectReference Include="..\..\src\CryptoHft.Infrastructure\CryptoHft.Infrastructure.csproj" />
   </ItemGroup>
 </Project>

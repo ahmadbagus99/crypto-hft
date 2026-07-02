@@ -870,7 +870,7 @@ function DashboardPage() {
           </Panel>
 
           <Panel title="Open Position">
-            <OpenPositions positions={displayedPositions} />
+            <OpenPositions positions={displayedPositions} journal={journal} />
           </Panel>
 
           <Panel title="Order Updates">
@@ -1421,7 +1421,7 @@ function BacktestPanel({ result }: { result?: BacktestResult }) {
   );
 }
 
-function OpenPositions({ positions }: { positions: FuturesPositionInfo[] }) {
+function OpenPositions({ positions, journal }: { positions: FuturesPositionInfo[]; journal?: JournalResponse }) {
   const activePositions = positions.filter((position) => Math.abs(Number(position.positionAmount)) > 0);
   const [closingKey, setClosingKey] = useState("");
   const [message, setMessage] = useState("");
@@ -1451,6 +1451,7 @@ function OpenPositions({ positions }: { positions: FuturesPositionInfo[] }) {
       {activePositions.map((position) => {
         const pnl = Number(position.unrealizedProfit);
         const key = `${position.symbol}-${position.positionSide}`;
+        const protective = getActiveProtectiveLevels(position, journal);
         return (
           <div key={key} className="rounded-md border border-slate-800 bg-slate-950 p-3">
             <div className="mb-3 flex items-center justify-between">
@@ -1469,6 +1470,8 @@ function OpenPositions({ positions }: { positions: FuturesPositionInfo[] }) {
               <PositionStat label="Break Even" value={formatNumber(position.breakEvenPrice)} />
               <PositionStat label="Mark" value={formatNumber(position.markPrice)} />
               <PositionStat label="Liq" value={formatNumber(position.liquidationPrice)} />
+              <PositionStat label="Active TP" value={protective.takeProfit ? formatNumber(protective.takeProfit) : "-"} />
+              <PositionStat label="Active SL" value={protective.stopLoss ? formatNumber(protective.stopLoss) : "-"} />
             </div>
             <button
               type="button"
@@ -1484,6 +1487,23 @@ function OpenPositions({ positions }: { positions: FuturesPositionInfo[] }) {
       {message && <div className="rounded-md border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">{message}</div>}
     </div>
   );
+}
+
+function getActiveProtectiveLevels(position: FuturesPositionInfo, journal?: JournalResponse) {
+  const isLong = Number(position.positionAmount) > 0;
+  const closeSide = isLong ? "Short" : "Long";
+  const activeProtectiveOrders = journal?.orders.filter((order) =>
+    order.symbol === position.symbol &&
+    order.reduceOnly &&
+    order.status === "New" &&
+    order.side === closeSide &&
+    (order.kind === "TakeProfit" || order.kind === "StopMarket")
+  ) ?? [];
+
+  const takeProfit = activeProtectiveOrders.find((order) => order.kind === "TakeProfit")?.stopPrice ?? null;
+  const stopLoss = activeProtectiveOrders.find((order) => order.kind === "StopMarket")?.stopPrice ?? null;
+
+  return { takeProfit, stopLoss };
 }
 
 function PositionStat({ label, value }: { label: string; value: string }) {

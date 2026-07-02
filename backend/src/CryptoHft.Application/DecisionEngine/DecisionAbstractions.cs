@@ -41,6 +41,7 @@ public interface ILlmDecisionValidator
 public interface IAiDecisionService
 {
     Task<AdvancedDecision> AnalyzeAsync(string symbol, CancellationToken cancellationToken);
+    Task<AdvancedDecision> AnalyzeRuleBasedAsync(string symbol, CancellationToken cancellationToken);
 }
 
 public sealed record FactorPerformance(string Factor, int Regime, decimal WinRate, int Samples, decimal Multiplier);

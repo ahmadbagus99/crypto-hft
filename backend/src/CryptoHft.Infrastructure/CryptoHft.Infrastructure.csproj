@@ -15,4 +15,7 @@
     <ProjectReference Include="..\CryptoHft.Application\CryptoHft.Application.csproj" />
     <ProjectReference Include="..\CryptoHft.Domain\CryptoHft.Domain.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="CryptoHft.Tests" />
+  </ItemGroup>
 </Project>

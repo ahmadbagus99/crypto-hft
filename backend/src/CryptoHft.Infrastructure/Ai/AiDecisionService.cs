@@ -25,6 +25,16 @@ public sealed class AiDecisionService(
     ILogger<AiDecisionService> logger) : IAiDecisionService
 {
     public async Task<AdvancedDecision> AnalyzeAsync(string symbol, CancellationToken cancellationToken)
+        => await AnalyzeCoreAsync(symbol, useLlm: true, logDecision: true, cancellationToken);
+
+    public async Task<AdvancedDecision> AnalyzeRuleBasedAsync(string symbol, CancellationToken cancellationToken)
+        => await AnalyzeCoreAsync(symbol, useLlm: false, logDecision: false, cancellationToken);
+
+    private async Task<AdvancedDecision> AnalyzeCoreAsync(
+        string symbol,
+        bool useLlm,
+        bool logDecision,
+        CancellationToken cancellationToken)
     {
         symbol = symbol.ToUpperInvariant();
         var settings = settingsService.GetRuntimeSettings();
@@ -58,19 +68,38 @@ public sealed class AiDecisionService(
         var regime = MarketRegimeDetector.Detect(primary.Candles);
         var multipliers = await adaptiveWeights.GetMultipliersAsync(regime, cancellationToken);
 
-        var decision = engine.Evaluate(input, profile, equity, multipliers);
+        var decision = engine.Evaluate(input, profile, equity ?? 0m, multipliers);
+
+        // Live mode with unknown equity: sizing against a guessed balance is dangerous, so the
+        // trade is blocked for this tick (analysis still runs for the dashboard).
+        if (equity is null)
+        {
+            var reason = "Account equity unavailable — sizing blocked (fail-safe)";
+            decision = decision with
+            {
+                ShouldTrade = false,
+                PositionSizeQuantity = 0m,
+                NoTradeReason = decision.NoTradeReason.Length == 0
+                    ? reason
+                    : $"{decision.NoTradeReason}; {reason}"
+            };
+        }
 
         // Hybrid: only call the LLM for actionable signals that could open an order, so the
         // validation gate tracks the same configurable confidence threshold (cost control).
-        if (decision.Confidence >= settings.ConfidenceThreshold && decision.Action != DecisionAction.NoTrade)
+        // Skipped when equity is unknown: nothing will execute, so the call would be wasted spend.
+        if (useLlm && equity is not null && decision.Confidence >= settings.ConfidenceThreshold && decision.Action != DecisionAction.NoTrade)
         {
             var validation = await llmValidator.ValidateAsync(decision, input, cancellationToken);
             decision = ApplyValidation(decision, validation, profile.MinimumRiskReward);
         }
 
         // Log the decision for online evaluation (fire-and-forget against the DB)
-        try { await adaptiveWeights.LogDecisionAsync(decision, cancellationToken); }
-        catch (Exception ex) { logger.LogDebug(ex, "decision logging failed"); }
+        if (logDecision)
+        {
+            try { await adaptiveWeights.LogDecisionAsync(decision, cancellationToken); }
+            catch (Exception ex) { logger.LogDebug(ex, "decision logging failed"); }
+        }
 
         return decision;
     }
@@ -135,18 +164,24 @@ public sealed class AiDecisionService(
         };
     }
 
-    private async Task<decimal> GetEquityAsync(CancellationToken cancellationToken)
+    // Paper mode may run without exchange credentials, so it falls back to a nominal paper
+    // equity. Live mode must never size against a guessed balance: a failed/zero equity read
+    // returns null and the caller blocks the trade for this tick.
+    private const decimal PaperFallbackEquity = 100000m;
+
+    private async Task<decimal?> GetEquityAsync(CancellationToken cancellationToken)
     {
         try
         {
             var wallets = await accountClient.GetWalletBalancesAsync(cancellationToken);
             var equity = wallets.UsdEquity();
-            return equity > 0 ? equity : 100000m;
+            if (equity > 0) return equity;
+            logger.LogWarning("equity read returned {Equity} — treating as unavailable", equity);
         }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "equity fetch failed, using default");
-            return 100000m;
+            logger.LogWarning(ex, "equity fetch failed");
         }
+        return settingsService.GetRuntimeSettings().PaperTradingOnly ? PaperFallbackEquity : null;
     }
 }

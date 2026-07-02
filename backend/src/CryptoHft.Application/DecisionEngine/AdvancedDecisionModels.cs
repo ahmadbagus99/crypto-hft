@@ -40,7 +40,12 @@ public sealed record SentimentSnapshot(
     string SentimentLabel,    // Bullish / Bearish / Neutral
     int FearGreedIndex,       // 0-100
     string FearGreedLabel,
-    IReadOnlyList<string> Headlines);
+    IReadOnlyList<string> Headlines,
+    decimal NewsConfidence = 0m,                   // 0-100: how much the news score can be trusted (volume + agreement)
+    IReadOnlyList<string>? NewsReasons = null)     // top drivers behind the news score (high-impact events first)
+{
+    public IReadOnlyList<string> Reasons => NewsReasons ?? Array.Empty<string>();
+}
 
 // Macro snapshot from key-free sources (equities, DXY, gold). Score is 0-100,
 // > 50 = risk-on / bullish for BTC. Available is false when no source responded.

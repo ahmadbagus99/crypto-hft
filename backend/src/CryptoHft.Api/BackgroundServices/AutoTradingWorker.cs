@@ -16,6 +16,7 @@ public sealed class AutoTradingWorker(
     IRuntimeTradingSettingsService settingsService,
     IFuturesAccountClient accountClient,
     IAutoTradeRiskGate riskGate,
+    IOpenPositionRevalidationStore revalidationStore,
     ILatestDecisionStore decisionStore,
     ILogger<AutoTradingWorker> logger) : BackgroundService
 {
@@ -25,6 +26,7 @@ public sealed class AutoTradingWorker(
     private DateTimeOffset _nextOpenPositionRevalidationAt = DateTimeOffset.MinValue;
     private int _openPositionWarningCount;
     private TradeSide? _lastOpenPositionSide;
+    private decimal? _lastOpenPositionEntryPrice;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -60,6 +62,7 @@ public sealed class AutoTradingWorker(
             return;
         }
         ResetOpenPositionRevalidationState();
+        revalidationStore.Clear(Symbol);
 
         // Run the analysis once per tick and cache it — this is the single place that may call
         // Claude. The dashboard reads the cached result so opening it never triggers extra
@@ -153,11 +156,15 @@ public sealed class AutoTradingWorker(
         var openSide = position.PositionAmount > 0 ? TradeSide.Long : TradeSide.Short;
         var quantity = Math.Abs(position.PositionAmount);
 
-        if (_lastOpenPositionSide != openSide || _nextOpenPositionRevalidationAt == DateTimeOffset.MinValue)
+        if (_lastOpenPositionSide != openSide
+            || _lastOpenPositionEntryPrice != position.EntryPrice
+            || _nextOpenPositionRevalidationAt == DateTimeOffset.MinValue)
         {
             _lastOpenPositionSide = openSide;
+            _lastOpenPositionEntryPrice = position.EntryPrice;
             _openPositionWarningCount = 0;
             _nextOpenPositionRevalidationAt = now.Add(OpenPositionRevalidationInterval);
+            revalidationStore.StartOrUpdatePosition(Symbol, openSide, quantity, position.EntryPrice, _nextOpenPositionRevalidationAt);
             logger.LogInformation(
                 "Position open ({Side} {Qty} {Symbol}); entry analysis paused, first rule-based revalidation at {NextCheck:u}",
                 openSide, quantity, Symbol, _nextOpenPositionRevalidationAt);
@@ -173,6 +180,7 @@ public sealed class AutoTradingWorker(
         }
 
         _nextOpenPositionRevalidationAt = now.Add(OpenPositionRevalidationInterval);
+        revalidationStore.SetNextCheck(Symbol, _nextOpenPositionRevalidationAt);
 
         var decision = await aiDecisionService.AnalyzeRuleBasedAsync(Symbol, cancellationToken);
         var verdict = OpenPositionRevalidationPolicy.Evaluate(
@@ -185,6 +193,18 @@ public sealed class AutoTradingWorker(
         logger.LogInformation(
             "Open-position revalidation: position={Side} oppositeConf={OppositeConfidence:F0} action={Action} reason={Reason}",
             openSide, verdict.OppositeConfidence, verdict.Action, verdict.Reason);
+
+        revalidationStore.Add(new OpenPositionRevalidationRecord(
+            Symbol,
+            openSide,
+            quantity,
+            position.EntryPrice,
+            position.MarkPrice,
+            position.UnrealizedProfit,
+            verdict.OppositeConfidence,
+            verdict.Action,
+            verdict.Reason,
+            now), _nextOpenPositionRevalidationAt);
 
         if (verdict.Action != OpenPositionRevalidationAction.Close)
             return;
@@ -206,6 +226,7 @@ public sealed class AutoTradingWorker(
                 new ClosePositionRequest(Symbol, openSide, quantity, closeReason),
                 cancellationToken);
             ResetOpenPositionRevalidationState();
+            revalidationStore.Clear(Symbol);
             logger.LogWarning(
                 "Auto-closed open position: {Side} {Qty} {Symbol} order {OrderId} (paper={Paper}) {Message}",
                 openSide, quantity, Symbol, result.OrderId, result.IsPaper, result.Message);
@@ -221,5 +242,6 @@ public sealed class AutoTradingWorker(
         _nextOpenPositionRevalidationAt = DateTimeOffset.MinValue;
         _openPositionWarningCount = 0;
         _lastOpenPositionSide = null;
+        _lastOpenPositionEntryPrice = null;
     }
 }

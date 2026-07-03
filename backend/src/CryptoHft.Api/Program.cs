@@ -271,6 +271,14 @@ app.MapGet("/api/account/positions", async (
     }
 });
 
+app.MapGet("/api/account/position-revalidations", (
+    string? symbol,
+    IOpenPositionRevalidationStore revalidationStore) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    return Results.Ok(revalidationStore.Get(symbol));
+});
+
 app.MapGet("/api/account/order-updates", async (
     string? symbol,
     IFuturesAccountClient accountClient,

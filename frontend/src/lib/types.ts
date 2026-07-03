@@ -244,6 +244,29 @@ export type JournalResponse = {
   orders: JournalOrder[];
 };
 
+export type OpenPositionRevalidationRecord = {
+  symbol: string;
+  openSide: number;
+  quantity: number;
+  entryPrice: number;
+  markPrice: number;
+  unrealizedProfit: number;
+  oppositeConfidence: number;
+  action: number;
+  reason: string;
+  checkedAt: string;
+};
+
+export type OpenPositionRevalidationSnapshot = {
+  symbol: string;
+  openSide: number | null;
+  quantity: number;
+  entryPrice: number;
+  openedAt: string | null;
+  nextCheckAt: string | null;
+  records: OpenPositionRevalidationRecord[];
+};
+
 export type PositionRisk = {
   symbol: string;
   positionSide: string;

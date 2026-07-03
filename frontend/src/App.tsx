@@ -16,6 +16,7 @@ import type {
   KlineTick,
   MarginCallEvent,
   MarkPriceTick,
+  OpenPositionRevalidationSnapshot,
   OrderUpdateEvent,
   OrderBookSnapshot,
   Overview,
@@ -110,6 +111,12 @@ async function fetchKillSwitch(): Promise<KillSwitchState> {
 async function fetchJournal(): Promise<JournalResponse> {
   const response = await fetch(`/api/journal/orders?symbol=${symbol}&limit=30`, { cache: "no-store" });
   if (!response.ok) throw new Error("Failed to load trade journal");
+  return response.json();
+}
+
+async function fetchPositionRevalidations(): Promise<OpenPositionRevalidationSnapshot> {
+  const response = await fetch(`/api/account/position-revalidations?symbol=${symbol}`, { cache: "no-store" });
+  if (!response.ok) throw new Error("Failed to load position checks");
   return response.json();
 }
 
@@ -701,6 +708,7 @@ function DashboardPage() {
   const { data: exchangeRules } = useQuery({ queryKey: ["exchange-rules", symbol], queryFn: fetchExchangeRules, refetchInterval: 60 * 60 * 1000, retry: false });
   const { data: killSwitch, refetch: refetchKillSwitch } = useQuery({ queryKey: ["kill-switch"], queryFn: fetchKillSwitch, refetchInterval: 5000, retry: false });
   const { data: journal } = useQuery({ queryKey: ["journal", symbol], queryFn: fetchJournal, refetchInterval: 5000, retry: false });
+  const { data: positionChecks } = useQuery({ queryKey: ["position-revalidations", symbol], queryFn: fetchPositionRevalidations, refetchInterval: 5000, retry: false });
   const { data: riskDetails } = useQuery({ queryKey: ["risk-details", symbol], queryFn: fetchRiskDetails, refetchInterval: 5000, retry: false });
   const { data: backtest } = useQuery({ queryKey: ["backtest", symbol, "1h"], queryFn: fetchBacktest, retry: false });
   const { data: aiDecision } = useQuery({ queryKey: ["ai-decision", symbol], queryFn: fetchAiDecision, refetchInterval: 30000, retry: false });
@@ -858,15 +866,15 @@ function DashboardPage() {
           </Panel>
         </section>
 
-        <section className="grid items-start gap-4 xl:grid-cols-[1.45fr_0.65fr_0.75fr_0.75fr]">
+        <section className="grid items-start gap-4 xl:grid-cols-[1.45fr_0.75fr_0.75fr_0.75fr]">
           <Panel title="Realtime Chart">
             <div className="h-[360px]">
               <CandlestickChart candles={klines} />
             </div>
           </Panel>
 
-          <Panel title="Order Book">
-            <OrderBook snapshot={orderBook} />
+          <Panel title="Position Checks">
+            <PositionRevalidationPanel snapshot={positionChecks} />
           </Panel>
 
           <Panel title="Open Position">
@@ -1504,6 +1512,74 @@ function getActiveProtectiveLevels(position: FuturesPositionInfo, journal?: Jour
   const stopLoss = activeProtectiveOrders.find((order) => order.kind === "StopMarket")?.stopPrice ?? null;
 
   return { takeProfit, stopLoss };
+}
+
+function PositionRevalidationPanel({ snapshot }: { snapshot?: OpenPositionRevalidationSnapshot }) {
+  if (!snapshot || snapshot.openSide === null) {
+    return <EmptyState text="No active position checks." />;
+  }
+
+  const side = snapshot.openSide === 1 ? "LONG" : "SHORT";
+  return (
+    <div className="grid gap-3 text-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className={`font-semibold ${snapshot.openSide === 1 ? "text-emerald-300" : "text-red-300"}`}>{side}</div>
+          <div className="mt-1 text-xs text-slate-500">{formatNumber(snapshot.quantity, 4)} {snapshot.symbol}</div>
+          <div className="text-xs text-slate-500">Entry {formatNumber(snapshot.entryPrice)}</div>
+        </div>
+        <div className="text-right text-xs text-slate-500">
+          <div>Next</div>
+          <div className="font-semibold text-slate-300">
+            {snapshot.nextCheckAt ? new Date(snapshot.nextCheckAt).toLocaleTimeString() : "-"}
+          </div>
+        </div>
+      </div>
+
+      <div className="max-h-[270px] overflow-y-auto">
+        {snapshot.records.map((record) => (
+          <div key={`${record.checkedAt}-${record.action}`} className="border-t border-slate-800 py-3 first:border-t-0 first:pt-0">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className={`text-xs font-semibold ${revalidationActionClass(record.action)}`}>
+                  {revalidationActionLabel(record.action)}
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  {new Date(record.checkedAt).toLocaleTimeString()}
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-sm font-semibold text-slate-100">{formatNumber(record.oppositeConfidence, 0)}</div>
+                <div className="text-[10px] uppercase text-slate-500">Opp Conf</div>
+              </div>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-400">
+              <PositionStat label="Mark" value={formatNumber(record.markPrice)} />
+              <PositionStat label="PnL" value={formatSignedNumber(record.unrealizedProfit)} />
+            </div>
+            <div className="mt-2 text-xs text-slate-500">{record.reason}</div>
+          </div>
+        ))}
+        {!snapshot.records.length && (
+          <div className="rounded-md border border-dashed border-slate-800 p-4 text-center text-xs text-slate-500">
+            First check has not run yet.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function revalidationActionLabel(action: number) {
+  if (action === 3) return "CLOSE";
+  if (action === 2) return "WARNING";
+  return "HOLD";
+}
+
+function revalidationActionClass(action: number) {
+  if (action === 3) return "text-red-300";
+  if (action === 2) return "text-amber-300";
+  return "text-emerald-300";
 }
 
 function PositionStat({ label, value }: { label: string; value: string }) {

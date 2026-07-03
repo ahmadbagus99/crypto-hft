@@ -31,6 +31,7 @@ public static class DependencyInjection
         services.AddSingleton<IMultiFactorDecisionEngine, MultiFactorDecisionEngine>();
         services.AddSingleton<IRiskManager, RiskManager>();
         services.AddSingleton<IAutoTradeRiskGate, BinanceAutoTradeRiskGate>();
+        services.AddSingleton<IOpenPositionRevalidationStore, OpenPositionRevalidationStore>();
 
         // AI decision engine (Phase 1): rule-based scoring + dynamic weighting + hybrid LLM validation
         services.Configure<AiOptions>(configuration.GetSection("Ai"));

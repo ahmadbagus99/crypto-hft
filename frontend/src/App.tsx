@@ -1449,79 +1449,185 @@ function PositionHistoryPanel({
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <PnlBarChart title="Daily PnL" buckets={history.daily} />
-        <PnlBarChart title="Monthly PnL" buckets={history.monthly} />
+        <PnlLineChart title="Daily PnL" buckets={history.daily} />
+        <PnlLineChart title="Monthly PnL" buckets={history.monthly} />
       </div>
 
-      <div className="max-h-[280px] overflow-y-auto">
-        {history.positions.map((position) => {
-          const isLong = position.side === "Long";
-          return (
-            <div key={position.id} className="border-t border-slate-800 py-3 first:border-t-0 first:pt-0">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className={`font-semibold ${isLong ? "text-emerald-300" : "text-red-300"}`}>
-                    {position.side.toUpperCase()} {position.symbol}
-                  </div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    {new Date(position.openedAt).toLocaleString()} → {new Date(position.closedAt).toLocaleString()}
-                  </div>
-                </div>
-                <div className={`text-right font-semibold ${position.realizedPnl >= 0 ? "text-emerald-300" : "text-red-300"}`}>
-                  {formatSignedNumber(position.realizedPnl)}
-                  <div className="text-[10px] font-normal uppercase text-slate-500">{formatPercent(position.roi)} ROI</div>
-                </div>
-              </div>
-
-              <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-slate-400 md:grid-cols-4">
-                <PositionStat label="Margin" value={formatNumber(position.margin)} />
-                <PositionStat label="Leverage" value={`${formatNumber(position.leverage, 0)}x`} />
-                <PositionStat label="Entry" value={formatNumber(position.entryPrice)} />
-                <PositionStat label="Size" value={formatNumber(position.quantity, 4)} />
-                <PositionStat label="TP" value={position.takeProfit ? formatNumber(position.takeProfit) : "-"} />
-                <PositionStat label="SL" value={position.stopLoss ? formatNumber(position.stopLoss) : "-"} />
-              </div>
-            </div>
-          );
-        })}
+      <div className="max-h-[320px] overflow-auto rounded-md border border-slate-800">
+        {history.positions.length > 0 && (
+          <table className="min-w-[1080px] w-full border-collapse text-left text-xs">
+            <thead className="sticky top-0 bg-slate-950 text-slate-500">
+              <tr>
+                <th className="px-3 py-2 font-semibold">Closed</th>
+                <th className="px-3 py-2 font-semibold">Side</th>
+                <th className="px-3 py-2 font-semibold">Size</th>
+                <th className="px-3 py-2 font-semibold">Margin</th>
+                <th className="px-3 py-2 font-semibold">Lev</th>
+                <th className="px-3 py-2 font-semibold">Entry</th>
+                <th className="px-3 py-2 font-semibold">TP</th>
+                <th className="px-3 py-2 font-semibold">SL</th>
+                <th className="px-3 py-2 font-semibold">Close Reason</th>
+                <th className="px-3 py-2 text-right font-semibold">Realized PnL</th>
+                <th className="px-3 py-2 text-right font-semibold">ROI</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.positions.map((position) => {
+                const isLong = position.side === "Long";
+                const isProfit = position.realizedPnl >= 0;
+                return (
+                  <tr key={position.id} className="border-t border-slate-800 text-slate-300">
+                    <td className="px-3 py-3 align-top">
+                      <div className="font-medium text-slate-200">{new Date(position.closedAt).toLocaleString()}</div>
+                      <div className="mt-1 text-[10px] text-slate-600">Open {new Date(position.openedAt).toLocaleString()}</div>
+                    </td>
+                    <td className={`px-3 py-3 align-top font-semibold ${isLong ? "text-emerald-300" : "text-red-300"}`}>
+                      {position.side.toUpperCase()}
+                      <div className="mt-1 text-[10px] font-normal text-slate-600">{position.symbol}</div>
+                    </td>
+                    <td className="px-3 py-3 align-top">{formatNumber(position.quantity, 4)}</td>
+                    <td className="px-3 py-3 align-top">{formatNumber(position.margin)}</td>
+                    <td className="px-3 py-3 align-top">{formatNumber(position.leverage, 0)}x</td>
+                    <td className="px-3 py-3 align-top">{formatNumber(position.entryPrice)}</td>
+                    <td className="px-3 py-3 align-top">{position.takeProfit ? formatNumber(position.takeProfit) : "-"}</td>
+                    <td className="px-3 py-3 align-top">{position.stopLoss ? formatNumber(position.stopLoss) : "-"}</td>
+                    <td className="px-3 py-3 align-top">{closeReasonLabel(position.closeReason)}</td>
+                    <td className={`px-3 py-3 text-right align-top font-semibold ${isProfit ? "text-emerald-300" : "text-red-300"}`}>
+                      {formatSignedNumber(position.realizedPnl)}
+                    </td>
+                    <td className={`px-3 py-3 text-right align-top ${isProfit ? "text-emerald-300" : "text-red-300"}`}>
+                      {formatPercent(position.roi)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
         {!history.positions.length && <EmptyState text="No closed positions recorded yet." />}
       </div>
     </div>
   );
 }
 
-function PnlBarChart({ title, buckets }: { title: string; buckets: PositionHistoryResponse["daily"] }) {
-  const maxAbs = Math.max(1, ...buckets.map((bucket) => Math.abs(bucket.realizedPnl)));
+function PnlLineChart({ title, buckets }: { title: string; buckets: PositionHistoryResponse["daily"] }) {
+  const width = 620;
+  const height = 180;
+  const padding = { top: 16, right: 20, bottom: 34, left: 58 };
+  const values = buckets.map((bucket) => bucket.realizedPnl);
+  const rawMin = Math.min(0, ...values);
+  const rawMax = Math.max(0, ...values);
+  const minValue = rawMin < 0 ? rawMin * 1.15 : 0;
+  const maxValue = rawMax > 0 ? rawMax * 1.15 : 1;
+  const range = maxValue - minValue || 1;
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const xFor = (index: number) =>
+    padding.left + (buckets.length <= 1 ? innerWidth / 2 : (index / (buckets.length - 1)) * innerWidth);
+  const yFor = (value: number) => padding.top + ((maxValue - value) / range) * innerHeight;
+  const points = buckets.map((bucket, index) => ({
+    bucket,
+    x: xFor(index),
+    y: yFor(bucket.realizedPnl)
+  }));
+  const path = points.length === 1
+    ? `M ${(points[0].x - 54).toFixed(2)} ${points[0].y.toFixed(2)} L ${(points[0].x + 54).toFixed(2)} ${points[0].y.toFixed(2)}`
+    : points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
+  const zeroY = yFor(0);
+  const totalPnl = buckets.reduce((sum, bucket) => sum + bucket.realizedPnl, 0);
+  const yTicks = Array.from({ length: 5 }, (_, index) => minValue + (range / 4) * index).reverse();
 
   return (
     <div className="rounded-md border border-slate-800 bg-slate-950 p-3">
       <div className="mb-3 flex items-center justify-between">
         <div className="font-semibold text-slate-200">{title}</div>
-        <div className="text-xs text-slate-500">{buckets.reduce((sum, bucket) => sum + bucket.trades, 0)} trades</div>
+        <div className={`text-xs font-semibold ${totalPnl >= 0 ? "text-emerald-300" : "text-red-300"}`}>
+          {formatSignedNumber(totalPnl)} / {buckets.reduce((sum, bucket) => sum + bucket.trades, 0)} trades
+        </div>
       </div>
-      <div className="flex h-36 items-end gap-2">
-        {buckets.map((bucket) => {
-          const height = Math.max(6, Math.round((Math.abs(bucket.realizedPnl) / maxAbs) * 112));
-          const positive = bucket.realizedPnl >= 0;
-          return (
-            <div key={`${title}-${bucket.periodStart}`} className="flex min-w-0 flex-1 flex-col items-center gap-1">
-              <div
-                title={`${bucket.label}: ${formatSignedNumber(bucket.realizedPnl)} (${bucket.trades} trades)`}
-                className={`w-full rounded-t ${positive ? "bg-emerald-500/70" : "bg-red-500/70"}`}
-                style={{ height }}
-              />
-              <div className="w-full truncate text-center text-[10px] text-slate-600">{bucket.label}</div>
-            </div>
-          );
-        })}
-        {!buckets.length && (
-          <div className="flex h-full w-full items-center justify-center text-xs text-slate-600">
-            No closed positions yet.
-          </div>
-        )}
-      </div>
+      {buckets.length ? (
+        <svg viewBox={`0 0 ${width} ${height}`} className="h-44 w-full overflow-visible">
+          {yTicks.map((tick) => {
+            const y = yFor(tick);
+            return (
+              <g key={`${title}-tick-${tick}`}>
+                <line
+                  x1={padding.left}
+                  y1={y}
+                  x2={width - padding.right}
+                  y2={y}
+                  stroke={Math.abs(tick) < 0.000001 ? "#334155" : "#1e293b"}
+                  strokeDasharray={Math.abs(tick) < 0.000001 ? "4 4" : undefined}
+                />
+                <line x1={padding.left - 10} y1={y} x2={padding.left} y2={y} stroke="#334155" />
+                <text x={padding.left - 16} y={y + 4} textAnchor="end" fill="#64748b" fontSize="11">
+                  {formatSignedNumber(tick, 2)}
+                </text>
+              </g>
+            );
+          })}
+          <line x1={padding.left} y1={padding.top} x2={padding.left} y2={height - padding.bottom} stroke="#475569" strokeWidth="1.5" />
+          <line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="#475569" strokeWidth="1.5" />
+          {points.map((point) => (
+            <line
+              key={`${title}-x-${point.bucket.periodStart}`}
+              x1={point.x}
+              y1={height - padding.bottom}
+              x2={point.x}
+              y2={height - padding.bottom + 8}
+              stroke="#334155"
+            />
+          ))}
+          {path && <path d={path} fill="none" stroke="#ef4444" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />}
+          {points.map((point) => (
+            <g key={`${title}-${point.bucket.periodStart}`}>
+              <circle
+                cx={point.x}
+                cy={point.y}
+                r="6"
+                fill="#ef4444"
+                stroke="#fee2e2"
+                strokeWidth="2"
+              >
+                <title>{`${point.bucket.label}: ${formatSignedNumber(point.bucket.realizedPnl)} (${point.bucket.trades} trades)`}</title>
+              </circle>
+            </g>
+          ))}
+          {points.length > 0 && (
+            <>
+              <text x={padding.left} y={height - 8} fill="#64748b" fontSize="11">
+                {points[0].bucket.label}
+              </text>
+              <text x={width - padding.right} y={height - 8} textAnchor="end" fill="#64748b" fontSize="11">
+                {points[points.length - 1].bucket.label}
+              </text>
+            </>
+          )}
+        </svg>
+      ) : (
+        <div className="flex h-44 items-center justify-center text-xs text-slate-600">
+          No closed positions yet.
+        </div>
+      )}
     </div>
   );
+}
+
+function closeReasonLabel(reason: number | string | null | undefined) {
+  if (reason === null || reason === undefined || reason === "") return "-";
+  if (typeof reason === "string") {
+    const numeric = Number(reason);
+    if (!Number.isNaN(numeric)) return closeReasonLabel(numeric);
+    return reason;
+  }
+  const labels: Record<number, string> = {
+    0: "Unknown",
+    1: "Take Profit",
+    2: "Stop Loss",
+    3: "Auto Close",
+    4: "Manual Close"
+  };
+  return labels[reason] ?? String(reason);
 }
 
 function PositionRiskPanel({ risk }: { risk?: RiskDetailResponse }) {

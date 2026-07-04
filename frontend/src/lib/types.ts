@@ -277,6 +277,7 @@ export type PositionHistoryItem = {
   leverage: number;
   takeProfit: number | null;
   stopLoss: number | null;
+  closeReason?: number | string | null;
   realizedPnl: number;
   roi: number;
   openedAt: string;

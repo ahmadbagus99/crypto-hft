@@ -20,6 +20,7 @@ import type {
   OrderUpdateEvent,
   OrderBookSnapshot,
   Overview,
+  PositionHistoryResponse,
   PriceTick,
   RiskDetailResponse,
   TradeOrderResult,
@@ -30,6 +31,7 @@ import type {
 
 const symbol = "BTCUSDT";
 const APP_PASSWORD = import.meta.env.VITE_APP_PASSWORD || "admin";
+type PositionHistoryPeriod = "week" | "month";
 
 async function fetchTradingSettings(): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", { cache: "no-store" });
@@ -117,6 +119,12 @@ async function fetchJournal(): Promise<JournalResponse> {
 async function fetchPositionRevalidations(): Promise<OpenPositionRevalidationSnapshot> {
   const response = await fetch(`/api/account/position-revalidations?symbol=${symbol}`, { cache: "no-store" });
   if (!response.ok) throw new Error("Failed to load position checks");
+  return response.json();
+}
+
+async function fetchPositionHistory(period: PositionHistoryPeriod): Promise<PositionHistoryResponse> {
+  const response = await fetch(`/api/positions/history?symbol=${symbol}&limit=100&period=${period}`, { cache: "no-store" });
+  if (!response.ok) throw new Error("Failed to load position history");
   return response.json();
 }
 
@@ -699,6 +707,7 @@ function DashboardPage() {
   const [klines, setKlines] = useState<KlineTick[]>([]);
   const [realtimePositions, setRealtimePositions] = useState<FuturesPositionInfo[]>([]);
   const [orderUpdates, setOrderUpdates] = useState<OrderUpdateEvent[]>([]);
+  const [positionHistoryPeriod, setPositionHistoryPeriod] = useState<PositionHistoryPeriod>("week");
   const { data: overview } = useQuery({ queryKey: ["overview"], queryFn: fetchOverview, refetchInterval: 5000 });
   const { data: tradingSettings } = useQuery({ queryKey: ["trading-settings"], queryFn: fetchTradingSettings, refetchInterval: 5000, retry: false });
   const { data: aiUsage } = useQuery({ queryKey: ["ai-usage"], queryFn: fetchAiUsage, refetchInterval: 30000, retry: false });
@@ -709,6 +718,12 @@ function DashboardPage() {
   const { data: killSwitch, refetch: refetchKillSwitch } = useQuery({ queryKey: ["kill-switch"], queryFn: fetchKillSwitch, refetchInterval: 5000, retry: false });
   const { data: journal } = useQuery({ queryKey: ["journal", symbol], queryFn: fetchJournal, refetchInterval: 5000, retry: false });
   const { data: positionChecks } = useQuery({ queryKey: ["position-revalidations", symbol], queryFn: fetchPositionRevalidations, refetchInterval: 5000, retry: false });
+  const { data: positionHistory } = useQuery({
+    queryKey: ["position-history", symbol, positionHistoryPeriod],
+    queryFn: () => fetchPositionHistory(positionHistoryPeriod),
+    refetchInterval: 30000,
+    retry: false
+  });
   const { data: riskDetails } = useQuery({ queryKey: ["risk-details", symbol], queryFn: fetchRiskDetails, refetchInterval: 5000, retry: false });
   const { data: backtest } = useQuery({ queryKey: ["backtest", symbol, "1h"], queryFn: fetchBacktest, retry: false });
   const { data: aiDecision } = useQuery({ queryKey: ["ai-decision", symbol], queryFn: fetchAiDecision, refetchInterval: 30000, retry: false });
@@ -854,7 +869,22 @@ function DashboardPage() {
           <Metric title="Mark Price" value={markPrice?.markPrice ?? price?.price ?? 0} icon={<Activity />} />
           <Metric title="Index Price" value={markPrice?.indexPrice ?? 0} icon={<Activity />} />
           <Metric title="Funding" value={(markPrice?.fundingRate ?? 0) * 100} suffix="%" icon={<Radio />} />
-          <Metric title="Unreal PnL" value={usdtWallet?.crossUnrealizedPnl ?? 0} danger={(usdtWallet?.crossUnrealizedPnl ?? 0) < 0} />
+          <Metric
+            title="Unreal PnL"
+            value={usdtWallet?.crossUnrealizedPnl ?? 0}
+            positive={(usdtWallet?.crossUnrealizedPnl ?? 0) > 0}
+            danger={(usdtWallet?.crossUnrealizedPnl ?? 0) < 0}
+          />
+        </section>
+
+        <section>
+          <Panel title="Position History">
+            <PositionHistoryPanel
+              history={positionHistory}
+              period={positionHistoryPeriod}
+              onPeriodChange={setPositionHistoryPeriod}
+            />
+          </Panel>
         </section>
 
         <section className="grid gap-4 xl:grid-cols-[1.4fr_0.8fr]">
@@ -886,38 +916,46 @@ function DashboardPage() {
           </Panel>
         </section>
 
-        <section className={`grid gap-4 ${isManualMode ? "xl:grid-cols-[0.9fr_0.9fr]" : "xl:grid-cols-[1fr]"}`}>
-          <Panel title="Trade Tape">
-            <TradeTape trades={trades} />
-          </Panel>
-
-          {isManualMode && (
+        {isManualMode && (
+          <section className="grid gap-4 xl:grid-cols-[0.9fr_0.9fr]">
+            <Panel title="Trade Tape">
+              <TradeTape trades={trades} />
+            </Panel>
             <Panel title={tradingSettings?.paperTradingOnly ? "Manual Paper Order" : "Manual Live Order"}>
               <ManualOrder />
             </Panel>
-          )}
-        </section>
+          </section>
+        )}
 
-        <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-          <Panel title="Exchange Rules">
-            <ExchangeRules rules={exchangeRules} />
-          </Panel>
-          <Panel title="Kill Switch">
-            <KillSwitchPanel state={killSwitch} onChanged={refetchKillSwitch} />
-          </Panel>
-        </section>
+        {isManualMode && (
+          <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+            <Panel title="Exchange Rules">
+              <ExchangeRules rules={exchangeRules} />
+            </Panel>
+            <Panel title="Kill Switch">
+              <KillSwitchPanel state={killSwitch} onChanged={refetchKillSwitch} />
+            </Panel>
+          </section>
+        )}
 
-        <section className="grid gap-4 xl:grid-cols-[1fr_1fr_1fr]">
-          <Panel title="Trade Journal">
-            <TradeJournal journal={journal} />
-          </Panel>
-          <Panel title="Position Risk">
-            <PositionRiskPanel risk={riskDetails} />
-          </Panel>
-          <Panel title="Backtest">
-            <BacktestPanel result={backtest} />
-          </Panel>
-        </section>
+        {isManualMode && (
+          <section className="grid gap-4">
+            <Panel title="Position Risk">
+              <PositionRiskPanel risk={riskDetails} />
+            </Panel>
+          </section>
+        )}
+
+        {isManualMode && (
+          <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+            <Panel title="Trade Journal">
+              <TradeJournal journal={journal} />
+            </Panel>
+            <Panel title="Backtest">
+              <BacktestPanel result={backtest} />
+            </Panel>
+          </section>
+        )}
 
     </main>
   );
@@ -1045,14 +1083,30 @@ function mergeOrderUpdates(realtime: OrderUpdateEvent[], snapshot: OrderUpdateEv
     .slice(0, 12);
 }
 
-function Metric({ title, value, suffix = "", icon, danger = false }: { title: string; value: number; suffix?: string; icon?: ReactNode; danger?: boolean }) {
+function Metric({
+  title,
+  value,
+  suffix = "",
+  icon,
+  danger = false,
+  positive = false,
+}: {
+  title: string;
+  value: number;
+  suffix?: string;
+  icon?: ReactNode;
+  danger?: boolean;
+  positive?: boolean;
+}) {
+  const valueClass = danger ? "text-exchangeRed" : positive ? "text-exchangeGreen" : "text-slate-50";
+
   return (
     <div className="rounded-lg border border-slate-800 bg-panel p-4">
       <div className="flex items-center justify-between text-sm text-slate-400">
         <span>{title}</span>
         <span className="text-slate-500">{icon}</span>
       </div>
-      <div className={`mt-3 text-2xl font-semibold ${danger ? "text-exchangeRed" : "text-slate-50"}`}>
+      <div className={`mt-3 text-2xl font-semibold ${valueClass}`}>
         {Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 })}
         {suffix}
       </div>
@@ -1344,6 +1398,127 @@ function TradeJournal({ journal }: { journal?: JournalResponse }) {
           </div>
         ))}
         {!journal.orders.length && <EmptyState text="No journal orders yet." />}
+      </div>
+    </div>
+  );
+}
+
+function PositionHistoryPanel({
+  history,
+  period,
+  onPeriodChange,
+}: {
+  history?: PositionHistoryResponse;
+  period: PositionHistoryPeriod;
+  onPeriodChange: (period: PositionHistoryPeriod) => void;
+}) {
+  if (!history) {
+    return <EmptyState text="Loading position history..." />;
+  }
+
+  return (
+    <div className="grid gap-4 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-xs text-slate-500">
+          {period === "week" ? "Closed positions this week" : "Closed positions this month"}
+        </div>
+        <div className="grid grid-cols-2 rounded-md border border-slate-800 bg-slate-950 p-1">
+          <button
+            type="button"
+            onClick={() => onPeriodChange("week")}
+            className={`rounded px-3 py-1.5 text-xs font-semibold ${period === "week" ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-200"}`}
+          >
+            This Week
+          </button>
+          <button
+            type="button"
+            onClick={() => onPeriodChange("month")}
+            className={`rounded px-3 py-1.5 text-xs font-semibold ${period === "month" ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-200"}`}
+          >
+            This Month
+          </button>
+        </div>
+      </div>
+
+      <div className="grid gap-2 md:grid-cols-5">
+        <PositionStat label="Realized PnL" value={formatSignedNumber(history.summary.totalRealizedPnl)} />
+        <PositionStat label="Trades" value={formatNumber(history.summary.totalTrades, 0)} />
+        <PositionStat label="Win Rate" value={formatPercent(history.summary.winRate)} />
+        <PositionStat label="Best" value={formatSignedNumber(history.summary.bestTrade)} />
+        <PositionStat label="Worst" value={formatSignedNumber(history.summary.worstTrade)} />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <PnlBarChart title="Daily PnL" buckets={history.daily} />
+        <PnlBarChart title="Monthly PnL" buckets={history.monthly} />
+      </div>
+
+      <div className="max-h-[280px] overflow-y-auto">
+        {history.positions.map((position) => {
+          const isLong = position.side === "Long";
+          return (
+            <div key={position.id} className="border-t border-slate-800 py-3 first:border-t-0 first:pt-0">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className={`font-semibold ${isLong ? "text-emerald-300" : "text-red-300"}`}>
+                    {position.side.toUpperCase()} {position.symbol}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    {new Date(position.openedAt).toLocaleString()} → {new Date(position.closedAt).toLocaleString()}
+                  </div>
+                </div>
+                <div className={`text-right font-semibold ${position.realizedPnl >= 0 ? "text-emerald-300" : "text-red-300"}`}>
+                  {formatSignedNumber(position.realizedPnl)}
+                  <div className="text-[10px] font-normal uppercase text-slate-500">{formatPercent(position.roi)} ROI</div>
+                </div>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-slate-400 md:grid-cols-4">
+                <PositionStat label="Margin" value={formatNumber(position.margin)} />
+                <PositionStat label="Leverage" value={`${formatNumber(position.leverage, 0)}x`} />
+                <PositionStat label="Entry" value={formatNumber(position.entryPrice)} />
+                <PositionStat label="Size" value={formatNumber(position.quantity, 4)} />
+                <PositionStat label="TP" value={position.takeProfit ? formatNumber(position.takeProfit) : "-"} />
+                <PositionStat label="SL" value={position.stopLoss ? formatNumber(position.stopLoss) : "-"} />
+              </div>
+            </div>
+          );
+        })}
+        {!history.positions.length && <EmptyState text="No closed positions recorded yet." />}
+      </div>
+    </div>
+  );
+}
+
+function PnlBarChart({ title, buckets }: { title: string; buckets: PositionHistoryResponse["daily"] }) {
+  const maxAbs = Math.max(1, ...buckets.map((bucket) => Math.abs(bucket.realizedPnl)));
+
+  return (
+    <div className="rounded-md border border-slate-800 bg-slate-950 p-3">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="font-semibold text-slate-200">{title}</div>
+        <div className="text-xs text-slate-500">{buckets.reduce((sum, bucket) => sum + bucket.trades, 0)} trades</div>
+      </div>
+      <div className="flex h-36 items-end gap-2">
+        {buckets.map((bucket) => {
+          const height = Math.max(6, Math.round((Math.abs(bucket.realizedPnl) / maxAbs) * 112));
+          const positive = bucket.realizedPnl >= 0;
+          return (
+            <div key={`${title}-${bucket.periodStart}`} className="flex min-w-0 flex-1 flex-col items-center gap-1">
+              <div
+                title={`${bucket.label}: ${formatSignedNumber(bucket.realizedPnl)} (${bucket.trades} trades)`}
+                className={`w-full rounded-t ${positive ? "bg-emerald-500/70" : "bg-red-500/70"}`}
+                style={{ height }}
+              />
+              <div className="w-full truncate text-center text-[10px] text-slate-600">{bucket.label}</div>
+            </div>
+          );
+        })}
+        {!buckets.length && (
+          <div className="flex h-full w-full items-center justify-center text-xs text-slate-600">
+            No closed positions yet.
+          </div>
+        )}
       </div>
     </div>
   );

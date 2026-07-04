@@ -267,6 +267,42 @@ export type OpenPositionRevalidationSnapshot = {
   records: OpenPositionRevalidationRecord[];
 };
 
+export type PositionHistoryItem = {
+  id: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  entryPrice: number;
+  margin: number;
+  leverage: number;
+  takeProfit: number | null;
+  stopLoss: number | null;
+  realizedPnl: number;
+  roi: number;
+  openedAt: string;
+  closedAt: string;
+};
+
+export type PositionPnlBucket = {
+  label: string;
+  periodStart: string;
+  realizedPnl: number;
+  trades: number;
+};
+
+export type PositionHistoryResponse = {
+  summary: {
+    totalRealizedPnl: number;
+    totalTrades: number;
+    winRate: number;
+    bestTrade: number;
+    worstTrade: number;
+  };
+  daily: PositionPnlBucket[];
+  monthly: PositionPnlBucket[];
+  positions: PositionHistoryItem[];
+};
+
 export type PositionRisk = {
   symbol: string;
   positionSide: string;

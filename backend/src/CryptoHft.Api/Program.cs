@@ -462,6 +462,98 @@ app.MapGet("/api/journal/orders", async (
     return Results.Ok(new JournalResponseDto(summary, orders));
 });
 
+app.MapGet("/api/positions/history", async (
+    string? symbol,
+    int? limit,
+    string? period,
+    TradingDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    var take = Math.Clamp(limit ?? 100, 1, 500);
+    var query = db.Positions
+        .AsNoTracking()
+        .Where(position => position.Symbol == symbol && position.ClosedAt != null);
+
+    var now = DateTimeOffset.UtcNow;
+    var normalizedPeriod = string.IsNullOrWhiteSpace(period) ? "week" : period.Trim().ToLowerInvariant();
+    var closedFrom = normalizedPeriod switch
+    {
+        "month" => new DateTimeOffset(now.UtcDateTime.Year, now.UtcDateTime.Month, 1, 0, 0, 0, TimeSpan.Zero),
+        "week" => StartOfUtcWeek(now),
+        _ => (DateTimeOffset?)null
+    };
+    if (closedFrom is not null)
+        query = query.Where(position => position.ClosedAt!.Value >= closedFrom.Value);
+
+    var positions = await query
+        .OrderByDescending(position => position.ClosedAt)
+        .Take(take)
+        .ToListAsync(cancellationToken);
+
+    static decimal Margin(decimal quantity, decimal entryPrice, int leverage)
+        => leverage > 0 ? Math.Abs(quantity) * entryPrice / leverage : 0m;
+
+    static DateTimeOffset StartOfUtcWeek(DateTimeOffset value)
+    {
+        var date = value.UtcDateTime.Date;
+        var daysSinceMonday = ((int)date.DayOfWeek + 6) % 7;
+        return new DateTimeOffset(date.AddDays(-daysSinceMonday), TimeSpan.Zero);
+    }
+
+    var items = positions
+        .Select(position => new PositionHistoryItemDto(
+            position.Id,
+            position.Symbol,
+            position.Side.ToString(),
+            position.Quantity,
+            position.EntryPrice,
+            Margin(position.Quantity, position.EntryPrice, position.Leverage),
+            position.Leverage,
+            position.TakeProfit,
+            position.StopLoss,
+            position.RealizedPnl,
+            position.Roi,
+            position.OpenedAt,
+            position.ClosedAt!.Value))
+        .ToList();
+
+    var summary = new PositionHistorySummaryDto(
+        TotalRealizedPnl: positions.Sum(position => position.RealizedPnl),
+        TotalTrades: positions.Count,
+        WinRate: positions.Count == 0 ? 0m : positions.Count(position => position.RealizedPnl > 0) / (decimal)positions.Count,
+        BestTrade: positions.Count == 0 ? 0m : positions.Max(position => position.RealizedPnl),
+        WorstTrade: positions.Count == 0 ? 0m : positions.Min(position => position.RealizedPnl));
+
+    var daily = positions
+        .GroupBy(position => position.ClosedAt!.Value.UtcDateTime.Date)
+        .OrderBy(group => group.Key)
+        .TakeLast(30)
+        .Select(group => new PositionPnlBucketDto(
+            group.Key.ToString("MMM dd", CultureInfo.InvariantCulture),
+            new DateTimeOffset(group.Key, TimeSpan.Zero),
+            group.Sum(position => position.RealizedPnl),
+            group.Count()))
+        .ToList();
+
+    var monthly = positions
+        .GroupBy(position =>
+        {
+            var closed = position.ClosedAt!.Value.UtcDateTime;
+            return new DateTime(closed.Year, closed.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+        })
+        .OrderBy(group => group.Key)
+        .TakeLast(12)
+        .Select(group => new PositionPnlBucketDto(
+            group.Key.ToString("MMM yyyy", CultureInfo.InvariantCulture),
+            new DateTimeOffset(group.Key, TimeSpan.Zero),
+            group.Sum(position => position.RealizedPnl),
+            group.Count()))
+        .ToList();
+
+    return Results.Ok(new PositionHistoryResponseDto(summary, daily, monthly, items));
+});
+
 app.MapGet("/api/risk/positions", async (
     string? symbol,
     IFuturesAccountClient accountClient,
@@ -730,6 +822,26 @@ using (var scope = app.Services.CreateScope())
             "CreatedAt" timestamptz NOT NULL
         );
         CREATE INDEX IF NOT EXISTS "IX_AiUsage_CreatedAt" ON trading."AiUsage" ("CreatedAt");
+        CREATE TABLE IF NOT EXISTS trading."Positions" (
+            "Id" uuid PRIMARY KEY,
+            "Symbol" text NOT NULL,
+            "Side" integer NOT NULL,
+            "Quantity" numeric NOT NULL,
+            "EntryPrice" numeric NOT NULL,
+            "MarkPrice" numeric NOT NULL,
+            "UnrealizedPnl" numeric NOT NULL,
+            "RealizedPnl" numeric NOT NULL,
+            "Roi" numeric NOT NULL,
+            "Leverage" integer NOT NULL,
+            "StopLoss" numeric NULL,
+            "TakeProfit" numeric NULL,
+            "OpenedAt" timestamptz NOT NULL,
+            "ClosedAt" timestamptz NULL
+        );
+        CREATE INDEX IF NOT EXISTS "IX_Positions_Symbol_OpenedAt"
+            ON trading."Positions" ("Symbol", "OpenedAt");
+        CREATE INDEX IF NOT EXISTS "IX_Positions_Symbol_ClosedAt"
+            ON trading."Positions" ("Symbol", "ClosedAt");
         """);
 
     // Hydrate the in-memory runtime settings (incl. API keys) from the DB so they
@@ -776,6 +888,36 @@ public sealed record JournalOrderDto(
 public sealed record JournalSummaryDto(int TotalOrders, int FilledOrders, int RejectedOrders, int PaperOrders, int ReduceOnlyOrders);
 
 public sealed record JournalResponseDto(JournalSummaryDto Summary, IReadOnlyList<JournalOrderDto> Orders);
+
+public sealed record PositionHistoryItemDto(
+    Guid Id,
+    string Symbol,
+    string Side,
+    decimal Quantity,
+    decimal EntryPrice,
+    decimal Margin,
+    int Leverage,
+    decimal? TakeProfit,
+    decimal? StopLoss,
+    decimal RealizedPnl,
+    decimal Roi,
+    DateTimeOffset OpenedAt,
+    DateTimeOffset ClosedAt);
+
+public sealed record PositionPnlBucketDto(string Label, DateTimeOffset PeriodStart, decimal RealizedPnl, int Trades);
+
+public sealed record PositionHistorySummaryDto(
+    decimal TotalRealizedPnl,
+    int TotalTrades,
+    decimal WinRate,
+    decimal BestTrade,
+    decimal WorstTrade);
+
+public sealed record PositionHistoryResponseDto(
+    PositionHistorySummaryDto Summary,
+    IReadOnlyList<PositionPnlBucketDto> Daily,
+    IReadOnlyList<PositionPnlBucketDto> Monthly,
+    IReadOnlyList<PositionHistoryItemDto> Positions);
 
 public sealed record PositionRiskDto(
     string Symbol,

@@ -17,6 +17,7 @@ public sealed class AutoTradingWorker(
     IFuturesAccountClient accountClient,
     IAutoTradeRiskGate riskGate,
     IOpenPositionRevalidationStore revalidationStore,
+    IPositionHistoryService positionHistoryService,
     ILatestDecisionStore decisionStore,
     ILogger<AutoTradingWorker> logger) : BackgroundService
 {
@@ -52,6 +53,7 @@ public sealed class AutoTradingWorker(
 
         var (positionStateKnown, openPosition) = await GetOpenPositionAsync(cancellationToken);
         if (!positionStateKnown) return;
+        await positionHistoryService.ObserveAsync(Symbol, openPosition, cancellationToken);
 
         // While a position is open, keep entry analysis paused so no new trade can be opened and
         // no Claude tokens are spent. Every 30 minutes, run a rule-based health check only; if the

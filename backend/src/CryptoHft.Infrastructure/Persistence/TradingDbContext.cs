@@ -19,14 +19,18 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
     public DbSet<AuditLog> Logs => Set<AuditLog>();
     public DbSet<AiDecisionLog> AiDecisionLogs => Set<AiDecisionLog>();
     public DbSet<FactorStat> FactorStats => Set<FactorStat>();
+    public DbSet<ExecutionStat> ExecutionStats => Set<ExecutionStat>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasDefaultSchema("trading");
         modelBuilder.Entity<AiDecisionLog>().ToTable("AiDecisionLogs");
         modelBuilder.Entity<AiDecisionLog>().HasIndex(x => new { x.Evaluated, x.CreatedAt });
+        modelBuilder.Entity<AiDecisionLog>().HasIndex(x => x.MatchedPositionId);
         modelBuilder.Entity<FactorStat>().ToTable("FactorStats");
         modelBuilder.Entity<FactorStat>().HasIndex(x => new { x.Regime, x.Factor }).IsUnique();
+        modelBuilder.Entity<ExecutionStat>().ToTable("ExecutionStats");
+        modelBuilder.Entity<ExecutionStat>().HasIndex(x => x.Regime).IsUnique();
         modelBuilder.Entity<User>().HasIndex(x => x.Email).IsUnique();
         modelBuilder.Entity<Order>().HasIndex(x => new { x.Symbol, x.CreatedAt });
         modelBuilder.Entity<Position>().HasIndex(x => new { x.Symbol, x.OpenedAt });

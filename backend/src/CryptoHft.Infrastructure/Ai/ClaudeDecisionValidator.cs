@@ -16,6 +16,7 @@ public sealed class ClaudeDecisionValidator(
     IOptions<AiOptions> options,
     IRuntimeTradingSettingsService settingsService,
     IAiUsageTracker usageTracker,
+    IAdaptiveWeightService adaptiveWeights,
     ILogger<ClaudeDecisionValidator> logger) : ILlmDecisionValidator
 {
     private readonly AiOptions _options = options.Value;
@@ -78,8 +79,14 @@ public sealed class ClaudeDecisionValidator(
 
         try
         {
+            // Give Claude memory: realized results of past trades and of its own past verdicts.
+            // Null until the first trades close, so early behavior is identical (fail-safe).
+            LearningSnapshot? learning = null;
+            try { learning = await adaptiveWeights.GetLearningSnapshotAsync(decision.Regime, cancellationToken); }
+            catch (Exception ex) { logger.LogDebug(ex, "learning snapshot unavailable"); }
+
             var client = new AnthropicClient { ApiKey = apiKey };
-            var payload = BuildPayload(decision, input);
+            var payload = BuildPayload(decision, input, learning);
             var model = ResolveModel();
 
             var response = await client.Messages.Create(new MessageCreateParams
@@ -107,7 +114,7 @@ public sealed class ClaudeDecisionValidator(
         }
     }
 
-    private static string BuildPayload(AdvancedDecision d, AdvancedDecisionInput input)
+    private static string BuildPayload(AdvancedDecision d, AdvancedDecisionInput input, LearningSnapshot? learning)
     {
         var scores = string.Join(", ", d.Scores.Select(kv => $"{kv.Key}={kv.Value:F0}"));
         var headlines = input.Sentiment.Headlines.Count > 0
@@ -138,9 +145,36 @@ public sealed class ClaudeDecisionValidator(
         Social sentiment: {{input.Sentiment.SocialScore:F0}}/100, Fear & Greed: {{input.Sentiment.FearGreedIndex}} ({{input.Sentiment.FearGreedLabel}})
         Recent headlines: {{headlines}}
         Quality cautions (do not block the trade — use them to size defensively): {{cautions}}
-
+        {{BuildLearningBlock(learning)}}
         Run the failure-mode review, then size the trade. Respond with the JSON schema only.
         """;
+    }
+
+    // Realized-history digest: the desk's actual results and Claude's own track record.
+    // Empty string when no realized data exists — the payload is then identical to before.
+    private static string BuildLearningBlock(LearningSnapshot? s)
+    {
+        if (s is null) return "";
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine();
+        sb.AppendLine("REALIZED PERFORMANCE (closed live trades — weigh this evidence in your sizing):");
+        if (s.RegimeTrades > 0)
+        {
+            sb.AppendLine(
+                $"- This regime: {s.RegimeTrades} realized trades, win rate {s.RegimeWinRate:F0}%, " +
+                $"exits {s.TakeProfitHits} take-profit vs {s.StopLossHits} stop-loss");
+        }
+        sb.AppendLine(
+            $"- Learned baselines already applied to this proposal: SL {s.SlAtrMultiplier}xATR, " +
+            $"TP {s.TpAtrMultiplier}xATR, leverage factor {s.LeverageFactor}x");
+        foreach (var v in s.ValidationOutcomes.Where(v => v.Verdict is "confirmed" or "hesitant"))
+        {
+            sb.AppendLine(
+                $"- Your past '{v.Verdict}' calls: {v.Samples} trades, win rate {v.WinRate:F0}%, " +
+                $"avg ROI {v.AvgRoi * 100:F0}% — calibrate your sizing against this record");
+        }
+        return sb.ToString().TrimEnd();
     }
 
     private LlmValidation ParseResponse(string text, AdvancedDecision decision)

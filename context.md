@@ -1,13 +1,16 @@
 # Context — Penggunaan & Biaya API (Anthropic + LunarCrush)
 
-> Update terakhir (2026-07-02): eksekusi auto-trade dirombak — confidence jadi
-> SATU-SATUNYA gate buka order, Claude advisory murni (tak bisa veto) & selalu
-> menentukan size/leverage/SL-TP, affordable-leverage untuk akun kecil, analisa
-> di-PAUSE selama posisi terbuka (hemat Claude), dan SL/TP dipasang lewat Binance
-> **Algo Order API**. Lihat Bagian 7.
-> Sebelumnya: scoring engine 10-kategori simetris (Bagian 6), model dropdown,
-> confidence configurable, persistence settings ke DB, usage tracking, LunarCrush,
-> decision caching.
+> Update terakhir (2026-07-04): **AI Learning dirombak total — semua komponen
+> belajar dari Position History (realized PnL)**, bukan lagi cuma price movement
+> 60 menit: bobot faktor, SL/TP baseline, leverage baseline, dan Claude (diberi
+> "memori" track record via prompt). Verdict Claude dicatat per decision dan bisa
+> diaudit vs hasil nyata. Lihat Bagian 8.
+> Sebelumnya (2026-07-02): confidence jadi SATU-SATUNYA gate buka order, Claude
+> advisory murni (tak bisa veto) & selalu menentukan size/leverage/SL-TP,
+> affordable-leverage untuk akun kecil, analisa di-PAUSE selama posisi terbuka,
+> SL/TP via Binance **Algo Order API** (Bagian 7); scoring engine 10-kategori
+> simetris (Bagian 6), model dropdown, confidence configurable, persistence
+> settings ke DB, usage tracking, LunarCrush, decision caching.
 
 ## 1. Anthropic API key dipakai untuk apa saja?
 
@@ -168,9 +171,9 @@ File inti: `backend/src/CryptoHft.Application/DecisionEngine/AdvancedDecisionEng
    - `Confidence` (field lama) = conviction sisi terpilih (buy bila long, sell bila short).
      → inilah fix bug lama: dulu `confidence` skor bullish mentah, SHORT tak pernah ≥ threshold.
 5. **Decision rule** (`ToAction`, simetris): D ≥ 65 LONG, D ≤ 35 SHORT, 45-55 HOLD.
-6. **Gate buka order** (`shouldTrade` true hanya bila SEMUA lolos): conviction ≥ Min Confidence,
-   R:R ≥ 2.0, trend higher-timeframe selaras, funding tidak ekstrem, spread tidak lebar,
-   (bila lolos) Claude CONFIRM, Auto mode ON, belum ada posisi. Confidence ≠ pemicu tunggal.
+6. **Gate buka order** — SUPERSEDED oleh Bagian 7 (2026-07-02): confidence kini
+   satu-satunya hard gate; cek kualitas lain jadi `Cautions` (advisory), Claude
+   tidak bisa veto.
 
 ### Sumber data gratis baru (tanpa API key)
 - **Macro** — `FreeMacroProvider.cs`, Yahoo Finance chart API (endpoint publik unofficial).
@@ -236,3 +239,122 @@ File: `AiDecisionService.cs`, `AdvancedDecisionEngine.cs`, `AutoTradingWorker.cs
   `/fapi/v1/allOrders` (signing REST men-sign query string persis yang dikirim).
 
 > Detail quirk & langkah debug tersimpan di memory `binance-sltp-quirks`.
+
+---
+
+## 8. AI Learning dari Position History — semua komponen belajar (2026-07-04)
+
+**Tujuan owner:** sistem + AI menjalankan trading mandiri menggantikan manusia,
+optimal tapi tetap risk-managed. Prinsip arsitektur: *sistem menentukan sinyal,
+learning mengkalibrasi parameter dari hasil NYATA, AI menghaluskan eksekusi,
+risk gate menjaga survival.* Tidak ada komponen yang bergantung pada "kepintaran"
+satu model.
+
+File inti: `AdaptiveWeightService.cs`, `AiLearningWorker.cs`, `ExecutionTuningPolicy.cs`,
+`PositionCloseClassifier.cs`, `PositionHistoryService.cs`, `AdvancedDecisionEngine.cs`,
+`ClaudeDecisionValidator.cs`.
+
+### a) Realized-outcome learning (pengganti price-movement 60 menit)
+- Dulu: decision dievaluasi 60 menit kemudian, "win" = harga bergerak searah ≥ 0.3%.
+  Kasar & sering salah (posisi bisa TP di jam ke-3 padahal menit-60 masih merah).
+- Sekarang: saat posisi tertutup masuk Position History, di-MATCH ke decision
+  pembukanya (kolom `AiDecisionLogs.MatchedPositionId`; match = symbol + arah
+  BUY↔LONG/SELL↔SHORT + CreatedAt dalam window 10 menit sebelum OpenedAt).
+- **Win = realizedPnl > 0** (≤ 0 = loss). Update Alpha/Beta faktor **berbobot
+  besaran**: increment = clamp(1 + |ROI|, 1, 3) — profit/loss besar mengajar
+  lebih keras.
+- **Anti double-count:** 1 posisi hanya match 1 decision 1×; decision matched
+  di-set Evaluated sehingga dilewati horizon 60 menit.
+- **Fallback tetap ada:** decision yang tak pernah jadi trade → evaluasi price
+  60-menit lama (bobot 1). Decision yang MEMBUKA order live (ada row Orders
+  entry non-paper ≤ 5 mnt setelahnya) di-DEFER dari fallback s/d closed position
+  muncul (deadline fail-safe 48 jam). Order paper tetap fallback.
+- `AiLearningWorker` (5 menit): pass closed-position dulu (tak butuh price feed),
+  lalu fallback — try/catch terpisah.
+
+### b) Verdict Claude dicatat & diadili data
+- Kolom baru di `AiDecisionLogs`: `LlmConfirmed`, `LlmSizeMultiplier` (proposal
+  mentah), `LlmLeverage`, `LlmStopsApplied` (SL/TP-nya lolos validasi & dipakai).
+  Null bila LLM tidak dipanggil.
+- **`GET /api/ai/validation-performance`** — realized outcome per verdict
+  (confirmed / hesitant / no-validation): samples, winrate, avg ROI, total PnL,
+  avg size multiplier. Menjawab empiris: *apakah keraguan Claude prediktif?*
+  → dasarnya nanti untuk memperbesar/menetralkan pengaruh multiplier Claude.
+
+### c) Exit-reason attribution (fondasi geometry learning)
+- Kolom `Positions.CloseReason`: TakeProfit / StopLoss / AutoClose / ManualClose /
+  Unknown. Klasifikasi KONSERVATIF (`PositionCloseClassifier`, pure & tested):
+  order reduce-only market dari app (±2 mnt sebelum close) → Auto/ManualClose;
+  selain itu mark price terakhir vs level SL/TP (band 0.5%, mark bisa basi ~30s);
+  ambigu → Unknown dan **tidak mengajari** geometri.
+
+### d) SL/TP baseline BELAJAR (dulu konstanta mati 2×/4×ATR)
+- Tabel baru `trading.ExecutionStats` (per regime): TakeProfitHits, StopLossHits,
+  Wins, Losses, SlAtrMultiplier, TpAtrMultiplier, LeverageFactor.
+- `ExecutionTuningPolicy` (pure): TP-hit-rate posterior vs break-even geometri.
+  TP-rate rendah (≤33%) → geometri defensif (SL melebar s/d 2.6×, TP mendekat
+  s/d 3.2×); TP-rate tinggi (≥45%) → agresif (SL 1.8×, TP 5×). Linear di antaranya,
+  deterministik dari counter penuh (no drift), butuh **≥10 exit** sebelum bergerak.
+- **$ risk per trade KONSTAN:** qty = riskBudget / jarakSL, jadi SL melebar ⇒
+  qty otomatis mengecil. Geometry berubah, risiko dolar tidak.
+- Engine (`AdvancedDecisionEngine.Evaluate`) terima param `ExecutionTuning` baru;
+  default mereproduksi 2×/4× lama.
+
+### e) Leverage baseline BELAJAR
+- Tier confidence tetap (≥90→10x, ≥80→5x, else 3x) tapi diskalakan
+  `LeverageFactor` dari winrate realized per regime: winrate 50%→1.0×, klem
+  **0.5–1.2×**, butuh ≥10 trade, cap absolut 20x tetap. Winrate jelek ⇒ leverage
+  otomatis turun — risk management bergradasi berbasis bukti.
+
+### f) Claude diberi MEMORI (via prompt, bukan veto)
+- `LearningSnapshot` di-inject ke payload validator: winrate regime, rasio exit
+  TP vs SL, learned baseline yang sedang dipakai, dan **track record verdict
+  Claude sendiri** ("Your past 'hesitant' calls: 8 trades, 38% win — calibrate
+  your sizing against this record").
+- Null sampai ada data realized → prompt identik dgn sebelumnya (fail-safe;
+  error snapshot juga cuma di-log debug). Biaya +~200 token/call.
+
+### g) Endpoint observability baru
+| Endpoint | Isi |
+|---|---|
+| `/api/ai/validation-performance` | outcome realized per verdict Claude |
+| `/api/ai/execution-tuning` | counter & learned SL/TP/leverage per regime |
+| `/api/ai/performance` | (lama) winrate per faktor — kini berbasis realized |
+
+### Kesimpulan diskusi penting (untuk referensi)
+- **Claude TIDAK pernah mem-block open posisi** — semua learning ini pasca-fakta
+  (baca DB), jalur gate/risk/executor tidak tersentuh. Sejarah: saat Claude punya
+  hak gate, dia veto terus (bias risk-averse struktural LLM) dan momen BTC
+  60k→58k terlewat → hak gate dicabut permanen.
+- **Confidence BISA berubah karena learning** — bukan bonus flat, tapi
+  redistribusi bobot: faktor yang terbukti benar suaranya membesar (klem
+  0.5–1.5×, renormalisasi). Dua arah: sinyal mirip setup profit → confidence
+  naik (bisa lolos threshold), mirip setup loss → turun.
+- **Ganti model (Haiku→Sonnet/Opus) TIDAK menaikkan winrate signifikan** di
+  arsitektur ini: arah & gate = rule engine; Claude hanya sizing/SL-TP. Haiku
+  ($1/$5 per 1M tok) proporsional utk peran sekarang; Sonnet 5 (~3×) layak
+  dites utk kualitas SL/TP; keputusan pakai data validation-performance.
+- **Keamanan learning:** semua nilai learned di-klem + minimum sampel; exit
+  ambigu tidak mengajar; deterministik dari counter (idempotent); tanpa data →
+  default = perilaku lama persis.
+
+### Skema DB (idempotent, tanpa reset)
+- `AiDecisionLogs`: + MatchedPositionId, LlmConfirmed, LlmSizeMultiplier,
+  LlmLeverage, LlmStopsApplied (ALTER TABLE IF NOT EXISTS).
+- `Positions`: + CloseReason (int, default 0).
+- `ExecutionStats`: tabel baru, unique per Regime.
+
+### Testing
+- 60 unit test pass (Docker .NET 9; host Mac tak punya runtime .NET 9).
+  Baru: matching & anti-double-count, defer executed decision, arah BUY↔LONG,
+  weighted ROI + clamp, verdict logging, classifier exit, policy geometry/leverage.
+
+### Roadmap tersisa (butuh data realized terkumpul dulu)
+1. Recency decay FactorStats (belajar tak terjebak masa lalu).
+2. Drawdown-aware sizing (size turun bertahap setelah loss beruntun, bukan
+   langsung pause).
+3. Adaptive confidence threshold per regime.
+4. Trailing stop / break-even move via Algo Order API (TrailingStopPercent
+   sudah dihitung engine, belum dipakai).
+5. Kalibrasi otomatis pengaruh multiplier Claude dari validation-performance
+   (~30+ sampel).

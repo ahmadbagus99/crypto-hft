@@ -29,8 +29,10 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
 
     public AdvancedDecision Evaluate(
         AdvancedDecisionInput input, RiskProfile profile, decimal equity,
-        IReadOnlyDictionary<string, decimal>? weightMultipliers = null)
+        IReadOnlyDictionary<string, decimal>? weightMultipliers = null,
+        ExecutionTuning? tuning = null)
     {
+        var exec = tuning ?? ExecutionTuning.Default;
         var primary = GetTimeframe(input, "1h") ?? input.Timeframes.OrderByDescending(t => t.Candles.Count).First();
         var candles = primary.Candles;
         // SMC runs on the entry timeframe (15m if available) for finer structure
@@ -97,16 +99,18 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         if (atr <= 0) atr = input.LastPrice * 0.003m;
         var entry = input.LastPrice;
 
+        // SL/TP geometry: ATR multipliers learned per regime from realized exits
+        // (ExecutionTuningPolicy); defaults reproduce the original fixed 2x/4x.
         decimal stopLoss, takeProfit;
         if (isSell)
         {
-            stopLoss = entry + atr * 2m;
-            takeProfit = entry - atr * 4m;
+            stopLoss = entry + atr * exec.SlAtrMultiplier;
+            takeProfit = entry - atr * exec.TpAtrMultiplier;
         }
         else
         {
-            stopLoss = entry - atr * 2m;
-            takeProfit = entry + atr * 4m;
+            stopLoss = entry - atr * exec.SlAtrMultiplier;
+            takeProfit = entry + atr * exec.TpAtrMultiplier;
         }
 
         var riskDistance = Math.Abs(entry - stopLoss);
@@ -118,7 +122,10 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         // validator raises the final qty up to the venue minimum before the order is placed.
         var riskBudget = equity * profile.RiskPerTrade;
         var quantity = riskDistance <= 0 ? 0 : Math.Round(riskBudget / riskDistance, 6);
-        var leverage = confidence >= 90 ? 10 : confidence >= 80 ? 5 : 3;
+        // Confidence tier sets the leverage baseline; the learned factor (realized winrate
+        // per regime, clamped 0.5-1.2x) scales it. Hard cap stays at 20x.
+        var baseLeverage = confidence >= 90 ? 10 : confidence >= 80 ? 5 : 3;
+        var leverage = Math.Clamp((int)Math.Round(baseLeverage * exec.LeverageFactor), 1, 20);
 
         // Probability of success: blend of confidence and multi-timeframe trend agreement
         var mtfAgreement = MultiTimeframeAgreement(input, isBuy);

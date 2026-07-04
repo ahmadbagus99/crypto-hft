@@ -55,6 +55,9 @@ public sealed class Position
     public int Leverage { get; set; }
     public decimal? StopLoss { get; set; }
     public decimal? TakeProfit { get; set; }
+    // Why the position closed (TP/SL hit, auto-close, manual). Classified at save time from
+    // the last mark price vs protective levels; feeds the adaptive SL/TP geometry learning.
+    public PositionCloseReason CloseReason { get; set; }
     public DateTimeOffset OpenedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? ClosedAt { get; set; }
 }
@@ -150,7 +153,9 @@ public sealed class NewsSentiment
     public bool IgnoreAsLikelyFake { get; set; }
 }
 
-// One logged AI decision, evaluated later against realized price movement (online learning).
+// One logged AI decision, evaluated later for online learning. Preferred evaluation is the
+// realized outcome of the closed position it opened (MatchedPositionId set); decisions that
+// never became a trade fall back to the 60-minute price-movement horizon.
 public sealed class AiDecisionLog
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -163,8 +168,36 @@ public sealed class AiDecisionLog
     public bool Evaluated { get; set; }
     public bool? Win { get; set; }
     public decimal PriceMovePercent { get; set; }
+    // Set when this decision was evaluated from a real closed position (trading."Positions".Id).
+    // A position id appears on at most one log, so realized outcomes are never double-counted.
+    public Guid? MatchedPositionId { get; set; }
+    // Claude's advisory verdict at decision time (all null when the LLM was not consulted).
+    // Combined with MatchedPositionId + realized PnL this answers empirically whether
+    // hesitancy and defensive sizing actually predict outcomes.
+    public bool? LlmConfirmed { get; set; }          // Claude's clean-vs-conflicted backdrop label
+    public decimal? LlmSizeMultiplier { get; set; }  // raw multiplier Claude proposed (pre-clamp)
+    public int? LlmLeverage { get; set; }            // leverage Claude proposed (null = kept baseline)
+    public bool? LlmStopsApplied { get; set; }       // Claude's SL/TP pair passed validation and was used
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? EvaluatedAt { get; set; }
+}
+
+// Per-regime realized execution outcomes. Drives the learned SL/TP geometry (ATR
+// multipliers) and leverage scaling — see ExecutionTuningPolicy for the math. One row
+// per regime; multipliers are recomputed deterministically from the counters, so the
+// values always reflect the full realized history.
+public sealed class ExecutionStat
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public int Regime { get; set; }
+    public int TakeProfitHits { get; set; }
+    public int StopLossHits { get; set; }
+    public int Wins { get; set; }
+    public int Losses { get; set; }
+    public decimal SlAtrMultiplier { get; set; } = 2m;
+    public decimal TpAtrMultiplier { get; set; } = 4m;
+    public decimal LeverageFactor { get; set; } = 1m;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 // Per-factor, per-regime Bayesian performance (Beta distribution). Weight multiplier

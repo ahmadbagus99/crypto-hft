@@ -4,3 +4,4 @@ node_modules/
 frontend/dist/
 backend/**/bin/
 backend/**/obj/
+backend/.nuget-cache/

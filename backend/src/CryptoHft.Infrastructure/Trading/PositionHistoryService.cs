@@ -73,6 +73,12 @@ public sealed class PositionHistoryService(
                 : 0m;
             var roi = margin > 0 ? realizedPnl / margin : 0m;
 
+            // Why did it close? App-initiated exits leave a reduce-only close order; exchange
+            // SL/TP fills are inferred from the last mark vs the protective levels.
+            var closeOrderReason = await GetRecentCloseOrderReasonAsync(db, tracked, closedAt, cancellationToken);
+            var closeReason = PositionCloseClassifier.Classify(
+                tracked.Side, tracked.MarkPrice, stopLoss, takeProfit, closeOrderReason);
+
             db.Positions.Add(new Position
             {
                 Symbol = tracked.Symbol,
@@ -86,6 +92,7 @@ public sealed class PositionHistoryService(
                 Leverage = tracked.Leverage,
                 StopLoss = stopLoss,
                 TakeProfit = takeProfit,
+                CloseReason = closeReason,
                 OpenedAt = tracked.OpenedAt,
                 ClosedAt = closedAt
             });
@@ -99,6 +106,28 @@ public sealed class PositionHistoryService(
         {
             logger.LogWarning(ex, "position history save failed");
         }
+    }
+
+    // A reduce-only market order shortly before the close means the app (auto-close
+    // revalidation or manual dashboard close) exited the position rather than the exchange.
+    private static async Task<string?> GetRecentCloseOrderReasonAsync(
+        TradingDbContext db,
+        TrackedPosition tracked,
+        DateTimeOffset closedAt,
+        CancellationToken cancellationToken)
+    {
+        var closeSide = tracked.Side == TradeSide.Long ? TradeSide.Short : TradeSide.Long;
+        var order = await db.Orders
+            .AsNoTracking()
+            .Where(o => o.Symbol == tracked.Symbol
+                        && o.ReduceOnly
+                        && o.Side == closeSide
+                        && o.Kind == OrderKind.Market
+                        && o.CreatedAt >= closedAt.AddMinutes(-2)
+                        && o.CreatedAt <= closedAt.AddSeconds(10))
+            .OrderByDescending(o => o.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        return order?.Reason;
     }
 
     private static async Task<(decimal? takeProfit, decimal? stopLoss)> GetLatestProtectiveLevelsAsync(

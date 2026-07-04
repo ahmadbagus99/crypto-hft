@@ -62,13 +62,15 @@ public sealed class AiDecisionService(
             MinimumRiskReward: 2m,
             AutoTradeConfidenceThreshold: settings.ConfidenceThreshold);
 
-        // Adaptive learning: load learned weight multipliers for the current regime
+        // Adaptive learning: load learned weight multipliers + execution baselines
+        // (SL/TP geometry, leverage factor) for the current regime
         var primary = input.Timeframes.FirstOrDefault(t => t.Interval == "1h")
                       ?? input.Timeframes.OrderByDescending(t => t.Candles.Count).First();
         var regime = MarketRegimeDetector.Detect(primary.Candles);
         var multipliers = await adaptiveWeights.GetMultipliersAsync(regime, cancellationToken);
+        var tuning = await adaptiveWeights.GetExecutionTuningAsync(regime, cancellationToken);
 
-        var decision = engine.Evaluate(input, profile, equity ?? 0m, multipliers);
+        var decision = engine.Evaluate(input, profile, equity ?? 0m, multipliers, tuning);
 
         // Live mode with unknown equity: sizing against a guessed balance is dangerous, so the
         // trade is blocked for this tick (analysis still runs for the dashboard).

@@ -43,3 +43,14 @@ public enum DecisionAction
     Buy = 6,
     StrongBuy = 7
 }
+
+// Why a closed position closed — the signal that lets SL/TP geometry learn from real exits.
+// Unknown stays 0 so pre-existing rows and unclassifiable closes never teach the wrong lesson.
+public enum PositionCloseReason
+{
+    Unknown = 0,
+    TakeProfit = 1,
+    StopLoss = 2,
+    AutoClose = 3,   // app-initiated: open-position revalidation flipped against the side
+    ManualClose = 4  // app-initiated: user closed from the dashboard
+}

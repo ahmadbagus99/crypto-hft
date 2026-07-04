@@ -116,11 +116,23 @@ public sealed record AdvancedDecision(
     LlmValidation Llm,
     DateTimeOffset Time);
 
+// Learned execution baselines (per regime). Defaults reproduce the original fixed
+// geometry (2xATR SL, 4xATR TP, confidence-tier leverage untouched); values come from
+// ExecutionTuningPolicy over realized exits in Position History.
+public sealed record ExecutionTuning(
+    decimal SlAtrMultiplier,
+    decimal TpAtrMultiplier,
+    decimal LeverageFactor)
+{
+    public static readonly ExecutionTuning Default = new(2m, 4m, 1m);
+}
+
 public interface IAdvancedDecisionEngine
 {
     AdvancedDecision Evaluate(
         AdvancedDecisionInput input,
         Risk.RiskProfile profile,
         decimal equity,
-        IReadOnlyDictionary<string, decimal>? weightMultipliers = null);
+        IReadOnlyDictionary<string, decimal>? weightMultipliers = null,
+        ExecutionTuning? tuning = null);
 }

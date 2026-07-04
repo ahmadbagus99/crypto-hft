@@ -2,8 +2,10 @@ using CryptoHft.Application.DecisionEngine;
 
 namespace CryptoHft.Api.BackgroundServices;
 
-// Periodically evaluates logged AI decisions against realized price and updates the
-// Bayesian per-factor performance stats that feed the adaptive weighting.
+// Periodically evaluates logged AI decisions and updates the Bayesian per-factor performance
+// stats that feed the adaptive weighting. Realized outcomes from closed positions (Position
+// History) are evaluated first; the price-movement horizon is only a fallback for decisions
+// that never became a trade.
 public sealed class AiLearningWorker(
     IAdaptiveWeightService adaptiveWeights,
     IMultiTimeframeProvider priceProvider,
@@ -19,6 +21,17 @@ public sealed class AiLearningWorker(
 
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
+            // Realized-outcome learning first: needs no market data, so a price-feed hiccup
+            // never blocks it.
+            try
+            {
+                await adaptiveWeights.EvaluateClosedPositionsAsync(stoppingToken);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "AI learning tick failed (closed positions)");
+            }
+
             try
             {
                 var price = await priceProvider.GetLastPriceAsync(Symbol, stoppingToken);
@@ -26,7 +39,7 @@ public sealed class AiLearningWorker(
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "AI learning tick failed");
+                logger.LogError(ex, "AI learning tick failed (price fallback)");
             }
         }
     }

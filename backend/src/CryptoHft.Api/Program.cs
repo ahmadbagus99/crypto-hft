@@ -125,6 +125,20 @@ app.MapGet("/api/ai/performance", async (
     IAdaptiveWeightService adaptive, CancellationToken cancellationToken) =>
     Results.Ok(await adaptive.GetPerformanceAsync(cancellationToken)));
 
+// Realized trade outcomes grouped by Claude's verdict (confirmed / hesitant / no-validation) —
+// answers empirically whether Claude's hesitancy and defensive sizing predict results.
+app.MapGet("/api/ai/validation-performance", async (
+    IAdaptiveWeightService adaptive, CancellationToken cancellationToken) =>
+    Results.Ok(await adaptive.GetValidationPerformanceAsync(cancellationToken)));
+
+// Learned execution baselines per regime (SL/TP ATR multipliers + leverage factor) with the
+// realized exit counters that produced them. Empty until the first realized trades close.
+app.MapGet("/api/ai/execution-tuning", async (
+    TradingDbContext db, CancellationToken cancellationToken) =>
+    Results.Ok(await db.ExecutionStats.AsNoTracking()
+        .OrderBy(s => s.Regime)
+        .ToListAsync(cancellationToken)));
+
 app.MapGet("/api/market/klines", async (
     string symbol,
     string interval,
@@ -783,11 +797,23 @@ using (var scope = app.Services.CreateScope())
             "Evaluated" boolean NOT NULL,
             "Win" boolean NULL,
             "PriceMovePercent" numeric NOT NULL,
+            "MatchedPositionId" uuid NULL,
+            "LlmConfirmed" boolean NULL,
+            "LlmSizeMultiplier" numeric NULL,
+            "LlmLeverage" integer NULL,
+            "LlmStopsApplied" boolean NULL,
             "CreatedAt" timestamptz NOT NULL,
             "EvaluatedAt" timestamptz NULL
         );
         CREATE INDEX IF NOT EXISTS "IX_AiDecisionLogs_Evaluated_CreatedAt"
             ON trading."AiDecisionLogs" ("Evaluated", "CreatedAt");
+        ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "MatchedPositionId" uuid NULL;
+        ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmConfirmed" boolean NULL;
+        ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmSizeMultiplier" numeric NULL;
+        ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmLeverage" integer NULL;
+        ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmStopsApplied" boolean NULL;
+        CREATE INDEX IF NOT EXISTS "IX_AiDecisionLogs_MatchedPositionId"
+            ON trading."AiDecisionLogs" ("MatchedPositionId");
         CREATE TABLE IF NOT EXISTS trading."FactorStats" (
             "Id" uuid PRIMARY KEY,
             "Regime" integer NOT NULL,
@@ -835,13 +861,29 @@ using (var scope = app.Services.CreateScope())
             "Leverage" integer NOT NULL,
             "StopLoss" numeric NULL,
             "TakeProfit" numeric NULL,
+            "CloseReason" integer NOT NULL DEFAULT 0,
             "OpenedAt" timestamptz NOT NULL,
             "ClosedAt" timestamptz NULL
         );
+        ALTER TABLE trading."Positions" ADD COLUMN IF NOT EXISTS "CloseReason" integer NOT NULL DEFAULT 0;
         CREATE INDEX IF NOT EXISTS "IX_Positions_Symbol_OpenedAt"
             ON trading."Positions" ("Symbol", "OpenedAt");
         CREATE INDEX IF NOT EXISTS "IX_Positions_Symbol_ClosedAt"
             ON trading."Positions" ("Symbol", "ClosedAt");
+        CREATE TABLE IF NOT EXISTS trading."ExecutionStats" (
+            "Id" uuid PRIMARY KEY,
+            "Regime" integer NOT NULL,
+            "TakeProfitHits" integer NOT NULL,
+            "StopLossHits" integer NOT NULL,
+            "Wins" integer NOT NULL,
+            "Losses" integer NOT NULL,
+            "SlAtrMultiplier" numeric NOT NULL,
+            "TpAtrMultiplier" numeric NOT NULL,
+            "LeverageFactor" numeric NOT NULL,
+            "UpdatedAt" timestamptz NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_ExecutionStats_Regime"
+            ON trading."ExecutionStats" ("Regime");
         """);
 
     // Hydrate the in-memory runtime settings (incl. API keys) from the DB so they

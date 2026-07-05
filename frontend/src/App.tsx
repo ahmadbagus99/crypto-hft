@@ -1801,6 +1801,7 @@ function PositionRevalidationPanel({ snapshot }: { snapshot?: OpenPositionRevali
   }
 
   const side = snapshot.openSide === 1 ? "LONG" : "SHORT";
+  const recentRecords = snapshot.records.slice(0, 3);
   return (
     <div className="grid gap-3 text-sm">
       <div className="flex items-start justify-between gap-3">
@@ -1818,7 +1819,7 @@ function PositionRevalidationPanel({ snapshot }: { snapshot?: OpenPositionRevali
       </div>
 
       <div className="max-h-[270px] overflow-y-auto">
-        {snapshot.records.map((record) => (
+        {recentRecords.map((record) => (
           <div key={`${record.checkedAt}-${record.action}`} className="border-t border-slate-800 py-3 first:border-t-0 first:pt-0">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -1841,7 +1842,7 @@ function PositionRevalidationPanel({ snapshot }: { snapshot?: OpenPositionRevali
             <div className="mt-2 text-xs text-slate-500">{record.reason}</div>
           </div>
         ))}
-        {!snapshot.records.length && (
+        {!recentRecords.length && (
           <div className="rounded-md border border-dashed border-slate-800 p-4 text-center text-xs text-slate-500">
             First check has not run yet.
           </div>

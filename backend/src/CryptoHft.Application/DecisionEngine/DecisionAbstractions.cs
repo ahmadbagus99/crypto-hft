@@ -6,6 +6,25 @@ public interface IDerivativesDataProvider
     Task<DerivativesSnapshot> GetSnapshotAsync(string symbol, CancellationToken cancellationToken);
 }
 
+// Live economic calendar: returns the caution label of the scheduled high-impact event
+// window currently active (FOMC/CPI/NFP style prints), or null on a quiet tape. The
+// implementation fetches a public feed with a cache and falls back to the static
+// EconomicEventCalendar list when the feed is unavailable.
+public interface IEconomicCalendarProvider
+{
+    Task<string?> GetActiveEventWindowAsync(CancellationToken cancellationToken);
+}
+
+// Rolling in-memory window of forced liquidations from the exchange's forceOrder stream.
+// Record is fed by the websocket dispatcher; GetWindowNotional is read at analysis time.
+// A cold feed (just restarted / stream down) simply reports zeros — the signal goes
+// neutral, never stale.
+public interface ILiquidationFeed
+{
+    void Record(bool longLiquidated, decimal notionalUsd, DateTimeOffset time);
+    (decimal LongNotional, decimal ShortNotional) GetWindowNotional(TimeSpan window);
+}
+
 // Pulls free news + Fear & Greed sentiment.
 public interface ISentimentProvider
 {
@@ -44,7 +63,19 @@ public interface IAiDecisionService
     Task<AdvancedDecision> AnalyzeRuleBasedAsync(string symbol, CancellationToken cancellationToken);
 }
 
-public sealed record FactorPerformance(string Factor, int Regime, decimal WinRate, int Samples, decimal Multiplier);
+public sealed record FactorPerformance(
+    string Factor, int Regime, decimal WinRate, int Samples, decimal Multiplier, bool Inverted = false);
+
+// Realized winrate per confidence band (5-wide buckets), from decisions matched to closed
+// positions. This is the calibration curve: it answers whether "confidence 70" actually
+// wins ~70% — the empirical basis for tuning the threshold per regime later.
+public sealed record CalibrationBucket(
+    int BucketFloor,
+    int Samples,
+    int Wins,
+    decimal WinRate,
+    decimal AvgRoi,
+    decimal TotalRealizedPnl);
 
 // Realized-trade outcomes sliced by Claude's advisory verdict at decision time
 // ("confirmed" / "hesitant" / "no-validation"). Only decisions matched to a closed
@@ -76,7 +107,10 @@ public sealed record LearningSnapshot(
 // engine applies to regime weights.
 public interface IAdaptiveWeightService
 {
-    Task<IReadOnlyDictionary<string, decimal>> GetMultipliersAsync(MarketRegime regime, CancellationToken cancellationToken);
+    // Learned per-category adjustments (weight multiplier + inversion flag) for the regime.
+    Task<IReadOnlyDictionary<string, FactorAdjustment>> GetFactorAdjustmentsAsync(MarketRegime regime, CancellationToken cancellationToken);
+    // Realized winrate per confidence bucket — the confidence calibration curve.
+    Task<IReadOnlyList<CalibrationBucket>> GetConfidenceCalibrationAsync(CancellationToken cancellationToken);
     Task LogDecisionAsync(AdvancedDecision decision, CancellationToken cancellationToken);
     // Matches closed positions (Position History) to the decisions that opened them and updates
     // factor stats from realized PnL. Returns the number of positions matched.

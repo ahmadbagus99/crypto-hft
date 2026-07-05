@@ -131,6 +131,13 @@ app.MapGet("/api/ai/validation-performance", async (
     IAdaptiveWeightService adaptive, CancellationToken cancellationToken) =>
     Results.Ok(await adaptive.GetValidationPerformanceAsync(cancellationToken)));
 
+// Confidence calibration curve: realized winrate per 5-point confidence bucket. Answers
+// whether "confidence 70" actually wins ~70% of the time — the empirical basis for tuning
+// the confidence threshold per regime once enough samples accumulate.
+app.MapGet("/api/ai/confidence-calibration", async (
+    IAdaptiveWeightService adaptive, CancellationToken cancellationToken) =>
+    Results.Ok(await adaptive.GetConfidenceCalibrationAsync(cancellationToken)));
+
 // Learned execution baselines per regime (SL/TP ATR multipliers + leverage factor) with the
 // realized exit counters that produced them. Empty until the first realized trades close.
 app.MapGet("/api/ai/execution-tuning", async (

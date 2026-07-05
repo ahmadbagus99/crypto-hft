@@ -44,9 +44,11 @@ public sealed class BinanceMultiTimeframeProvider(
         {
             var closeTime = DateTimeOffset.FromUnixTimeMilliseconds(item[6].GetInt64());
             if (closeTime > nowUtc) continue;
+            // Field 9 = taker buy base-asset volume; feeds cumulative volume delta (CVD).
             candles.Add(new Candle(
                 DateTimeOffset.FromUnixTimeMilliseconds(item[0].GetInt64()),
-                Parse(item[1]), Parse(item[2]), Parse(item[3]), Parse(item[4]), Parse(item[5])));
+                Parse(item[1]), Parse(item[2]), Parse(item[3]), Parse(item[4]), Parse(item[5]),
+                item.GetArrayLength() > 9 ? Parse(item[9]) : 0m));
         }
         return candles;
     }

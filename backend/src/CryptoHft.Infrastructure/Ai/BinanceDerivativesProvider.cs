@@ -7,13 +7,19 @@ using Microsoft.Extensions.Options;
 
 namespace CryptoHft.Infrastructure.Ai;
 
-// Pulls funding rate, open interest, long/short ratio, taker buy/sell volume, and
-// order-book imbalance from Binance Futures public REST endpoints (no API key needed).
+// Pulls funding rate (spot + cumulative 24h), open interest, long/short ratio, taker
+// buy/sell volume, and order-book imbalance from Binance Futures public REST endpoints
+// (no API key needed), plus the rolling liquidation window from the forceOrder stream.
 public sealed class BinanceDerivativesProvider(
     IHttpClientFactory httpClientFactory,
     IOptions<BinanceOptions> options,
+    ILiquidationFeed liquidationFeed,
     ILogger<BinanceDerivativesProvider> logger) : IDerivativesDataProvider
 {
+    // Liquidation cascades resolve in minutes; a 5-minute window captures the burst
+    // without letting an old flush linger into unrelated ticks.
+    private static readonly TimeSpan LiquidationWindow = TimeSpan.FromMinutes(5);
+
     private readonly BinanceOptions _options = options.Value;
 
     public async Task<DerivativesSnapshot> GetSnapshotAsync(string symbol, CancellationToken cancellationToken)
@@ -23,7 +29,7 @@ public sealed class BinanceDerivativesProvider(
         var client = httpClientFactory.CreateClient();
         client.Timeout = TimeSpan.FromSeconds(8);
 
-        decimal funding = 0, oi = 0, oiChange = 0, longShort = 1m, takerRatio = 1m, imbalance = 0, spread = 0;
+        decimal funding = 0, cumFunding = 0, oi = 0, oiChange = 0, longShort = 1m, takerRatio = 1m, imbalance = 0, spread = 0;
 
         try
         {
@@ -32,6 +38,17 @@ public sealed class BinanceDerivativesProvider(
             funding = Parse(pdoc.RootElement.GetProperty("lastFundingRate"));
         }
         catch (Exception ex) { logger.LogDebug(ex, "funding fetch failed"); }
+
+        try
+        {
+            // Last 3 settled funding periods (8h each) ≈ 24h of cumulative funding — separates
+            // a persistently crowded market from a single stretched print.
+            var hist = await client.GetStringAsync($"{baseUrl}/fapi/v1/fundingRate?symbol={symbol}&limit=3", cancellationToken);
+            using var fdoc = JsonDocument.Parse(hist);
+            foreach (var item in fdoc.RootElement.EnumerateArray())
+                cumFunding += Parse(item.GetProperty("fundingRate"));
+        }
+        catch (Exception ex) { logger.LogDebug(ex, "funding history fetch failed"); }
 
         try
         {
@@ -84,7 +101,11 @@ public sealed class BinanceDerivativesProvider(
         }
         catch (Exception ex) { logger.LogDebug(ex, "depth fetch failed"); }
 
-        return new DerivativesSnapshot(funding, oi, oiChange, longShort, takerRatio, imbalance, spread);
+        var (longLiq, shortLiq) = liquidationFeed.GetWindowNotional(LiquidationWindow);
+
+        return new DerivativesSnapshot(
+            funding, oi, oiChange, longShort, takerRatio, imbalance, spread,
+            cumFunding, longLiq, shortLiq);
     }
 
     private static decimal Parse(JsonElement el)

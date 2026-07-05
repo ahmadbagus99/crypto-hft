@@ -1964,7 +1964,8 @@ const ACTION_LABELS: Record<number, string> = {
   1: "STRONG SELL", 2: "SELL", 3: "WEAK SELL", 4: "HOLD", 5: "WEAK BUY", 6: "BUY", 7: "STRONG BUY"
 };
 const REGIME_LABELS: Record<number, string> = {
-  0: "Trending", 1: "Ranging", 2: "High Volatility", 3: "Low Volatility"
+  0: "Trending", 1: "Ranging", 2: "High Volatility", 3: "Low Volatility",
+  4: "Trending Up", 5: "Trending Down"
 };
 
 function AiDecisionPanel({ decision }: { decision?: AiDecision | null }) {

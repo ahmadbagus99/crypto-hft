@@ -125,6 +125,9 @@ public sealed class ClaudeDecisionValidator(
             ? string.Join(" | ", input.Sentiment.Reasons.Take(5))
             : "none";
         var spreadPct = d.EntryPrice > 0 ? input.Derivatives.BidAskSpread / d.EntryPrice * 100m : 0m;
+        var volumeProfile = d.VolumeProfileNote.Length > 0
+            ? $"\nVolume profile (1h, ~10d): {d.VolumeProfileNote}"
+            : "";
 
         return $$"""
         Symbol: {{d.Symbol}}
@@ -134,12 +137,13 @@ public sealed class ClaudeDecisionValidator(
         Entry: {{d.EntryPrice}}, StopLoss: {{d.StopLoss}}, TakeProfit: {{d.TakeProfit}}, RiskReward: {{d.RiskReward:F2}}
         Baseline size (qty): {{d.PositionSizeQuantity}}, baseline leverage: {{d.Leverage}}x (size_multiplier scales this qty)
         Category scores (0-100, >50 bullish): {{scores}}
-        Funding rate: {{input.Derivatives.FundingRate * 100:F4}}% (per 8h; beyond ±0.05% is stretched, beyond ±0.10% is crowded)
+        Funding rate: {{input.Derivatives.FundingRate * 100:F4}}% (per 8h; beyond ±0.05% is stretched, beyond ±0.10% is crowded), cumulative 24h: {{input.Derivatives.CumulativeFunding24h * 100:F4}}%
         Open interest change: {{input.Derivatives.OpenInterestChangePercent:F2}}%
+        Forced liquidations (last 5 min): longs ${{input.Derivatives.LongLiquidationNotional / 1_000_000m:F2}}M, shorts ${{input.Derivatives.ShortLiquidationNotional / 1_000_000m:F2}}M (one-sided flush = capitulation of that side)
         Long/short ratio: {{input.Derivatives.LongShortRatio:F2}}
         Taker buy/sell ratio: {{input.Derivatives.TakerBuySellRatio:F2}}
         Order book imbalance: {{input.Derivatives.OrderBookImbalance:F3}} (-1 ask-heavy … +1 bid-heavy)
-        Bid/ask spread: {{spreadPct:F4}}% of price
+        Bid/ask spread: {{spreadPct:F4}}% of price{{volumeProfile}}
         News sentiment: {{input.Sentiment.NewsScore:F0}}/100 ({{input.Sentiment.SentimentLabel}}), evidence confidence {{input.Sentiment.NewsConfidence:F0}}/100
         News score drivers: {{newsReasons}}
         Social sentiment: {{input.Sentiment.SocialScore:F0}}/100, Fear & Greed: {{input.Sentiment.FearGreedIndex}} ({{input.Sentiment.FearGreedLabel}})

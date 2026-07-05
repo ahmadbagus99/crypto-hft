@@ -1,6 +1,12 @@
 # Context — Penggunaan & Biaya API (Anthropic + LunarCrush)
 
-> Update terakhir (2026-07-04): **AI Learning dirombak total — semua komponen
+> Update terakhir (2026-07-05): **Akurasi confidence dirombak (Bagian 9)** —
+> volatility/liquidity tak lagi ikut voting arah (jadi condition dampener), OI×harga
+> matrix + CVD + liquidation stream + cumulative funding, regime Trending dipecah
+> Up/Down, learning per-faktor berbasis directional accuracy + recency decay +
+> auto-inversi faktor anti-prediktif, calibration curve `/api/ai/confidence-calibration`,
+> kalender FOMC/CPI sebagai caution, F&G contrarian di ekstrem, RSI divergence.
+> Sebelumnya (2026-07-04): **AI Learning dirombak total — semua komponen
 > belajar dari Position History (realized PnL)**, bukan lagi cuma price movement
 > 60 menit: bobot faktor, SL/TP baseline, leverage baseline, dan Claude (diberi
 > "memori" track record via prompt). Verdict Claude dicatat per decision dan bisa
@@ -358,3 +364,191 @@ File inti: `AdaptiveWeightService.cs`, `AiLearningWorker.cs`, `ExecutionTuningPo
    sudah dihitung engine, belum dipakai).
 5. Kalibrasi otomatis pengaruh multiplier Claude dari validation-performance
    (~30+ sampel).
+
+---
+
+## 9. Akurasi confidence — rombakan rule engine & learning (2026-07-05)
+
+File inti: `AdvancedDecisionEngine.cs`, `AdaptiveLearningPolicy.cs` (baru),
+`AdaptiveWeightService.cs`, `MarketRegimeDetector.cs`, `EconomicEventCalendar.cs` (baru),
+`LiquidationTracker.cs` (baru), `BinanceDerivativesProvider.cs`,
+`BinanceMultiTimeframeProvider.cs`, `BinanceFuturesWebSocketStream.cs`.
+
+### a) Volatility & liquidity tak lagi voting arah (bug struktural lama)
+- Dulu "volatilitas sehat = skor 65" mendorong D bullish padahal bukan sinyal arah.
+- Sekarang keduanya keluar dari bobot directional (bobot dinormalisasi ulang:
+  technical 22%, structure/orderbook 17%, derivatives 16%, onchain/macro 10%,
+  sentiment/news 4%) dan jadi **condition dampener**: ATR ekstrem / tape mati /
+  spread lebar mengkompres conviction dua sisi ke arah 50 (floor 0.65, tak pernah
+  memblok — muncul sebagai Caution). Skor keduanya tetap tampil (display + Claude).
+- Learning juga meng-exclude keduanya (condition gauge tak diadili soal arah).
+
+### b) Sinyal derivatives kontekstual (bukan snapshot terisolasi)
+- **Matriks OI×harga**: OI naik+harga naik = long baru (+12); OI naik+harga turun =
+  short baru (−12); OI turun+harga naik = short covering (−5, rally rapuh); OI turun+
+  harga turun = long capitulation (+5). Harga dari candle 5m terakhir.
+- **Cumulative funding 24h** (3 periode via `/fapi/v1/fundingRate`): crowd persisten
+  ≠ satu print stretched.
+- **Liquidation stream** `btcusdt@forceOrder` (WS publik, dulu di-subscribe tapi
+  dibuang): `LiquidationTracker` singleton rolling 30 menit; window 5 menit masuk
+  snapshot. Flush satu sisi ≥ $1M & ≥75% dominan → contrarian ±10 (long flush =
+  bullish, short squeeze = bearish). Feed dingin = netral, bukan basi.
+- **CVD** dari taker buy volume kline (field 9, sekarang di-parse): net delta 1 jam
+  (12×5m) vs pergerakan harga; divergence (rally di atas net selling = absorption
+  −10; decline di atas net buying = accumulation +10), konfirmasi ±6.
+
+### c) Regime directional + scoring regime-aware
+- `Trending` dipecah **TrendingUp / TrendingDown** (enum di-APPEND, nilai lama tetap
+  valid; ADX≥25 + EMA20 vs EMA50). Bucket learning up-trend tak lagi tercampur
+  down-trend. Data `Trending` lama dibiarkan (orphan, tak dibaca lagi).
+- Bollinger mean-reversion nudge di PriceAction kini **hanya aktif di regime
+  Ranging** — di trending market itu knife-catch yang diam-diam melawan faktor Trend.
+
+### d) Learning per-faktor: directional accuracy + decay + auto-inversi
+- **Semantik baru**: faktor diadili atas ARAH DIA SENDIRI vs arah realized market
+  (dulu: hanya faktor yang "setuju dengan trade" dapat kredit/blame — faktor yang
+  konsisten salah arah tak pernah terukur). Win long / loss short = harga naik, dst.
+- **Recency decay**: excess evidence di atas prior Beta(1,1) half-life 30 hari
+  (roadmap #1 SELESAI). Diterapkan saat update, deterministik.
+- **Auto-inversi**: akurasi < 40% dengan ≥15 sampel → engine melipat skor faktor
+  (100−s) sebelum blend + multiplier pakai akurasi efektif (1−mean). Weight scaling
+  saja tak bisa memperbaiki faktor yang reliably wrong-way (clamp 0.5×).
+  `/api/ai/performance` sekarang expose flag `inverted`.
+- **Dead band fallback**: evaluasi price-move 60-menit hanya mengajar faktor bila
+  |move| ≥ 0.15% (jam datar = noise, bukan bukti).
+- Aturan murni di `AdaptiveLearningPolicy` (unit-tested).
+
+### e) Kalibrasi confidence (fondasi adaptive threshold)
+- **`GET /api/ai/confidence-calibration`**: realized winrate per bucket confidence
+  5-poin (dari decision yang matched ke closed position). Menjawab: apakah
+  "confidence 70" benar menang ~70%? Observability dulu; nanti dasar adaptive
+  threshold per regime (roadmap #3).
+
+### f) Sentiment & event
+- **F&G contrarian di ekstrem**: FGI ≥75 → skor Social di-cap kurva foldback
+  (FGI 90 → cap 45); FGI ≤25 → floor simetris. Greed ekstrem = late positioning.
+- **`EconomicEventCalendar`** (statis, update tahunan dari federalreserve.gov/bls.gov):
+  window ±60 menit sekitar FOMC & CPI 2026 → Caution "scheduled-event volatility
+  window" (tak memblok; Claude yang downsize). ⚠️ Tanggal CPI 2026 best-effort —
+  cross-check jadwal BLS.
+
+### g) Teknikal halus
+- Trend: skor EMA-stack bergradasi (separation EMA20/50 ±8 + slope EMA20 ±8),
+  transisi mulus antar tick.
+- Momentum: slope histogram MACD (±5) + **RSI/price divergence** 2×7 candle (±12).
+- Claude payload: + cumulative funding, + liquidation window.
+- `MarketRegimeDetector.WeightsFor` (dead code) dihapus.
+
+### Testing & kompatibilitas
+- **92 unit test pass** (60 lama tetap hijau tanpa modifikasi + 32 baru) via Docker
+  .NET 9; frontend build OK. `InternalsVisibleTo` ditambah di Application.csproj.
+- Tanpa perubahan skema DB. Enum regime di-append (int lama valid). Semua field
+  snapshot baru ber-default 0 → provider gagal = netral, fail-safe seperti biasa.
+
+---
+
+## 10. Kalender ekonomi live + Multi-Timeframe Consensus (2026-07-05, batch 2)
+
+### a) Kalender ekonomi otomatis (tidak lagi hardcode-only)
+File: `ForexFactoryCalendarProvider.cs` (baru), `EconomicEventCalendar.cs`,
+`AiDecisionService.cs`.
+- Sumber: **feed publik mingguan Forex Factory** (`nfs.faireconomy.media/
+  ff_calendar_thisweek.json`, gratis tanpa key — konsisten filosofi key-free).
+- Filter: impact **High** + currency **USD** saja. Refresh tiap 6 jam, di-cache.
+- **Fail-safe berlapis**: feed sehat (<24 jam) → feed otoritatif (termasuk minggu
+  kosong); feed dingin/gagal → fallback daftar statis FOMC/CPI 2026 (Bagian 9).
+  Caution tidak pernah hilang diam-diam karena fetch gagal.
+- Engine kini **bebas clock**: window aktif dihitung provider, masuk lewat field
+  baru `AdvancedDecisionInput.ActiveEventWindow` (null = tape sepi), engine tinggal
+  menaruhnya di Cautions. Fetch paralel dengan provider lain di `AiDecisionService`.
+
+### b) Multi-Timeframe Consensus (voting per timeframe)
+File: `AdvancedDecisionEngine.cs`.
+- Dulu: Trend & Momentum dinilai **hanya di 1h**, PriceAction hanya 1h; keselarasan
+  lintas TF cuma cek EMA20>EMA50 → satu TF noise bisa membalik sinyal.
+- Sekarang tiap TF memberi **vote trend/momentum/structure** dengan bobot:
+  **5m 10%, 15m 20%, 1h 30%, 4h 25%, 1d 15%** (TF pendek = timing, TF panjang =
+  bias; TF hilang/kurang candle otomatis drop + renormalisasi):
+  - `Trend` = konsensus berbobot EMA-stack graded per TF.
+  - `Momentum` = konsensus RSI+MACD+hist-slope+divergence per TF.
+  - `PriceAction` = konsensus market structure (HH/HL) per TF + Bollinger MR
+    (tetap hanya regime Ranging, di TF primer).
+  - Volume, SMC (15m), orderbook/CVD, derivatives dll tidak berubah.
+- **Anti double-counting**: konsensus hidup DI DALAM komponen Trend/Momentum/
+  PriceAction (kategori & bobot tidak berubah, key learning stabil);
+  `MultiTimeframeAgreement` (utk probability & caution) kini dihitung dari vote
+  trend yang sama (share berbobot TF yang searah action).
+- **Explainability**: vote per-TF tampil di Reasons
+  (`MTF trend votes [5m 62 · 15m 58 · 1h 71 · 4h 66 · 1d 54]`) dan caution
+  "Higher timeframe trend not aligned" sekarang menyertakan detail vote — Claude
+  ikut melihat TF mana yang tidak setuju.
+
+### Testing
+- **100 unit test pass** (92 sebelumnya + 8 baru: parser feed FF (filter High/USD,
+  konversi timezone), window logic feed, caution passthrough, dominasi higher-TF
+  atas noise lower-TF dua arah, single-TF renormalisasi, exclude TF pendek).
+
+---
+
+## 11. SMC diperdalam — BOS/CHoCH, mitigasi OB, premium/discount (2026-07-05, batch 3)
+
+File: `SmartMoneyConcepts.cs` (kategori `structure`, TF entry 15m).
+
+- **Swing fractal** (`DetectSwings`, wing=2): high/low yang strictly melampaui 2
+  tetangga di tiap sisi. Konsekuensi desain: swing butuh 2 candle konfirmasi —
+  2 candle terakhir tak pernah jadi swing, pas untuk deteksi break (candle breakout
+  belum punya swing sendiri).
+- **BOS (Break of Structure)**: trend dari urutan swing (HH+HL = up, LH+LL = down);
+  close menembus ekstrem swing SEARAH trend = continuation (±10).
+- **CHoCH (Change of Character)**: close menembus swing pelindung MELAWAN trend
+  (uptrend kehilangan higher-low / downtrend merebut lower-high) = peringatan
+  reversal, bobot terbesar (±14).
+- **Mitigasi Order Block**: OB yang harganya sudah kembali disentuh = hangus
+  (resting orders terkonsumsi), tidak dihitung. Plus filter relevansi: zona harus
+  di sisi pendukung harga dan dalam jangkauan ≤5×ATR. Window scan diperlebar
+  10→30 candle karena freshness kini dijaga mitigasi, bukan umur.
+- **Premium/discount**: posisi close dalam dealing range 60-candle; ≤0.4 discount
+  (+6 bias long), ≥0.6 premium (−6). Summary selalu menyebut zona.
+- Bobot skor di-rebalance (OB 12→10, FVG 10→8, sweep 15→12) memberi ruang sinyal
+  struktur; sweep & FVG detection tidak berubah.
+- `SmcSignals` diperluas (field BOS/CHoCH/RangePosition) — hanya dikonstruksi
+  internal; engine tetap baca Score+Summary saja.
+
+### Testing
+- **112 unit test pass** (12 baru: swing fractal, BOS, CHoCH dua arah, tanpa-break,
+  OB fresh vs mitigated vs out-of-reach, discount/premium/equilibrium, smoke Detect).
+- Catatan test: candle sintetis butuh wick asimetris (sisi close 0.5, sisi open 0.2)
+  karena open candle berikut = close sebelumnya → wick simetris bikin high kembar
+  dan fractal strict tak pernah match.
+
+---
+
+## 12. Volume Profile untuk geometri TP/SL (2026-07-05, batch 4)
+
+File: `VolumeProfile.cs` (baru), `AdvancedDecisionEngine.cs`,
+`ClaudeDecisionValidator.cs`.
+
+- Scope sengaja sempit: **Volume Profile bukan sinyal arah** dan tidak masuk voting
+  confidence. Ia hanya memberi konteks level serta merapikan geometri TP/SL sebelum
+  sizing dihitung.
+- Profile dibuat dari OHLCV 1h window ±10 hari (maks 250 candle), volume candle
+  dibagi rata ke histogram range candle. Output: **POC, VAH, VAL, HVN, LVN**.
+- **TP snap:** jika TP melewati HVN wall pertama, target ditarik ke depan wall
+  dengan buffer 0.25×ATR. Guardrail: snap hanya dilakukan jika reward tersisa
+  minimal 60%; kalau wall terlalu dekat, TP tidak diubah dan hanya jadi caution
+  "target likely optimistic".
+- **SL adjustment:** jika SL jatuh di LVN tipis, SL dicoba ditaruh di belakang HVN
+  shelf terdekat. Guardrail: pelebaran risiko maksimal 1.3×; kalau terlalu jauh,
+  SL tidak diubah dan hanya diberi warning sweep risk.
+- Perubahan SL/TP dilakukan **sebelum qty/RR/leverage**, jadi qty otomatis mengecil
+  saat SL melebar (`riskBudget / stopDistance`). Risiko dolar tetap konstan.
+- `VolumeProfileNote` masuk ke `AdvancedDecision.Reasons` dan payload Claude:
+  Claude melihat POC/VA/HVN/LVN + snap yang terjadi, tapi tetap tidak punya hak
+  memblok open posisi.
+- Evaluasi keberhasilan tidak perlu parameter learning baru: ukur lewat
+  `ExecutionStats` yang sudah ada, terutama TP-hit-rate dan close reason.
+
+### Testing
+- **125 unit test pass** via Docker .NET 9. Test baru mencakup POC/value area,
+  HVN/LVN, TP snap + guardrail, SL tuck + cap 1.3×, confluence VAL/VAH, dan wiring
+  engine `VolumeProfileNote`.

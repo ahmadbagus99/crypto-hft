@@ -38,10 +38,12 @@ public static class DependencyInjection
         services.Configure<AiOptions>(configuration.GetSection("Ai"));
         services.AddSingleton<IAdvancedDecisionEngine, AdvancedDecisionEngine>();
         services.AddSingleton<IMultiTimeframeProvider, BinanceMultiTimeframeProvider>();
+        services.AddSingleton<ILiquidationFeed, LiquidationTracker>();
         services.AddSingleton<IDerivativesDataProvider, BinanceDerivativesProvider>();
         services.AddSingleton<ISentimentProvider, FreeSentimentProvider>();
         services.AddSingleton<IMacroDataProvider, FreeMacroProvider>();
         services.AddSingleton<IOnchainDataProvider, FreeOnchainProvider>();
+        services.AddSingleton<IEconomicCalendarProvider, ForexFactoryCalendarProvider>();
         services.AddSingleton<ILlmDecisionValidator, ClaudeDecisionValidator>();
         services.AddSingleton<IAdaptiveWeightService, AdaptiveWeightService>();
         services.AddSingleton<IConnectionTester, ConnectionTester>();

@@ -4,58 +4,71 @@ using CryptoHft.Domain.Enums;
 namespace CryptoHft.Application.DecisionEngine;
 
 // The rule-based brain. Computes 0-100 factor scores across technical, order-flow,
-// derivatives, and sentiment dimensions, applies regime-dependent dynamic weighting,
+// derivatives, and sentiment dimensions, applies learned per-category adjustments,
 // and produces an explainable, risk-managed decision. The LLM layer validates on top.
 public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
 {
-    // Fixed category weights (institutional spec). Sum to 1.0. Adaptive multipliers
-    // adjust these per category; regime no longer selects the weights but still drives
-    // SL/TP/leverage and is reported for context.
+    // Fixed weights for the DIRECTIONAL categories (sum to 1.0). Adaptive multipliers
+    // adjust these per category. Volatility and liquidity are deliberately absent: they
+    // measure trading conditions, not direction, so they no longer vote on long/short —
+    // they act as a conviction dampener instead (see ConditionDampener) and are still
+    // scored for display/LLM context.
     private static readonly IReadOnlyDictionary<string, decimal> CategoryWeights = new Dictionary<string, decimal>
     {
-        ["technical"] = 0.20m,
-        ["structure"] = 0.15m,
-        ["orderbook"] = 0.15m,
-        ["derivatives"] = 0.15m,
+        ["technical"] = 0.22m,
+        ["structure"] = 0.17m,
+        ["orderbook"] = 0.17m,
+        ["derivatives"] = 0.16m,
         ["onchain"] = 0.10m,
         ["macro"] = 0.10m,
-        ["sentiment"] = 0.05m,
-        ["news"] = 0.05m,
-        ["liquidity"] = 0.05m,
-        ["volatility"] = 0.05m
+        ["sentiment"] = 0.04m,
+        ["news"] = 0.04m
     };
+
+    // Condition gauges: scored and displayed, but excluded from the directional blend
+    // and from directional-accuracy learning (they never take a side).
+    public static readonly IReadOnlySet<string> NonDirectionalCategories =
+        new HashSet<string> { "volatility", "liquidity" };
 
     // macro and onchain are flagged dynamically only when their providers return no data.
 
     public AdvancedDecision Evaluate(
         AdvancedDecisionInput input, RiskProfile profile, decimal equity,
-        IReadOnlyDictionary<string, decimal>? weightMultipliers = null,
+        IReadOnlyDictionary<string, FactorAdjustment>? factorAdjustments = null,
         ExecutionTuning? tuning = null)
     {
         var exec = tuning ?? ExecutionTuning.Default;
         var primary = GetTimeframe(input, "1h") ?? input.Timeframes.OrderByDescending(t => t.Candles.Count).First();
         var candles = primary.Candles;
-        // SMC runs on the entry timeframe (15m if available) for finer structure
+        // SMC + order-flow run on the entry timeframe (15m/5m) for finer structure
         var smcTf = GetTimeframe(input, "15m") ?? primary;
+        var flowTf = GetTimeframe(input, "5m") ?? smcTf;
         var regime = MarketRegimeDetector.Detect(candles);
+
+        // Per-timeframe directional votes feed the trend/momentum/structure consensus.
+        // Higher timeframes carry more weight (they set the bias), lower ones time the
+        // entry — a single noisy timeframe can no longer flip the technical read.
+        var votes = CollectTimeframeVotes(input);
 
         // Internal factor components (kept for transparency + adaptive learning detail)
         var components = new List<ScoreComponent>
         {
-            ScoreTrend(input),
-            ScoreMomentum(candles),
+            ScoreTrendConsensus(votes),
+            ScoreMomentumConsensus(votes, candles),
             ScoreVolume(candles),
-            ScorePriceAction(candles),
+            ScorePriceAction(votes, candles, regime),
             ScoreSmartMoney(smcTf.Candles),
-            ScoreOrderFlow(input.Derivatives),
-            ScoreDerivatives(input.Derivatives),
+            ScoreOrderFlow(input.Derivatives, flowTf.Candles),
+            ScoreDerivatives(input.Derivatives, PriceChangePercent(flowTf.Candles, lookback: 1)),
             ScoreNews(input.Sentiment),
             ScoreSocial(input.Sentiment),
             ScoreVolatility(candles)
         };
         var c = components.ToDictionary(x => x.Name, x => x.Score);
 
-        // Roll the components up into the 10 institutional scoring categories (0-100, bullish > 50).
+        // Roll the components up into the institutional scoring categories (0-100, bullish > 50).
+        // volatility/liquidity stay in the dictionary for the dashboard and the LLM payload,
+        // but carry no directional weight.
         var scores = new Dictionary<string, decimal>
         {
             ["technical"] = Avg(c["Trend"], c["Momentum"], c["Volume"]),
@@ -71,17 +84,36 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         };
 
         // Apply learned adaptive multipliers (Bayesian) on top of the fixed category weights
-        var weights = ApplyMultipliers(CategoryWeights, weightMultipliers);
+        var weights = ApplyMultipliers(CategoryWeights, factorAdjustments);
 
-        // Directional score D (0-100): weighted blend of category scores.
+        // Directional score D (0-100): weighted blend of category scores. A category whose
+        // raw score has proven consistently anti-predictive (realized directional accuracy
+        // < 40%) is folded around 50 before blending — weight scaling alone cannot repair
+        // a factor that is reliably wrong-way.
+        var invertedCategories = new List<string>();
         decimal weightedSum = 0, weightTotal = 0;
         foreach (var (key, w) in weights)
         {
             if (!scores.TryGetValue(key, out var s)) continue;
+            if (factorAdjustments is not null
+                && factorAdjustments.TryGetValue(key, out var adj) && adj.Inverted)
+            {
+                s = 100m - s;
+                invertedCategories.Add(key);
+            }
             weightedSum += s * w;
             weightTotal += w;
         }
         var directional = weightTotal == 0 ? 50m : Math.Clamp(weightedSum / weightTotal, 0m, 100m);
+
+        // Condition dampener: extreme volatility, dead tape, or a wide spread reduce the
+        // conviction of BOTH sides symmetrically instead of casting a fake directional vote.
+        var atr = TechnicalIndicators.Atr(candles)[^1];
+        if (atr <= 0) atr = input.LastPrice * 0.003m;
+        var atrPct = input.LastPrice == 0 ? 0m : atr / input.LastPrice * 100m;
+        var spreadFraction = input.LastPrice == 0 ? 0m : input.Derivatives.BidAskSpread / input.LastPrice;
+        var dampener = ConditionDampener(atrPct, spreadFraction);
+        directional = 50m + (directional - 50m) * dampener;
 
         // Symmetric buy/sell/hold confidences derived from the directional score.
         var confidenceBuy = directional;
@@ -95,8 +127,6 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         // Conviction of the recommended side — this is the value all gates compare to the threshold.
         var confidence = isBuy ? confidenceBuy : isSell ? confidenceSell : confidenceHold;
 
-        var atr = TechnicalIndicators.Atr(candles)[^1];
-        if (atr <= 0) atr = input.LastPrice * 0.003m;
         var entry = input.LastPrice;
 
         // SL/TP geometry: ATR multipliers learned per regime from realized exits
@@ -113,6 +143,31 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
             takeProfit = entry + atr * exec.TpAtrMultiplier;
         }
 
+        // Volume profile (primary TF, ~10 days): POC/VAH/VAL + HVN/LVN refine the TP/SL
+        // candidates — never the direction. A target beyond a high-volume wall is pulled
+        // in front of it; a stop parked in a thin LVN is tucked behind the nearest HVN
+        // shelf (dollar risk is constant, qty shrinks). Applied BEFORE qty/RR so sizing
+        // follows the final geometry. Realized TP-hit-rate (ExecutionStats) is the judge.
+        var volumeLevels = VolumeProfile.Build(candles);
+        var profileNotes = new List<string>();
+        var profileCautions = new List<string>();
+        if (volumeLevels is not null)
+        {
+            var (snappedTp, tpNote) = VolumeProfile.SnapTakeProfit(volumeLevels, !isSell, entry, takeProfit, atr);
+            if (snappedTp is decimal newTp) takeProfit = newTp;
+            if (tpNote is not null) { profileNotes.Add(tpNote); if (snappedTp is null) profileCautions.Add(tpNote); }
+
+            var (adjustedSl, slNote) = VolumeProfile.AdjustStopLoss(volumeLevels, !isSell, entry, stopLoss, atr);
+            if (adjustedSl is decimal newSl) stopLoss = newSl;
+            if (slNote is not null) { profileNotes.Add(slNote); if (adjustedSl is null) profileCautions.Add(slNote); }
+
+            if (VolumeProfile.ConfluenceNote(volumeLevels, !isSell, entry, atr) is string confluence)
+                profileNotes.Add(confluence);
+        }
+        var volumeProfileNote = volumeLevels is null
+            ? ""
+            : profileNotes.Count == 0 ? volumeLevels.Summary : $"{volumeLevels.Summary}; {string.Join("; ", profileNotes)}";
+
         var riskDistance = Math.Abs(entry - stopLoss);
         var rewardDistance = Math.Abs(takeProfit - entry);
         var riskReward = riskDistance == 0 ? 0 : rewardDistance / riskDistance;
@@ -128,14 +183,14 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         var leverage = Math.Clamp((int)Math.Round(baseLeverage * exec.LeverageFactor), 1, 20);
 
         // Probability of success: blend of confidence and multi-timeframe trend agreement
-        var mtfAgreement = MultiTimeframeAgreement(input, isBuy);
+        var mtfAgreement = MultiTimeframeAgreement(votes, isBuy);
         var probability = Math.Clamp(confidence * 0.7m + mtfAgreement * 30m, 0m, 100m);
 
         // Entry gate. Per design, confidence is the SOLE hard gate that opens an order: an
         // actionable side whose conviction clears the threshold trades. The remaining quality
-        // checks (RR, trend, funding, spread) are advisory "cautions" — they no longer block;
-        // instead they are surfaced to the AI validator, which defensively downsizes leverage
-        // and quantity when the backdrop is weak.
+        // checks (RR, trend, funding, spread, scheduled events) are advisory "cautions" — they
+        // never block; they are surfaced to the AI validator, which defensively downsizes
+        // leverage and quantity when the backdrop is weak.
         var reasons = new List<string>();
         var noTradeReasons = new List<string>();
         var cautionReasons = new List<string>();
@@ -145,9 +200,14 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         if (confidence < profile.AutoTradeConfidenceThreshold) noTradeReasons.Add($"Confidence {confidence:F0} below threshold {profile.AutoTradeConfidenceThreshold:F0}");
 
         if (riskReward < profile.MinimumRiskReward) cautionReasons.Add($"Risk/reward {riskReward:F2} below preferred {profile.MinimumRiskReward:F2}");
-        if (!trendAligned && (isBuy || isSell)) cautionReasons.Add("Higher timeframe trend not aligned");
+        if (!trendAligned && (isBuy || isSell))
+            cautionReasons.Add($"Higher timeframe trend not aligned [trend votes: {VoteDetail(votes, v => v.Trend)}]");
         if (Math.Abs(input.Derivatives.FundingRate) > 0.0010m) cautionReasons.Add("Funding rate unhealthy (crowded)");
         if (input.Derivatives.BidAskSpread > entry * 0.0005m) cautionReasons.Add("Spread too wide / thin liquidity");
+        if (dampener < 1m) cautionReasons.Add($"Trading conditions degraded — conviction dampened to {dampener:P0} (ATR {atrPct:F2}%, spread {spreadFraction:P3})");
+        if (input.ActiveEventWindow is string eventLabel)
+            cautionReasons.Add(eventLabel);
+        cautionReasons.AddRange(profileCautions);
 
         var shouldTrade = noTradeReasons.Count == 0;
 
@@ -158,12 +218,16 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
             {
                 "macro" => input.Macro.Available ? $" [{input.Macro.Summary}]" : " [no data source — neutral]",
                 "onchain" => input.Onchain.Available ? $" [{input.Onchain.Summary}]" : " [no data source — neutral]",
+                _ when NonDirectionalCategories.Contains(name) => " [condition gauge — no directional vote]",
+                _ when invertedCategories.Contains(name) => " [inverted by learning — historically anti-predictive]",
                 _ => ""
             };
             reasons.Add($"{name} ({score:F0}, w={weights.GetValueOrDefault(name, 0m):P0}){note}");
         }
         foreach (var comp in components)
             reasons.Add($"  · {comp.Name} ({comp.Score:F0}): {comp.Reason}");
+        if (volumeProfileNote.Length > 0)
+            reasons.Add($"  · VolumeProfile: {volumeProfileNote}");
 
         return new AdvancedDecision(
             Symbol: input.Symbol,
@@ -189,22 +253,46 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
             Components: components,
             Reasons: reasons,
             Llm: new LlmValidation(true, confidence, "", Array.Empty<string>(), false),
-            Time: DateTimeOffset.UtcNow);
+            Time: DateTimeOffset.UtcNow,
+            VolumeProfileNote: volumeProfileNote);
     }
 
     private static TimeframeData? GetTimeframe(AdvancedDecisionInput input, string interval)
         => input.Timeframes.FirstOrDefault(t => t.Interval == interval);
 
-    // Multiply regime base weights by learned multipliers, then renormalize to sum 1.
+    // Conviction compression for hostile trading conditions. 1.0 = full conviction.
+    // Extreme ATR fades both sides (stop distance outruns edge), dead tape fades
+    // breakout conviction, and a wide spread taxes entry+exit. Floor keeps a strong
+    // consensus signal actionable even in rough tape (this never blocks — the
+    // confidence threshold remains the sole gate).
+    internal static decimal ConditionDampener(decimal atrPercent, decimal spreadFraction)
+    {
+        var dampener = 1m;
+        if (atrPercent > 5m) dampener *= 0.75m;
+        else if (atrPercent > 3m) dampener *= 0.85m;
+        else if (atrPercent < 0.4m) dampener *= 0.92m;
+        if (spreadFraction > 0.0005m) dampener *= 0.9m;
+        return Math.Max(dampener, 0.65m);
+    }
+
+    // Close-to-close move over the last `lookback` closed candles, in percent.
+    private static decimal PriceChangePercent(IReadOnlyList<Candle> candles, int lookback)
+    {
+        if (candles.Count < lookback + 1) return 0m;
+        var prev = candles[^(lookback + 1)].Close;
+        return prev == 0 ? 0m : (candles[^1].Close - prev) / prev * 100m;
+    }
+
+    // Multiply fixed weights by learned multipliers, then renormalize to sum 1.
     private static IReadOnlyDictionary<string, decimal> ApplyMultipliers(
         IReadOnlyDictionary<string, decimal> baseWeights,
-        IReadOnlyDictionary<string, decimal>? multipliers)
+        IReadOnlyDictionary<string, FactorAdjustment>? adjustments)
     {
-        if (multipliers is null || multipliers.Count == 0) return baseWeights;
+        if (adjustments is null || adjustments.Count == 0) return baseWeights;
         var adjusted = new Dictionary<string, decimal>();
         foreach (var (k, w) in baseWeights)
         {
-            var m = multipliers.TryGetValue(k, out var mult) ? Math.Clamp(mult, 0.5m, 1.5m) : 1m;
+            var m = adjustments.TryGetValue(k, out var adj) ? Math.Clamp(adj.Multiplier, 0.5m, 1.5m) : 1m;
             adjusted[k] = w * m;
         }
         var total = adjusted.Values.Sum();
@@ -219,47 +307,103 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         return new ScoreComponent("SmartMoney", smc.Score, 0, smc.Summary);
     }
 
-    private static decimal MultiTimeframeAgreement(AdvancedDecisionInput input, bool bullish)
+    // ---- Multi-timeframe voting ---------------------------------------------------------
+    // Each timeframe casts trend/momentum/structure votes; the consensus is the weighted
+    // blend. Higher timeframes set the bias and weigh more, lower ones time the entry.
+    // Missing/short timeframes simply drop out and the remaining weights renormalize.
+    private static readonly (string Interval, decimal Weight)[] TimeframeVoteWeights =
+    [
+        ("5m", 0.10m), ("15m", 0.20m), ("1h", 0.30m), ("4h", 0.25m), ("1d", 0.15m)
+    ];
+
+    internal sealed record TimeframeVote(
+        string Interval, decimal Weight, decimal Trend, decimal Momentum, decimal Structure);
+
+    internal static List<TimeframeVote> CollectTimeframeVotes(AdvancedDecisionInput input)
     {
-        var tfs = input.Timeframes.Where(t => t.Candles.Count >= 60).ToList();
-        if (tfs.Count == 0) return 0.5m;
-        var agree = 0;
-        foreach (var tf in tfs)
+        var votes = new List<TimeframeVote>();
+        foreach (var (interval, weight) in TimeframeVoteWeights)
         {
+            var tf = GetTimeframe(input, interval);
+            if (tf is null || tf.Candles.Count < 60) continue;
             var closes = tf.Candles.Select(c => c.Close).ToList();
-            var ema20 = TechnicalIndicators.Ema(closes, 20)[^1];
-            var ema50 = TechnicalIndicators.Ema(closes, 50)[^1];
-            var up = ema20 > ema50;
-            if (up == bullish) agree++;
+            votes.Add(new TimeframeVote(
+                interval, weight,
+                TrendScoreFor(closes),
+                MomentumScoreFor(tf.Candles),
+                Math.Clamp(50m + TechnicalIndicators.MarketStructure(tf.Candles) * 20m, 0m, 100m)));
         }
-        return (decimal)agree / tfs.Count;
+        return votes;
     }
 
-    private static ScoreComponent ScoreTrend(AdvancedDecisionInput input)
+    private static decimal Consensus(List<TimeframeVote> votes, Func<TimeframeVote, decimal> vote)
     {
-        var tf = GetTimeframe(input, "1h") ?? input.Timeframes.OrderByDescending(t => t.Candles.Count).First();
-        var closes = tf.Candles.Select(c => c.Close).ToList();
+        var total = votes.Sum(v => v.Weight);
+        return total == 0 ? 50m : Math.Clamp(votes.Sum(v => vote(v) * v.Weight) / total, 0m, 100m);
+    }
+
+    private static string VoteDetail(List<TimeframeVote> votes, Func<TimeframeVote, decimal> vote)
+        => votes.Count == 0 ? "no timeframe data" : string.Join(" · ", votes.Select(v => $"{v.Interval} {vote(v):F0}"));
+
+    // Weighted share of timeframes whose trend vote sits on the action's side.
+    private static decimal MultiTimeframeAgreement(List<TimeframeVote> votes, bool bullish)
+    {
+        var total = votes.Sum(v => v.Weight);
+        if (total == 0) return 0.5m;
+        var agree = votes.Where(v => bullish ? v.Trend > 50m : v.Trend < 50m).Sum(v => v.Weight);
+        return agree / total;
+    }
+
+    private static ScoreComponent ScoreTrendConsensus(List<TimeframeVote> votes)
+        => new("Trend", Consensus(votes, v => v.Trend), 0,
+            $"MTF trend votes [{VoteDetail(votes, v => v.Trend)}]");
+
+    private static ScoreComponent ScoreMomentumConsensus(List<TimeframeVote> votes, IReadOnlyList<Candle> primaryCandles)
+    {
+        var closes = primaryCandles.Select(c => c.Close).ToList();
+        var rsi = TechnicalIndicators.Rsi(closes)[^1];
+        var (macd, signal, _) = TechnicalIndicators.Macd(closes);
+        return new ScoreComponent("Momentum", Consensus(votes, v => v.Momentum), 0,
+            $"MTF momentum votes [{VoteDetail(votes, v => v.Momentum)}], 1h RSI {rsi:F0}, MACD {(macd[^1] > signal[^1] ? "bullish" : "bearish")}");
+    }
+
+    // EMA-stack alignment gives the base score; EMA20/50 separation and EMA20 slope grade
+    // it continuously so trend strength moves the score instead of jumping between bands.
+    internal static decimal TrendScoreFor(List<decimal> closes)
+    {
         var ema9 = TechnicalIndicators.Ema(closes, 9)[^1];
-        var ema20 = TechnicalIndicators.Ema(closes, 20)[^1];
+        var ema20Series = TechnicalIndicators.Ema(closes, 20);
+        var ema20 = ema20Series[^1];
         var ema50 = TechnicalIndicators.Ema(closes, 50)[^1];
         var ema200 = closes.Count >= 200 ? TechnicalIndicators.Ema(closes, 200)[^1] : ema50;
 
-        if (ema9 > ema20 && ema20 > ema50 && ema50 > ema200)
-            return new ScoreComponent("Trend", 90, 0, "Full bullish EMA stack (9>20>50>200)");
-        if (ema9 < ema20 && ema20 < ema50 && ema50 < ema200)
-            return new ScoreComponent("Trend", 10, 0, "Full bearish EMA stack (9<20<50<200)");
-        if (ema9 > ema20 && ema20 > ema50)
-            return new ScoreComponent("Trend", 70, 0, "Short-term bullish alignment");
-        if (ema9 < ema20 && ema20 < ema50)
-            return new ScoreComponent("Trend", 30, 0, "Short-term bearish alignment");
-        return new ScoreComponent("Trend", 50, 0, "Mixed trend, no clear alignment");
+        decimal score;
+        if (ema9 > ema20 && ema20 > ema50 && ema50 > ema200) score = 82m;
+        else if (ema9 < ema20 && ema20 < ema50 && ema50 < ema200) score = 18m;
+        else if (ema9 > ema20 && ema20 > ema50) score = 66m;
+        else if (ema9 < ema20 && ema20 < ema50) score = 34m;
+        else score = 50m;
+
+        // Separation between EMA20 and EMA50 (% of price): trend maturity/strength.
+        var separationPct = ema50 == 0 ? 0m : (ema20 - ema50) / ema50 * 100m;
+        score += Math.Clamp(separationPct * 8m, -8m, 8m);
+
+        // EMA20 slope over the last 5 candles: is the trend still advancing?
+        if (ema20Series.Length >= 6 && ema20Series[^6] != 0)
+        {
+            var slopePct = (ema20Series[^1] - ema20Series[^6]) / ema20Series[^6] * 100m;
+            score += Math.Clamp(slopePct * 10m, -8m, 8m);
+        }
+
+        return Math.Clamp(score, 0, 100);
     }
 
-    private static ScoreComponent ScoreMomentum(IReadOnlyList<Candle> candles)
+    private static decimal MomentumScoreFor(IReadOnlyList<Candle> candles)
     {
         var closes = candles.Select(c => c.Close).ToList();
-        var rsi = TechnicalIndicators.Rsi(closes)[^1];
-        var (macd, signal, _) = TechnicalIndicators.Macd(closes);
+        var rsiSeries = TechnicalIndicators.Rsi(closes);
+        var rsi = rsiSeries[^1];
+        var (macd, signal, hist) = TechnicalIndicators.Macd(closes);
         var macdBull = macd[^1] > signal[^1];
         var stoch = TechnicalIndicators.StochasticK(candles);
 
@@ -267,8 +411,37 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         if (rsi > 50 && rsi < 70) score += 15; else if (rsi >= 70) score -= 10; else if (rsi < 30) score += 5; else score -= 10;
         score += macdBull ? 15 : -15;
         if (stoch > 50 && stoch < 80) score += 10; else if (stoch <= 20) score += 5; else score -= 5;
-        score = Math.Clamp(score, 0, 100);
-        return new ScoreComponent("Momentum", score, 0, $"RSI {rsi:F0}, MACD {(macdBull ? "bullish" : "bearish")}, Stoch {stoch:F0}");
+
+        // MACD histogram slope: momentum accelerating (+) or fading (-) regardless of
+        // which side of the signal line it sits on.
+        if (hist.Length >= 2) score += hist[^1] > hist[^2] ? 5 : -5;
+
+        // RSI/price divergence over the last 14 closed candles: momentum failing to
+        // confirm a fresh price extreme is more predictive than any RSI level.
+        score += DetectRsiDivergence(closes, rsiSeries) * 12m;
+
+        return Math.Clamp(score, 0, 100);
+    }
+
+    // -1 bearish divergence, +1 bullish divergence, 0 none. Compares the price/RSI extremes
+    // of the two most recent 7-candle windows; the RSI must miss its prior extreme by a
+    // margin so ordinary noise never flags.
+    internal static int DetectRsiDivergence(IReadOnlyList<decimal> closes, decimal[] rsiSeries)
+    {
+        const int window = 7;
+        if (closes.Count < window * 2 || rsiSeries.Length < window * 2) return 0;
+
+        var recentCloses = closes.Skip(closes.Count - window).ToList();
+        var priorCloses = closes.Skip(closes.Count - window * 2).Take(window).ToList();
+        var recentRsi = rsiSeries.Skip(rsiSeries.Length - window).ToList();
+        var priorRsi = rsiSeries.Skip(rsiSeries.Length - window * 2).Take(window).ToList();
+
+        const decimal rsiMargin = 2m;
+        // Higher price high, lower RSI high -> bearish
+        if (recentCloses.Max() > priorCloses.Max() && recentRsi.Max() < priorRsi.Max() - rsiMargin) return -1;
+        // Lower price low, higher RSI low -> bullish
+        if (recentCloses.Min() < priorCloses.Min() && recentRsi.Min() > priorRsi.Min() + rsiMargin) return 1;
+        return 0;
     }
 
     private static ScoreComponent ScoreVolume(IReadOnlyList<Candle> candles)
@@ -288,46 +461,164 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         return new ScoreComponent("Volume", score, 0, $"Vol {volExpansion:F2}x avg, OBV {(obvRising ? "rising" : "falling")}");
     }
 
-    private static ScoreComponent ScorePriceAction(IReadOnlyList<Candle> candles)
+    // Market structure consensus across timeframes; the Bollinger mean-reversion nudge
+    // (on the primary timeframe) only applies in a Ranging regime — inside a trend,
+    // "price at the lower band" is the trend itself, and fading it fights the Trend
+    // factor with a knife-catch.
+    private static ScoreComponent ScorePriceAction(
+        List<TimeframeVote> votes, IReadOnlyList<Candle> candles, MarketRegime regime)
     {
-        var structure = TechnicalIndicators.MarketStructure(candles);
-        var closes = candles.Select(c => c.Close).ToList();
-        var (upper, middle, lower) = TechnicalIndicators.BollingerBands(closes);
-        var price = closes[^1];
+        var score = votes.Count == 0
+            ? Math.Clamp(50m + TechnicalIndicators.MarketStructure(candles) * 20m, 0m, 100m)
+            : Consensus(votes, v => v.Structure);
 
-        var score = 50m + structure * 20m;
-        if (price <= lower) score += 10;      // potential mean-reversion long
-        else if (price >= upper) score -= 10; // potential mean-reversion short
+        var mrNote = "";
+        if (regime == MarketRegime.Ranging)
+        {
+            var closes = candles.Select(c => c.Close).ToList();
+            var (upper, _, lower) = TechnicalIndicators.BollingerBands(closes);
+            var price = closes[^1];
+            if (price <= lower) { score += 10; mrNote = ", at lower band (range MR long)"; }
+            else if (price >= upper) { score -= 10; mrNote = ", at upper band (range MR short)"; }
+        }
         score = Math.Clamp(score, 0, 100);
-        var structLabel = structure > 0 ? "higher highs/lows" : structure < 0 ? "lower highs/lows" : "ranging structure";
-        return new ScoreComponent("PriceAction", score, 0, $"Market structure: {structLabel}");
+        return new ScoreComponent("PriceAction", score, 0,
+            $"MTF structure votes [{VoteDetail(votes, v => v.Structure)}]{mrNote}");
     }
 
-    private static ScoreComponent ScoreOrderFlow(DerivativesSnapshot d)
+    private static ScoreComponent ScoreOrderFlow(DerivativesSnapshot d, IReadOnlyList<Candle> flowCandles)
     {
         var score = 50m + d.OrderBookImbalance * 40m;
         if (d.TakerBuySellRatio > 1.1m) score += 10; else if (d.TakerBuySellRatio < 0.9m) score -= 10;
+
+        // Cumulative volume delta vs price over the last hour of 5m candles: aggressive
+        // flow confirming the move strengthens it; price advancing against net selling
+        // (absorption) is a leading reversal tell. Skipped when the candle source did not
+        // supply taker volume (all zeros).
+        var cvdNote = "";
+        var (cvdRatio, priceMovePct, hasCvd) = ComputeCvd(flowCandles, window: 12);
+        if (hasCvd)
+        {
+            var deltaBuys = cvdRatio > 0.05m;
+            var deltaSells = cvdRatio < -0.05m;
+            var priceUp = priceMovePct > 0.15m;
+            var priceDown = priceMovePct < -0.15m;
+
+            if (priceUp && deltaBuys) { score += 6; cvdNote = ", CVD confirms rally"; }
+            else if (priceDown && deltaSells) { score -= 6; cvdNote = ", CVD confirms selloff"; }
+            else if (priceUp && deltaSells) { score -= 10; cvdNote = ", CVD divergence: rally on net selling (absorption)"; }
+            else if (priceDown && deltaBuys) { score += 10; cvdNote = ", CVD divergence: decline on net buying (accumulation)"; }
+        }
+
         score = Math.Clamp(score, 0, 100);
-        return new ScoreComponent("OrderFlow", score, 0, $"Book imbalance {d.OrderBookImbalance:F2}, taker buy/sell {d.TakerBuySellRatio:F2}");
+        return new ScoreComponent("OrderFlow", score, 0,
+            $"Book imbalance {d.OrderBookImbalance:F2}, taker buy/sell {d.TakerBuySellRatio:F2}{cvdNote}");
     }
 
-    private static ScoreComponent ScoreDerivatives(DerivativesSnapshot d)
+    // Net taker delta over the window as a fraction of total volume (-1..+1), plus the price
+    // move over the same window. hasData is false when taker volume is absent from the feed.
+    internal static (decimal CvdRatio, decimal PriceMovePercent, bool HasData) ComputeCvd(
+        IReadOnlyList<Candle> candles, int window)
+    {
+        if (candles.Count < window + 1) return (0m, 0m, false);
+        var slice = candles.Skip(candles.Count - window).ToList();
+        if (slice.All(c => c.TakerBuyVolume == 0m)) return (0m, 0m, false);
+
+        decimal delta = 0m, total = 0m;
+        foreach (var candle in slice)
+        {
+            delta += candle.TakerBuyVolume * 2m - candle.Volume; // buys - sells
+            total += candle.Volume;
+        }
+        var startClose = candles[^(window + 1)].Close;
+        var movePct = startClose == 0 ? 0m : (slice[^1].Close - startClose) / startClose * 100m;
+        return (total == 0 ? 0m : delta / total, movePct, true);
+    }
+
+    private static ScoreComponent ScoreDerivatives(DerivativesSnapshot d, decimal priceChangePct)
     {
         var score = 50m;
+        var notes = new List<string> { $"Funding {d.FundingRate * 100:F3}%" };
+
         // Negative funding supports longs; extreme positive funding warns of crowded longs
         if (d.FundingRate < -0.0003m) score += 12; else if (d.FundingRate > 0.0005m) score -= 12;
-        if (d.OpenInterestChangePercent > 2m) score += 10; else if (d.OpenInterestChangePercent < -2m) score -= 8;
+
+        // Cumulative funding over ~24h separates a persistent crowd from a single print.
+        if (d.CumulativeFunding24h >= 0.0010m) { score -= 8; notes.Add($"24h funding {d.CumulativeFunding24h * 100:F3}% (longs crowded)"); }
+        else if (d.CumulativeFunding24h <= -0.0003m) { score += 8; notes.Add($"24h funding {d.CumulativeFunding24h * 100:F3}% (shorts paying)"); }
+
+        // OI x price matrix — the direction of OPEN INTEREST only means something together
+        // with the price move that accompanied it.
+        var oiUp = d.OpenInterestChangePercent > 1.5m;
+        var oiDown = d.OpenInterestChangePercent < -1.5m;
+        var priceUp = priceChangePct > 0.10m;
+        var priceDown = priceChangePct < -0.10m;
+        if (oiUp && priceUp) { score += 12; notes.Add($"OIΔ +{d.OpenInterestChangePercent:F1}% with price up (new longs)"); }
+        else if (oiUp && priceDown) { score -= 12; notes.Add($"OIΔ +{d.OpenInterestChangePercent:F1}% with price down (new shorts)"); }
+        else if (oiDown && priceUp) { score -= 5; notes.Add($"OIΔ {d.OpenInterestChangePercent:F1}% with price up (short covering — weak rally)"); }
+        else if (oiDown && priceDown) { score += 5; notes.Add($"OIΔ {d.OpenInterestChangePercent:F1}% with price down (long capitulation)"); }
+        else if (d.OpenInterestChangePercent > 2m) { score += 4; notes.Add($"OIΔ +{d.OpenInterestChangePercent:F1}% (price flat)"); }
+        else if (d.OpenInterestChangePercent < -2m) { score -= 3; notes.Add($"OIΔ {d.OpenInterestChangePercent:F1}% (price flat)"); }
+
         if (d.LongShortRatio > 1.5m) score -= 8; else if (d.LongShortRatio < 0.7m) score += 8; // contrarian
+        notes.Add($"L/S {d.LongShortRatio:F2}");
+
+        // Liquidation pressure: a one-sided forced flush marks capitulation of that side —
+        // fade it. Only significant notional counts; a quiet feed contributes nothing.
+        var liqScore = ScoreLiquidationPressure(d.LongLiquidationNotional, d.ShortLiquidationNotional);
+        if (liqScore != 0)
+        {
+            score += liqScore;
+            notes.Add(liqScore > 0
+                ? $"long flush ${d.LongLiquidationNotional / 1_000_000m:F1}M (capitulation — contrarian long)"
+                : $"short squeeze ${d.ShortLiquidationNotional / 1_000_000m:F1}M (capitulation — contrarian short)");
+        }
+
         score = Math.Clamp(score, 0, 100);
-        return new ScoreComponent("Derivatives", score, 0, $"Funding {d.FundingRate * 100:F3}%, OIΔ {d.OpenInterestChangePercent:F1}%, L/S {d.LongShortRatio:F2}");
+        return new ScoreComponent("Derivatives", score, 0, string.Join(", ", notes));
+    }
+
+    // Contrarian liquidation read: +10 after a dominant LONG flush (forced sellers are
+    // spent), -10 after a dominant SHORT squeeze. Requires meaningful notional in the
+    // window and a clearly one-sided cascade.
+    internal static decimal ScoreLiquidationPressure(decimal longNotional, decimal shortNotional)
+    {
+        const decimal minNotional = 1_000_000m; // USD in the rolling window
+        var total = longNotional + shortNotional;
+        if (total < minNotional) return 0m;
+        var longShare = longNotional / total;
+        if (longShare >= 0.75m) return 10m;
+        if (longShare <= 0.25m) return -10m;
+        return 0m;
     }
 
     private static ScoreComponent ScoreNews(SentimentSnapshot s)
         => new("News", Math.Clamp(s.NewsScore, 0, 100), 0, $"News sentiment: {s.SentimentLabel}");
 
+    // Crowd sentiment is momentum in the mid-band but CONTRARIAN at the extremes: euphoric
+    // greed marks late positioning, panic fear marks capitulation. The provider blend is
+    // capped/floored by a fold-back curve on the Fear & Greed index itself so the learning
+    // layer never has to discover this domain prior on its own.
     private static ScoreComponent ScoreSocial(SentimentSnapshot s)
-        => new("Social", Math.Clamp(s.SocialScore, 0, 100), 0, $"Fear & Greed: {s.FearGreedIndex} ({s.FearGreedLabel})");
+    {
+        var score = Math.Clamp(s.SocialScore, 0, 100);
+        var note = "";
+        if (s.FearGreedIndex >= 75)
+        {
+            score = Math.Min(score, 75m - (s.FearGreedIndex - 75m) * 2m);
+            note = " — extreme greed, contrarian cap";
+        }
+        else if (s.FearGreedIndex <= 25)
+        {
+            score = Math.Max(score, 25m + (25m - s.FearGreedIndex) * 2m);
+            note = " — extreme fear, contrarian floor";
+        }
+        score = Math.Clamp(score, 0, 100);
+        return new ScoreComponent("Social", score, 0, $"Fear & Greed: {s.FearGreedIndex} ({s.FearGreedLabel}){note}");
+    }
 
+    // Condition gauge (no directional vote): 100 = ideal tradability. Feeds the display
+    // and the LLM payload; the directional blend uses ConditionDampener instead.
     private static ScoreComponent ScoreVolatility(IReadOnlyList<Candle> candles)
     {
         var atr = TechnicalIndicators.Atr(candles)[^1];
@@ -339,13 +630,13 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
             < 0.4m => 45m,     // too quiet
             _ => 65m           // healthy range for trading
         };
-        return new ScoreComponent("Volatility", score, 0, $"ATR {atrPct:F2}% of price");
+        return new ScoreComponent("Volatility", score, 0, $"ATR {atrPct:F2}% of price (condition gauge)");
     }
 
     private static decimal Avg(params decimal[] values) => values.Length == 0 ? 50m : values.Average();
 
-    // Liquidity quality + directional bias. Bid-heavy book is bullish; a wide spread
-    // (thin book) pulls the score back toward neutral so it adds little conviction.
+    // Condition gauge (no directional vote): book balance quality. A wide spread pulls the
+    // score toward neutral; kept for display/LLM context only.
     private static decimal ScoreLiquidity(DerivativesSnapshot d, decimal price)
     {
         var score = 50m + d.OrderBookImbalance * 30m;

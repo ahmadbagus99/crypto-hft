@@ -12,6 +12,7 @@ namespace CryptoHft.Infrastructure.Binance;
 public sealed class BinanceFuturesWebSocketStream(
     IOptions<BinanceOptions> options,
     IRealtimePublisher publisher,
+    CryptoHft.Application.DecisionEngine.ILiquidationFeed liquidationFeed,
     ILogger<BinanceFuturesWebSocketStream> logger) : IMarketDataStream
 {
     private readonly BinanceOptions _options = options.Value;
@@ -109,7 +110,30 @@ public sealed class BinanceFuturesWebSocketStream(
             case "kline":
                 await publisher.PublishKlineAsync(ParseKline(root), cancellationToken);
                 break;
+            case "forceOrder":
+                RecordLiquidation(root);
+                break;
         }
+    }
+
+    // forceOrder = a position was force-closed. Order side SELL means a LONG was liquidated
+    // (its exit is a forced sell); side BUY means a SHORT was liquidated. Notional in USD
+    // from qty x average fill price (falls back to order price when unfilled).
+    private void RecordLiquidation(JsonElement root)
+    {
+        var order = root.GetProperty("o");
+        var side = order.GetProperty("S").GetString() ?? "";
+        var qty = ParseDecimal(order.GetProperty("q"));
+        var price = TryParseDecimal(order, "ap");
+        if (price == 0) price = ParseDecimal(order.GetProperty("p"));
+        var time = order.TryGetProperty("T", out var t)
+            ? DateTimeOffset.FromUnixTimeMilliseconds(t.GetInt64())
+            : DateTimeOffset.UtcNow;
+
+        liquidationFeed.Record(
+            longLiquidated: side.Equals("SELL", StringComparison.OrdinalIgnoreCase),
+            notionalUsd: qty * price,
+            time: time);
     }
 
     private static AggTradeTick ParseAggTrade(JsonElement root)

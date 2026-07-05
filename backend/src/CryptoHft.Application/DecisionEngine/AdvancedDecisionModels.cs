@@ -2,28 +2,36 @@ using CryptoHft.Domain.Enums;
 
 namespace CryptoHft.Application.DecisionEngine;
 
-// Market regime classification — drives dynamic weighting
+// Market regime classification — drives execution baselines and learning buckets.
+// Values are persisted as ints in FactorStats/ExecutionStats/AiDecisionLogs, so new
+// members are only ever appended. Trending (0) is legacy: the detector now always
+// resolves trend direction so up- and down-trends learn in separate buckets.
 public enum MarketRegime
 {
     Trending,
     Ranging,
     HighVolatility,
-    LowVolatility
+    LowVolatility,
+    TrendingUp,
+    TrendingDown
 }
 
-// One OHLCV candle used by the analysis engine
+// One OHLCV candle used by the analysis engine. TakerBuyVolume (kline field 9) enables
+// cumulative volume delta; 0 when the source did not provide it.
 public sealed record Candle(
     DateTimeOffset OpenTime,
     decimal Open,
     decimal High,
     decimal Low,
     decimal Close,
-    decimal Volume);
+    decimal Volume,
+    decimal TakerBuyVolume = 0m);
 
 // Per-timeframe candle series
 public sealed record TimeframeData(string Interval, IReadOnlyList<Candle> Candles);
 
-// Derivatives + order-flow snapshot from Binance
+// Derivatives + order-flow snapshot from Binance. The trailing fields default to 0 when
+// their source is unavailable (no funding history / liquidation feed not warmed up yet).
 public sealed record DerivativesSnapshot(
     decimal FundingRate,
     decimal OpenInterest,
@@ -31,7 +39,10 @@ public sealed record DerivativesSnapshot(
     decimal LongShortRatio,
     decimal TakerBuySellRatio,
     decimal OrderBookImbalance,
-    decimal BidAskSpread);
+    decimal BidAskSpread,
+    decimal CumulativeFunding24h = 0m,          // sum of the last 3 funding periods (8h each)
+    decimal LongLiquidationNotional = 0m,       // USD notional of LONGs force-closed in the recent window
+    decimal ShortLiquidationNotional = 0m);     // USD notional of SHORTs force-closed in the recent window
 
 // News + social sentiment snapshot (free sources)
 public sealed record SentimentSnapshot(
@@ -62,7 +73,9 @@ public sealed record OnchainSnapshot(
     string Summary,
     bool Available);
 
-// Full input bundle for the advanced engine
+// Full input bundle for the advanced engine. ActiveEventWindow carries the caution label
+// of a scheduled high-impact macro event window (from IEconomicCalendarProvider); null on
+// a quiet tape — the engine itself stays clock-free.
 public sealed record AdvancedDecisionInput(
     string Symbol,
     decimal LastPrice,
@@ -70,10 +83,18 @@ public sealed record AdvancedDecisionInput(
     DerivativesSnapshot Derivatives,
     SentimentSnapshot Sentiment,
     MacroSnapshot Macro,
-    OnchainSnapshot Onchain);
+    OnchainSnapshot Onchain,
+    string? ActiveEventWindow = null);
 
 // A single 0-100 factor score with explanation
 public sealed record ScoreComponent(string Name, decimal Score, decimal Weight, string Reason);
+
+// Learned per-category adjustment from realized outcomes. Multiplier scales the category's
+// fixed weight (clamped 0.5-1.5x by the engine). Inverted marks a category whose raw score
+// has proven consistently anti-predictive (directional accuracy < 40% over enough samples):
+// the engine folds its score around 50 before blending, since weight scaling alone can
+// never repair a factor that is reliably wrong-way.
+public sealed record FactorAdjustment(decimal Multiplier, bool Inverted = false);
 
 // Result of an LLM (Claude) validation pass. When Claude does not fully confirm but the
 // trade still clears the confidence threshold, it may resize the trade defensively via the
@@ -114,7 +135,10 @@ public sealed record AdvancedDecision(
     IReadOnlyList<ScoreComponent> Components,
     IReadOnlyList<string> Reasons,
     LlmValidation Llm,
-    DateTimeOffset Time);
+    DateTimeOffset Time,
+    // Volume-profile context (POC/VA/HVN/LVN + any TP/SL snap applied). Informational:
+    // shown on the dashboard and in the LLM payload; empty when the profile could not build.
+    string VolumeProfileNote = "");
 
 // Learned execution baselines (per regime). Defaults reproduce the original fixed
 // geometry (2xATR SL, 4xATR TP, confidence-tier leverage untouched); values come from
@@ -133,6 +157,6 @@ public interface IAdvancedDecisionEngine
         AdvancedDecisionInput input,
         Risk.RiskProfile profile,
         decimal equity,
-        IReadOnlyDictionary<string, decimal>? weightMultipliers = null,
+        IReadOnlyDictionary<string, FactorAdjustment>? factorAdjustments = null,
         ExecutionTuning? tuning = null);
 }

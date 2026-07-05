@@ -17,6 +17,7 @@ public sealed class AiDecisionService(
     ISentimentProvider sentimentProvider,
     IMacroDataProvider macroProvider,
     IOnchainDataProvider onchainProvider,
+    IEconomicCalendarProvider calendarProvider,
     IAdvancedDecisionEngine engine,
     ILlmDecisionValidator llmValidator,
     IAdaptiveWeightService adaptiveWeights,
@@ -44,13 +45,14 @@ public sealed class AiDecisionService(
         var sentimentTask = sentimentProvider.GetSentimentAsync(cancellationToken);
         var macroTask = macroProvider.GetSnapshotAsync(cancellationToken);
         var onchainTask = onchainProvider.GetSnapshotAsync(cancellationToken);
+        var calendarTask = calendarProvider.GetActiveEventWindowAsync(cancellationToken);
         var priceTask = timeframeProvider.GetLastPriceAsync(symbol, cancellationToken);
 
-        await Task.WhenAll(timeframesTask, derivativesTask, sentimentTask, macroTask, onchainTask, priceTask);
+        await Task.WhenAll(timeframesTask, derivativesTask, sentimentTask, macroTask, onchainTask, calendarTask, priceTask);
 
         var input = new AdvancedDecisionInput(
             symbol, priceTask.Result, timeframesTask.Result, derivativesTask.Result, sentimentTask.Result,
-            macroTask.Result, onchainTask.Result);
+            macroTask.Result, onchainTask.Result, calendarTask.Result);
 
         var equity = await GetEquityAsync(cancellationToken);
         var profile = new RiskProfile(
@@ -67,10 +69,10 @@ public sealed class AiDecisionService(
         var primary = input.Timeframes.FirstOrDefault(t => t.Interval == "1h")
                       ?? input.Timeframes.OrderByDescending(t => t.Candles.Count).First();
         var regime = MarketRegimeDetector.Detect(primary.Candles);
-        var multipliers = await adaptiveWeights.GetMultipliersAsync(regime, cancellationToken);
+        var adjustments = await adaptiveWeights.GetFactorAdjustmentsAsync(regime, cancellationToken);
         var tuning = await adaptiveWeights.GetExecutionTuningAsync(regime, cancellationToken);
 
-        var decision = engine.Evaluate(input, profile, equity ?? 0m, multipliers, tuning);
+        var decision = engine.Evaluate(input, profile, equity ?? 0m, adjustments, tuning);
 
         // Live mode with unknown equity: sizing against a guessed balance is dangerous, so the
         // trade is blocked for this tick (analysis still runs for the dashboard).

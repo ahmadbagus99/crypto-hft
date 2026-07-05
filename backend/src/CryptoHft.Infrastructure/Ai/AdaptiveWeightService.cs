@@ -13,8 +13,14 @@ namespace CryptoHft.Infrastructure.Ai;
 // scores. The preferred evaluation is the REAL outcome: when the position a decision opened
 // closes (Position History), win/loss comes from realized PnL and the update is weighted by
 // ROI magnitude. Decisions that never became a trade fall back to the 60-minute price-move
-// horizon. Each factor that "agreed" with the call has its Beta(alpha,beta) posterior updated;
-// the weight multiplier is the posterior mean normalized so the average factor stays at 1.0.
+// horizon.
+//
+// Factors are judged on their OWN directional call versus the realized market direction
+// (AdaptiveLearningPolicy): a factor that voted bearish while the trade was long still earns
+// credit if price fell. This measures directional ACCURACY, so consistently wrong-way factors
+// accumulate evidence and are eventually inverted by the engine instead of never being scored.
+// Evidence above the Beta(1,1) prior decays with a 30-day half-life (recency), and
+// non-directional condition gauges (volatility/liquidity) are excluded entirely.
 public sealed class AdaptiveWeightService(
     IServiceScopeFactory scopeFactory,
     ILogger<AdaptiveWeightService> logger) : IAdaptiveWeightService
@@ -39,7 +45,7 @@ public sealed class AdaptiveWeightService(
     // trade cannot dominate the posterior.
     private const decimal MaxOutcomeWeight = 3m;
 
-    public async Task<IReadOnlyDictionary<string, decimal>> GetMultipliersAsync(
+    public async Task<IReadOnlyDictionary<string, FactorAdjustment>> GetFactorAdjustmentsAsync(
         MarketRegime regime, CancellationToken cancellationToken)
     {
         using var scope = scopeFactory.CreateScope();
@@ -48,15 +54,26 @@ public sealed class AdaptiveWeightService(
             .Where(s => s.Regime == (int)regime)
             .ToListAsync(cancellationToken);
 
-        if (stats.Count == 0) return new Dictionary<string, decimal>();
+        if (stats.Count == 0) return new Dictionary<string, FactorAdjustment>();
 
-        // Posterior mean win-rate per factor
-        var means = stats.ToDictionary(s => s.Factor, s => s.Alpha / (s.Alpha + s.Beta));
-        var avg = means.Values.Average();
-        if (avg <= 0) return new Dictionary<string, decimal>();
+        // Posterior mean directional accuracy per factor. An anti-predictive factor is
+        // flagged inverted; its EFFECTIVE accuracy (after the engine folds the score) is
+        // 1 - mean, which is what the weight multiplier should reflect.
+        var effective = stats.ToDictionary(
+            s => s.Factor,
+            s =>
+            {
+                var mean = s.Alpha / (s.Alpha + s.Beta);
+                var inverted = AdaptiveLearningPolicy.ShouldInvert(mean, s.Alpha + s.Beta - 2m);
+                return (Mean: inverted ? 1m - mean : mean, Inverted: inverted);
+            });
+        var avg = effective.Values.Average(v => v.Mean);
+        if (avg <= 0) return new Dictionary<string, FactorAdjustment>();
 
         // Multiplier relative to the average performer (clamped later by the engine)
-        return means.ToDictionary(kv => kv.Key, kv => Math.Round(kv.Value / avg, 3));
+        return effective.ToDictionary(
+            kv => kv.Key,
+            kv => new FactorAdjustment(Math.Round(kv.Value.Mean / avg, 3), kv.Value.Inverted));
     }
 
     public async Task LogDecisionAsync(AdvancedDecision decision, CancellationToken cancellationToken)
@@ -124,6 +141,8 @@ public sealed class AdaptiveWeightService(
 
             var win = position.RealizedPnl > 0m; // realizedPnl <= 0 counts as a loss
             var weight = Math.Clamp(1m + Math.Abs(position.Roi), 1m, MaxOutcomeWeight);
+            // Realized market direction: a winning long / losing short means price went up.
+            var outcomeUp = (position.Side == TradeSide.Long) == win;
 
             log.Evaluated = true;
             log.Win = win;
@@ -134,7 +153,7 @@ public sealed class AdaptiveWeightService(
                 ? 0
                 : Math.Round((position.MarkPrice - position.EntryPrice) / position.EntryPrice * 100m, 4);
 
-            ApplyFactorOutcome(db, statCache, log, win, weight);
+            ApplyFactorOutcome(db, statCache, log, outcomeUp, weight);
             ApplyExecutionOutcome(db, execCache, log.Regime, position, win);
             matched++;
 
@@ -189,7 +208,10 @@ public sealed class AdaptiveWeightService(
             log.PriceMovePercent = Math.Round(movePct, 4);
             log.EvaluatedAt = DateTimeOffset.UtcNow;
 
-            ApplyFactorOutcome(db, statCache, log, win, weight: 1m);
+            // A flat hour is noise, not directional evidence — teach factors only when the
+            // move cleared the dead band (the decision log itself is still marked evaluated).
+            if (Math.Abs(movePct) >= AdaptiveLearningPolicy.FallbackTeachDeadBandPercent)
+                ApplyFactorOutcome(db, statCache, log, outcomeUp: movePct > 0, weight: 1m);
             evaluated++;
         }
 
@@ -209,18 +231,64 @@ public sealed class AdaptiveWeightService(
         var result = new List<FactorPerformance>();
         foreach (var group in byRegime)
         {
-            var means = group.ToDictionary(s => s.Factor, s => s.Alpha / (s.Alpha + s.Beta));
-            var avg = means.Values.Count > 0 ? means.Values.Average() : 1m;
+            // Effective accuracy (post-inversion) drives the multiplier, matching the engine;
+            // WinRate reports the RAW directional accuracy so an inverted factor is visible.
+            var effective = group.ToDictionary(
+                s => s.Factor,
+                s =>
+                {
+                    var mean = s.Alpha / (s.Alpha + s.Beta);
+                    return AdaptiveLearningPolicy.ShouldInvert(mean, s.Alpha + s.Beta - 2m)
+                        ? 1m - mean
+                        : mean;
+                });
+            var avg = effective.Values.Count > 0 ? effective.Values.Average() : 1m;
             foreach (var s in group)
             {
                 var mean = s.Alpha / (s.Alpha + s.Beta);
                 var samples = (int)(s.Alpha + s.Beta - 2m);
+                var inverted = AdaptiveLearningPolicy.ShouldInvert(mean, s.Alpha + s.Beta - 2m);
                 result.Add(new FactorPerformance(
                     s.Factor, s.Regime, Math.Round(mean * 100m, 1),
-                    Math.Max(0, samples), avg <= 0 ? 1m : Math.Round(mean / avg, 3)));
+                    Math.Max(0, samples),
+                    avg <= 0 ? 1m : Math.Round(effective[s.Factor] / avg, 3),
+                    inverted));
             }
         }
         return result.OrderByDescending(r => r.WinRate).ToList();
+    }
+
+    // Confidence calibration curve: realized winrate per 5-point confidence bucket over
+    // decisions matched to closed positions. When enough samples exist this answers
+    // whether "confidence 70" really wins ~70% — the basis for threshold tuning.
+    public async Task<IReadOnlyList<CalibrationBucket>> GetConfidenceCalibrationAsync(
+        CancellationToken cancellationToken)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+
+        var rows = await (
+                from d in db.AiDecisionLogs
+                where d.MatchedPositionId != null
+                join p in db.Positions on d.MatchedPositionId equals p.Id
+                select new { d.Confidence, p.Roi, p.RealizedPnl })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .GroupBy(r => (int)(Math.Clamp(r.Confidence, 0m, 99.9m) / 5m) * 5)
+            .Select(g =>
+            {
+                var wins = g.Count(r => r.RealizedPnl > 0m);
+                return new CalibrationBucket(
+                    BucketFloor: g.Key,
+                    Samples: g.Count(),
+                    Wins: wins,
+                    WinRate: Math.Round(wins * 100m / g.Count(), 1),
+                    AvgRoi: Math.Round(g.Average(r => r.Roi), 4),
+                    TotalRealizedPnl: Math.Round(g.Sum(r => r.RealizedPnl), 4));
+            })
+            .OrderBy(b => b.BucketFloor)
+            .ToList();
     }
 
     // Learned execution baselines for a regime; defaults until enough realized exits exist.
@@ -362,22 +430,22 @@ public sealed class AdaptiveWeightService(
         return executedIds;
     }
 
-    // Credit/blame every factor that agreed with the called direction. Weight scales the
-    // Beta-posterior increment (1 = plain fallback observation; realized outcomes use 1+|roi|).
+    // Credit/blame every factor on whether its OWN directional vote matched the realized
+    // market direction. Weight scales the Beta-posterior increment (1 = plain fallback
+    // observation; realized outcomes use 1+|roi|). Stale evidence decays first (30-day
+    // half-life), and condition gauges never vote so they never learn direction.
     private static void ApplyFactorOutcome(
-        TradingDbContext db, List<FactorStat> statCache, AiDecisionLog log, bool win, decimal weight)
+        TradingDbContext db, List<FactorStat> statCache, AiDecisionLog log, bool outcomeUp, decimal weight)
     {
-        var isBuy = IsBuyAction(log.Action);
-
         Dictionary<string, decimal> scores;
         try { scores = JsonSerializer.Deserialize<Dictionary<string, decimal>>(log.ScoresJson) ?? new(); }
         catch { scores = new(); }
 
+        var now = DateTimeOffset.UtcNow;
         foreach (var (factor, score) in scores)
         {
-            // Did this factor agree with the called direction?
-            var agreed = isBuy ? score >= 55m : score <= 45m;
-            if (!agreed) continue; // only credit/blame factors that took a side
+            if (AdvancedDecisionEngine.NonDirectionalCategories.Contains(factor)) continue;
+            if (!AdaptiveLearningPolicy.TryScoreVote(score, outcomeUp, out var factorWin)) continue;
 
             var stat = statCache.FirstOrDefault(s => s.Regime == log.Regime && s.Factor == factor);
             if (stat is null)
@@ -386,8 +454,12 @@ public sealed class AdaptiveWeightService(
                 db.FactorStats.Add(stat);
                 statCache.Add(stat);
             }
-            if (win) stat.Alpha += weight; else stat.Beta += weight;
-            stat.UpdatedAt = DateTimeOffset.UtcNow;
+
+            var elapsedDays = (decimal)(now - stat.UpdatedAt).TotalDays;
+            (stat.Alpha, stat.Beta) = AdaptiveLearningPolicy.Decay(stat.Alpha, stat.Beta, elapsedDays);
+
+            if (factorWin) stat.Alpha += weight; else stat.Beta += weight;
+            stat.UpdatedAt = now;
         }
     }
 

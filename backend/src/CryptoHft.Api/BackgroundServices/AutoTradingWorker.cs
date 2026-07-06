@@ -18,6 +18,8 @@ public sealed class AutoTradingWorker(
     IAutoTradeRiskGate riskGate,
     IOpenPositionRevalidationStore revalidationStore,
     IPositionHistoryService positionHistoryService,
+    ITrailingStopGuard trailingStopGuard,
+    ITrailingStopActivityStore trailingStopActivity,
     ILatestDecisionStore decisionStore,
     ILogger<AutoTradingWorker> logger) : BackgroundService
 {
@@ -56,15 +58,20 @@ public sealed class AutoTradingWorker(
         await positionHistoryService.ObserveAsync(Symbol, openPosition, cancellationToken);
 
         // While a position is open, keep entry analysis paused so no new trade can be opened and
-        // no Claude tokens are spent. Every 30 minutes, run a rule-based health check only; if the
+        // no Claude tokens are spent. Every tick the trailing guard may ratchet the stop
+        // (breakeven at +1R, then trail); every 30 minutes a rule-based health check runs — if the
         // opposite side confirms twice (or becomes extremely strong once), close via reduce-only.
         if (openPosition is not null)
         {
+            await trailingStopGuard.ApplyAsync(Symbol, openPosition, cancellationToken);
             await RevalidateOpenPositionAsync(settings, openPosition, cancellationToken);
             return;
         }
         ResetOpenPositionRevalidationState();
         revalidationStore.Clear(Symbol);
+        // Position closed: the trailing history belongs to that position only — wipe it so
+        // the dashboard card starts fresh with the next position.
+        trailingStopActivity.Clear(Symbol);
 
         // Run the analysis once per tick and cache it — this is the single place that may call
         // Claude. The dashboard reads the cached result so opening it never triggers extra

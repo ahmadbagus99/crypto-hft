@@ -552,3 +552,85 @@ File: `VolumeProfile.cs` (baru), `AdvancedDecisionEngine.cs`,
 - **125 unit test pass** via Docker .NET 9. Test baru mencakup POC/value area,
   HVN/LVN, TP snap + guardrail, SL tuck + cap 1.3×, confluence VAL/VAH, dan wiring
   engine `VolumeProfileNote`.
+
+---
+
+## 13. Anti-chasing dampener + pooled tuning + filter FactorStats legacy (2026-07-06, batch 5)
+
+File: `AdvancedDecisionEngine.cs`, `ExecutionTuningPolicy.cs`, `AdaptiveWeightService.cs`.
+
+Latar: evaluasi 5 posisi live + 4.743 AiDecisionLogs menemukan (a) confidence
+**anti-kalibrasi** — bucket 60-70 win rate 10-13% vs ~24% di bucket 50-60, padahal
+entry hanya dibuka di conf ≥ 65; (b) dua loss riil sama-sama pola *chasing* (short
+setelah harga sudah jatuh ~3.8×ATR, long dekat puncak lokal); (c) baris FactorStats
+generasi lama (nama kapital: `Trend`, `SmartMoney`, `News`, …) mencemari rata-rata
+normalisasi multiplier faktor aktif.
+
+- **Anti-chasing dampener** (`ChasingDampener`): ukur pergerakan 6 candle 1h terakhir
+  dalam kelipatan ATR. Sinyal SEARAH gerakan yang sudah ≥ 2.5×ATR diredam progresif
+  ke lantai 0.4× di 5×ATR — sinyal telat gagal lewat threshold entry. Counter-trend
+  dan netral tidak pernah diredam (fading bukan chasing). Caution "Late entry"
+  masuk dashboard + payload Claude. Sanity check vs history: membunuh kedua loss,
+  meloloskan kedua winner.
+- **Pooled execution tuning** (`ResolveStops`/`ResolveLeverageFactor`): regime yang
+  belum punya 10 exit sendiri meminjam counter gabungan lintas regime; begitu matang,
+  bukti regime sendiri menang. Learning geometry mulai hidup setelah 10 exit total,
+  bukan 10 per regime (~berbulan-bulan di laju sekarang). `GetLearningSnapshotAsync`
+  ikut memakai resolusi pooled supaya digest Claude = yang dieksekusi.
+- **Filter legacy FactorStats**: `DirectionalCategories` (= keys `CategoryWeights`)
+  jadi whitelist di `GetFactorAdjustmentsAsync` + `GetPerformanceAsync`. Tanpa filter,
+  multiplier orderbook Ranging tertekan 0.72 padahal seharusnya ~1.18. Data lama di
+  DB tidak dihapus — hanya diabaikan.
+
+### Testing
+- **144 unit test pass** via Docker .NET 9 (19 baru: chasing dampener aligned/counter/
+  floor/threshold, RecentMoveInAtr, pooled resolve young/mature/thin).
+
+---
+
+## 14. Trailing Stop Guard + manajemen posisi + settings (2026-07-06 s/d 07-07, batch 6)
+
+File: `TrailingStopPolicy.cs` (baru), `TrailingStopGuardService.cs` (baru),
+`TrailingStopActivityStore.cs` (baru), `BinanceFuturesTradingExecutor.cs`,
+`AutoTradingWorker.cs`, `PositionCloseClassifier.cs`, `TradingEnums.cs`,
+`RuntimeTradingSettingsService.cs`, `App.tsx`.
+
+Dua mekanisme saat posisi terbuka — jangan tertukar:
+
+| | Trailing Stop Guard (baru) | Position Checks (lama) |
+|---|---|---|
+| Frekuensi | tiap 30 detik | tiap 30 menit |
+| Token AI | nol (murni geometri) | nol (rule-based) |
+| Tugas | geser SL naik | close jika sinyal lawan konfirmasi 2× |
+
+- **Aturan ratchet** (R = jarak entry→SL awal; fallback |TP−entry|/2 saat restart):
+  profit < 1R → SL diam; **+1R → breakeven + fee** (buffer 0.12%); lanjut →
+  **trail 1R** di belakang mark, hanya naik, step minimal 0.15R (anti-spam amend);
+  **jarak ke TP ≤ 0.25R → guard berhenti**, TP order yang menyelesaikan. Pemicunya
+  profit ≥ 1R, BUKAN "mendekati TP" — dekat TP justru berhenti.
+- **Amend fail-safe**: SL baru di-place dulu (`algoOrder.place`), baru cancel lama
+  (`algoOrder.cancel` by `algoId`). Place gagal → SL lama utuh; cancel gagal → stop
+  ketat trigger duluan + exchange auto-expire order `closePosition` saat posisi rata
+  (terverifikasi read-only via `GET /fapi/v1/openAlgoOrders`: tidak ada order basi
+  dari 5 posisi lama). Posisi tidak pernah telanjang.
+- **`PositionCloseReason.TrailingStop = 5`**: SL terisi di sisi PROFIT entry
+  diklasifikasi TrailingStop, bukan StopLoss — geometry learner tidak menghitung
+  winner terlindungi sebagai SL-hit. Reduce-only close juga tidak lagi menyentuh
+  leverage symbol (`SetLeverageAsync` hanya untuk entry).
+- **Card "Trailing Stop"** menggantikan Order Updates: riwayat ratchet posisi AKTIF
+  saja (`TrailingStopActivityStore` in-memory, endpoint
+  `/api/account/trailing-stops`), di-clear worker saat posisi close. Audit permanen
+  tetap di tabel Orders (reason "Trailing stop: …").
+- **Settings**: `TargetMarginUsdt` kini configurable (default 3, clamp 1-1000, kolom
+  DB auto-ALTER saat startup) — menentukan leverage bump akun kecil
+  (`ceil(notional/target)`, cap 20×); margin ≠ ukuran posisi, PnL tidak berubah.
+  Input **Default Leverage disembunyikan** dari UI (jalur auto selalu pakai leverage
+  decision engine; nilai tetap dikirim saat save demi kompatibilitas).
+- **Canary check pending setelah deploy**: saat ratchet pertama muncul di card,
+  cek `openAlgoOrders` — harus tersisa SATU STOP_MARKET (validasi jalur
+  `algoOrder.cancel` yang belum pernah jalan di produksi).
+
+### Testing
+- **157 unit test pass** via Docker .NET 9 (13 baru: TrailingStopPolicy aktivasi/
+  trail/step/ratchet/near-TP/mirror short/fallback-R/degenerate, classifier
+  TrailingStop long+short). Frontend `tsc -b` bersih.

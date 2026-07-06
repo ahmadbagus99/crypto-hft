@@ -64,5 +64,22 @@ public static class ExecutionTuningPolicy
         return Math.Clamp(Math.Round(winRate * 2m, 2), 0.5m, 1.2m);
     }
 
+    // Regime-pooled fallback: a regime that has not yet realized MinExitSamples exits of its
+    // own borrows the pooled cross-regime counters, so geometry starts adapting after the
+    // account's first 10 realized exits anywhere instead of 10 per regime (at a few trades a
+    // week spread over six regimes, per-regime-only learning would sleep for months). Once
+    // the regime matures its own evidence takes over — regime character stays respected.
+    public static (decimal SlAtrMultiplier, decimal TpAtrMultiplier) ResolveStops(
+        int ownTpHits, int ownSlHits, int pooledTpHits, int pooledSlHits)
+        => ownTpHits + ownSlHits >= MinExitSamples
+            ? ComputeStops(ownTpHits, ownSlHits)
+            : ComputeStops(pooledTpHits, pooledSlHits);
+
+    public static decimal ResolveLeverageFactor(
+        int ownWins, int ownLosses, int pooledWins, int pooledLosses)
+        => ownWins + ownLosses >= MinTradeSamples
+            ? ComputeLeverageFactor(ownWins, ownLosses)
+            : ComputeLeverageFactor(pooledWins, pooledLosses);
+
     private static decimal Lerp(decimal from, decimal to, decimal t) => from + (to - from) * t;
 }

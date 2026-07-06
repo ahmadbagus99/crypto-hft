@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
+import { CandlestickSeries, ColorType, createChart, HistogramSeries, LineSeries } from "lightweight-charts";
+import type { CandlestickData, IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
 import { Activity, Bot, Radio, Settings, ShieldCheck, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createTradingConnection } from "./lib/signalr";
 import type {
   AccountUpdateEvent,
@@ -17,21 +19,31 @@ import type {
   MarginCallEvent,
   MarkPriceTick,
   OpenPositionRevalidationSnapshot,
-  OrderUpdateEvent,
   OrderBookSnapshot,
   Overview,
+  PositionHistoryItem,
+  PositionPnlBucket,
   PositionHistoryResponse,
   PriceTick,
   RiskDetailResponse,
-  TradeOrderResult,
   TradingSettings,
+  TrailingStopSnapshot,
   UserDataStreamExpiredEvent,
   AiUsageSummary
 } from "./lib/types";
 
 const symbol = "BTCUSDT";
 const APP_PASSWORD = import.meta.env.VITE_APP_PASSWORD || "admin";
-type PositionHistoryPeriod = "week" | "month";
+type PositionHistoryPeriod = "day" | "week" | "month" | "year" | "all";
+const chartIntervals = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
+type ChartInterval = (typeof chartIntervals)[number];
+const positionHistoryPeriods: Array<{ value: PositionHistoryPeriod; label: string }> = [
+  { value: "day", label: "Harian" },
+  { value: "week", label: "Mingguan" },
+  { value: "month", label: "Bulanan" },
+  { value: "year", label: "Tahunan" },
+  { value: "all", label: "Semua" },
+];
 
 async function fetchTradingSettings(): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", { cache: "no-store" });
@@ -46,6 +58,7 @@ async function saveTradingSettings(payload: {
   riskPerTradePercent: number;
   maxExposurePercent: number;
   defaultLeverage: number;
+  targetMarginUsdt?: number;
   apiKey?: string;
   apiSecret?: string;
   anthropicApiKey?: string;
@@ -92,9 +105,9 @@ async function fetchPositions(): Promise<FuturesPositionInfo[]> {
   return response.json();
 }
 
-async function fetchOrderUpdates(): Promise<OrderUpdateEvent[]> {
-  const response = await fetch(`/api/account/order-updates?symbol=${symbol}`, { cache: "no-store" });
-  if (!response.ok) throw new Error("Failed to load order updates");
+async function fetchTrailingStops(): Promise<TrailingStopSnapshot> {
+  const response = await fetch(`/api/account/trailing-stops?symbol=${symbol}`, { cache: "no-store" });
+  if (!response.ok) throw new Error("Failed to load trailing stops");
   return response.json();
 }
 
@@ -176,8 +189,8 @@ async function fetchInitialMarkPrice(): Promise<MarkPriceTick> {
   return response.json();
 }
 
-async function fetchInitialKlines(): Promise<KlineTick[]> {
-  const response = await fetch(`/api/market/klines?symbol=${symbol}&interval=1m&limit=120`, { cache: "no-store" });
+async function fetchInitialKlines(interval: ChartInterval): Promise<KlineTick[]> {
+  const response = await fetch(`/api/market/klines?symbol=${symbol}&interval=${interval}&limit=240`, { cache: "no-store" });
   if (!response.ok) throw new Error("Failed to load klines");
   return response.json();
 }
@@ -293,6 +306,7 @@ function SettingsPage() {
   const [riskPerTrade, setRiskPerTrade] = useState("1");
   const [maxExposure, setMaxExposure] = useState("25");
   const [leverage, setLeverage] = useState("5");
+  const [targetMargin, setTargetMargin] = useState("3");
   const [confidenceThreshold, setConfidenceThreshold] = useState("80");
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
@@ -327,6 +341,7 @@ function SettingsPage() {
       setRiskPerTrade(String(Math.round(current.riskPerTradePercent * 100)));
       setMaxExposure(String(Math.round(current.maxExposurePercent * 100)));
       setLeverage(String(current.defaultLeverage));
+      setTargetMargin(String(current.targetMarginUsdt ?? 3));
       setAiModel(current.aiModel ?? "claude-opus-4-8");
       setConfidenceThreshold(String(current.confidenceThreshold ?? 80));
       setInitialized(true);
@@ -345,6 +360,7 @@ function SettingsPage() {
         riskPerTradePercent: Number(riskPerTrade) / 100,
         maxExposurePercent: Number(maxExposure) / 100,
         defaultLeverage: Number(leverage),
+        targetMarginUsdt: Number(targetMargin) || undefined,
         apiKey: apiKey || undefined,
         apiSecret: apiSecret || undefined,
         anthropicApiKey: anthropicKey || undefined,
@@ -429,14 +445,19 @@ function SettingsPage() {
               min="1"
               max="500"
             />
+            {/* Default Leverage sengaja tidak ditampilkan: jalur auto-trading selalu memakai
+                leverage dari decision engine (tier confidence x faktor learning, atau saran AI),
+                jadi nilai ini tidak pernah berpengaruh. State-nya tetap dikirim saat save agar
+                nilai tersimpan di backend tidak berubah. */}
             <SettingInput
-              label="Default Leverage"
-              value={leverage}
-              onChange={setLeverage}
-              hint="Leverage default untuk manual & auto order"
+              label="Target Margin per Posisi (USDT)"
+              value={targetMargin}
+              onChange={setTargetMargin}
+              hint="Margin yang dikunci saat leverage dinaikkan agar order minimum muat di saldo kecil; leverage efektif = notional ÷ target (cap 20x)"
               type="number"
               min="1"
-              max="125"
+              max="1000"
+              step="0.5"
             />
             <SettingInput
               label="Min Confidence Open Order (%)"
@@ -705,15 +726,15 @@ function DashboardPage() {
   const [streamExpired, setStreamExpired] = useState<UserDataStreamExpiredEvent | null>(null);
   const [trades, setTrades] = useState<AggTradeTick[]>([]);
   const [klines, setKlines] = useState<KlineTick[]>([]);
+  const [chartInterval, setChartInterval] = useState<ChartInterval>("1m");
   const [realtimePositions, setRealtimePositions] = useState<FuturesPositionInfo[]>([]);
-  const [orderUpdates, setOrderUpdates] = useState<OrderUpdateEvent[]>([]);
   const [positionHistoryPeriod, setPositionHistoryPeriod] = useState<PositionHistoryPeriod>("week");
   const { data: overview } = useQuery({ queryKey: ["overview"], queryFn: fetchOverview, refetchInterval: 5000 });
   const { data: tradingSettings } = useQuery({ queryKey: ["trading-settings"], queryFn: fetchTradingSettings, refetchInterval: 5000, retry: false });
   const { data: aiUsage } = useQuery({ queryKey: ["ai-usage"], queryFn: fetchAiUsage, refetchInterval: 30000, retry: false });
   const { data: walletBalances } = useQuery({ queryKey: ["wallet"], queryFn: fetchWallet, refetchInterval: 5000, retry: false });
   const { data: positions } = useQuery({ queryKey: ["positions", symbol], queryFn: fetchPositions, refetchInterval: 5000, retry: false });
-  const { data: exchangeOrderUpdates } = useQuery({ queryKey: ["order-updates", symbol], queryFn: fetchOrderUpdates, refetchInterval: 5000, retry: false });
+  const { data: trailingStops } = useQuery({ queryKey: ["trailing-stops", symbol], queryFn: fetchTrailingStops, refetchInterval: 5000, retry: false });
   const { data: exchangeRules } = useQuery({ queryKey: ["exchange-rules", symbol], queryFn: fetchExchangeRules, refetchInterval: 60 * 60 * 1000, retry: false });
   const { data: killSwitch, refetch: refetchKillSwitch } = useQuery({ queryKey: ["kill-switch"], queryFn: fetchKillSwitch, refetchInterval: 5000, retry: false });
   const { data: journal } = useQuery({ queryKey: ["journal", symbol], queryFn: fetchJournal, refetchInterval: 5000, retry: false });
@@ -741,7 +762,6 @@ function DashboardPage() {
     };
   })();
   const displayedPositions = realtimePositions.length ? realtimePositions : positions ?? [];
-  const displayedOrderUpdates = mergeOrderUpdates(orderUpdates, exchangeOrderUpdates ?? []);
   const isManualMode = tradingSettings?.autoTradingEnabled !== true;
 
   useEffect(() => {
@@ -755,7 +775,7 @@ function DashboardPage() {
       })
       .catch(() => undefined);
 
-    fetchInitialKlines()
+    fetchInitialKlines(chartInterval)
       .then((candles) => {
         if (isMounted) setKlines(candles);
       })
@@ -776,12 +796,12 @@ function DashboardPage() {
     }, 1000);
 
     const klinePoll = window.setInterval(() => {
-      fetchInitialKlines()
+      fetchInitialKlines(chartInterval)
         .then((candles) => {
           if (isMounted) setKlines(candles);
         })
         .catch(() => undefined);
-    }, 2000);
+    }, klinePollIntervalMs(chartInterval));
 
     const tradePoll = window.setInterval(() => {
       fetchInitialAggTrades()
@@ -796,25 +816,18 @@ function DashboardPage() {
     connection.on("marginCall", (event: MarginCallEvent) => setMarginCall(event));
     connection.on("userDataStreamExpired", (event: UserDataStreamExpiredEvent) => setStreamExpired(event));
     connection.on("accountUpdate", (event: AccountUpdateEvent) => setRealtimePositions(mapAccountPositions(event)));
-    connection.on("orderUpdate", (event: OrderUpdateEvent) => {
-      setOrderUpdates((current) => [event, ...current.filter((order) => order.orderId !== event.orderId)].slice(0, 12));
-    });
-    connection.on("order", (event: TradeOrderResult) => {
-      const update = mapTradeOrderResult(event);
-      setOrderUpdates((current) => [update, ...current.filter((order) => order.orderId !== update.orderId)].slice(0, 12));
-    });
     connection.on("orderBook", (snapshot: OrderBookSnapshot) => setOrderBook(snapshot));
     connection.on("aggTrade", (tick: AggTradeTick) => {
       setTrades((current) => [tick, ...current].slice(0, 28));
     });
     connection.on("kline", (tick: KlineTick) => {
-      if (tick.interval !== "1m") return;
+      if (tick.interval !== chartInterval) return;
       setKlines((current) => {
         const last = current[current.length - 1];
         if (last?.openTime === tick.openTime) {
           return [...current.slice(0, -1), tick];
         }
-        return [...current.slice(-119), tick];
+        return [...current.slice(-239), tick];
       });
     });
 
@@ -839,7 +852,7 @@ function DashboardPage() {
       window.clearInterval(tradePoll);
       connection.stop();
     };
-  }, []);
+  }, [chartInterval]);
 
   return (
     <main className="grid w-full max-w-none gap-4 px-4 py-4">
@@ -898,9 +911,11 @@ function DashboardPage() {
 
         <section className="grid items-start gap-4 xl:grid-cols-[1.45fr_0.75fr_0.75fr_0.75fr]">
           <Panel title="Realtime Chart">
-            <div className="h-[360px]">
-              <CandlestickChart candles={klines} />
-            </div>
+            <RealtimeChartPanel
+              candles={klines}
+              interval={chartInterval}
+              onIntervalChange={setChartInterval}
+            />
           </Panel>
 
           <Panel title="Position Checks">
@@ -911,8 +926,8 @@ function DashboardPage() {
             <OpenPositions positions={displayedPositions} journal={journal} />
           </Panel>
 
-          <Panel title="Order Updates">
-            <OrderUpdates updates={displayedOrderUpdates} />
+          <Panel title="Trailing Stop">
+            <TrailingStopPanel snapshot={trailingStops} />
           </Panel>
         </section>
 
@@ -1027,62 +1042,6 @@ function mapAccountPositions(event: AccountUpdateEvent): FuturesPositionInfo[] {
   }));
 }
 
-function mapTradeOrderResult(event: TradeOrderResult): OrderUpdateEvent {
-  const orderStatus = mapOrderStatus(event.status);
-  const filledQuantity = orderStatus === "FILLED" ? event.quantity : 0;
-
-  return {
-    symbol: event.symbol,
-    orderId: event.orderId,
-    clientOrderId: event.orderId,
-    side: event.message.toLowerCase().includes("short") ? "SELL" : "BUY",
-    orderType: "LOCAL",
-    executionType: event.isPaper ? "PAPER" : "SUBMITTED",
-    orderStatus,
-    timeInForce: "",
-    originalQuantity: event.quantity,
-    originalPrice: event.price ?? 0,
-    averagePrice: event.price ?? 0,
-    stopPrice: 0,
-    lastFilledQuantity: filledQuantity,
-    accumulatedFilledQuantity: filledQuantity,
-    lastFilledPrice: event.price ?? 0,
-    realizedProfit: 0,
-    reduceOnly: event.message.toLowerCase().includes("close") || event.message.toLowerCase().includes("protective"),
-    positionSide: "BOTH",
-    workingType: "",
-    orderTradeTime: event.time,
-    eventTime: event.time,
-    source: event.isPaper ? "Paper" : "Local"
-  };
-}
-
-function mapOrderStatus(status: number | string) {
-  if (typeof status === "string") return status.toUpperCase();
-
-  const statuses: Record<number, string> = {
-    1: "NEW",
-    2: "PARTIALLY_FILLED",
-    3: "FILLED",
-    4: "CANCELED",
-    5: "REJECTED",
-    6: "EXPIRED"
-  };
-
-  return statuses[status] ?? String(status);
-}
-
-function mergeOrderUpdates(realtime: OrderUpdateEvent[], snapshot: OrderUpdateEvent[]) {
-  const byOrderId = new Map<string, OrderUpdateEvent>();
-  [...snapshot, ...realtime].forEach((update) => {
-    byOrderId.set(String(update.orderId), update);
-  });
-
-  return Array.from(byOrderId.values())
-    .sort((left, right) => new Date(right.eventTime).getTime() - new Date(left.eventTime).getTime())
-    .slice(0, 12);
-}
-
 function Metric({
   title,
   value,
@@ -1123,105 +1082,153 @@ function Panel({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function CandlestickChart({ candles }: { candles: KlineTick[] }) {
-  const width = 980;
-  const height = 420;
-  const padding = { top: 18, right: 82, bottom: 26, left: 18 };
-  const visibleCandles = candles.slice(-90);
-
-  if (!visibleCandles.length) {
-    return <EmptyState text="Waiting for realtime candlestick data..." />;
-  }
-
-  const highs = visibleCandles.map((candle) => Number(candle.high));
-  const lows = visibleCandles.map((candle) => Number(candle.low));
-  const maxPrice = Math.max(...highs);
-  const minPrice = Math.min(...lows);
-  const priceRange = Math.max(maxPrice - minPrice, 1);
-  const plotWidth = width - padding.left - padding.right;
-  const plotHeight = height - padding.top - padding.bottom;
-  const slotWidth = plotWidth / visibleCandles.length;
-  const bodyWidth = Math.max(3, Math.min(slotWidth * 0.68, 12));
-  const last = visibleCandles[visibleCandles.length - 1];
-  const lastPrice = Number(last.close);
-
-  const yForPrice = (price: number) => padding.top + ((maxPrice - price) / priceRange) * plotHeight;
-  const priceTicks = Array.from({ length: 6 }, (_, index) => maxPrice - (priceRange / 5) * index);
-
+function RealtimeChartPanel({
+  candles,
+  interval,
+  onIntervalChange
+}: {
+  candles: KlineTick[];
+  interval: ChartInterval;
+  onIntervalChange: (interval: ChartInterval) => void;
+}) {
   return (
-    <div className="h-full w-full overflow-hidden rounded-md bg-slate-950">
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full" role="img" aria-label="Realtime BTCUSDT candlestick chart">
-        <rect x="0" y="0" width={width} height={height} fill="#020617" />
-
-        {priceTicks.map((tick) => {
-          const y = yForPrice(tick);
-          return (
-            <g key={tick}>
-              <line x1={padding.left} x2={width - padding.right + 8} y1={y} y2={y} stroke="#1e293b" strokeDasharray="4 6" />
-              <text x={width - padding.right + 14} y={y + 4} fill="#64748b" fontSize="12">
-                {tick.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-              </text>
-            </g>
-          );
-        })}
-
-        {visibleCandles.map((candle, index) => {
-          const open = Number(candle.open);
-          const high = Number(candle.high);
-          const low = Number(candle.low);
-          const close = Number(candle.close);
-          const x = padding.left + index * slotWidth + slotWidth / 2;
-          const yHigh = yForPrice(high);
-          const yLow = yForPrice(low);
-          const yOpen = yForPrice(open);
-          const yClose = yForPrice(close);
-          const bullish = close >= open;
-          const color = bullish ? "#16c784" : "#ea3943";
-          const bodyY = Math.min(yOpen, yClose);
-          const bodyHeight = Math.max(Math.abs(yClose - yOpen), 1.5);
-          const time = new Date(candle.openTime).toLocaleTimeString();
-
-          return (
-            <g key={`${candle.openTime}-${index}`}>
-              <title>{`${time} O:${open} H:${high} L:${low} C:${close}`}</title>
-              <line x1={x} x2={x} y1={yHigh} y2={yLow} stroke={color} strokeWidth="1.5" />
-              <rect
-                x={x - bodyWidth / 2}
-                y={bodyY}
-                width={bodyWidth}
-                height={bodyHeight}
-                rx="1"
-                fill={bullish ? "rgba(22,199,132,0.75)" : "rgba(234,57,67,0.75)"}
-                stroke={color}
-                strokeWidth="1"
-              />
-            </g>
-          );
-        })}
-
-        <line
-          x1={padding.left}
-          x2={width - padding.right + 8}
-          y1={yForPrice(lastPrice)}
-          y2={yForPrice(lastPrice)}
-          stroke="#f8fafc"
-          strokeDasharray="6 5"
-          opacity="0.65"
-        />
-        <rect x={width - padding.right + 10} y={yForPrice(lastPrice) - 12} width="70" height="24" rx="4" fill="#111827" stroke="#334155" />
-        <text x={width - padding.right + 45} y={yForPrice(lastPrice) + 4} textAnchor="middle" fill="#f8fafc" fontSize="12" fontWeight="700">
-          {lastPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-        </text>
-
-        <text x={padding.left} y={height - 8} fill="#64748b" fontSize="12">
-          {new Date(visibleCandles[0].openTime).toLocaleTimeString()}
-        </text>
-        <text x={width - padding.right - 10} y={height - 8} textAnchor="end" fill="#64748b" fontSize="12">
-          {new Date(last.openTime).toLocaleTimeString()}
-        </text>
-      </svg>
+    <div className="grid gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold text-slate-100">BTCUSDT Perp</div>
+          <div className="text-xs text-slate-500">{interval}</div>
+        </div>
+        <div className="flex rounded-md border border-slate-800 bg-slate-950 p-1">
+          {chartIntervals.map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => onIntervalChange(item)}
+              className={`h-8 min-w-10 rounded px-2 text-xs font-semibold transition-colors ${
+                interval === item
+                  ? "bg-slate-700 text-slate-100"
+                  : "text-slate-500 hover:text-slate-200"
+              }`}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="h-[360px] overflow-hidden rounded-md border border-slate-800 bg-slate-950">
+        <BinanceStyleChart candles={candles} interval={interval} />
+      </div>
     </div>
   );
+}
+
+function BinanceStyleChart({ candles, interval }: { candles: KlineTick[]; interval: ChartInterval }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const chart = createChart(containerRef.current, {
+      autoSize: true,
+      layout: {
+        background: { type: ColorType.Solid, color: "#020617" },
+        textColor: "#94a3b8",
+        fontFamily: "Inter, ui-sans-serif, system-ui"
+      },
+      grid: {
+        vertLines: { color: "#0f172a" },
+        horzLines: { color: "#1e293b" }
+      },
+      crosshair: {
+        mode: 0,
+        vertLine: { color: "#64748b", width: 1, style: 3, labelBackgroundColor: "#111827" },
+        horzLine: { color: "#64748b", width: 1, style: 3, labelBackgroundColor: "#111827" }
+      },
+      rightPriceScale: {
+        borderColor: "#1e293b",
+        scaleMargins: { top: 0.08, bottom: 0.12 }
+      },
+      timeScale: {
+        borderColor: "#1e293b",
+        timeVisible: interval !== "1d",
+        secondsVisible: false,
+        rightOffset: 8,
+        barSpacing: 8
+      },
+      handleScale: true,
+      handleScroll: true
+    });
+
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: "#16c784",
+      downColor: "#ea3943",
+      borderUpColor: "#16c784",
+      borderDownColor: "#ea3943",
+      wickUpColor: "#16c784",
+      wickDownColor: "#ea3943",
+      priceFormat: {
+        type: "price",
+        precision: 2,
+        minMove: 0.01
+      }
+    });
+
+    chartRef.current = chart;
+    candleSeriesRef.current = candleSeries;
+    candleSeries.setData(toChartCandles(candles));
+    chart.timeScale().fitContent();
+
+    return () => {
+      chart.remove();
+      chartRef.current = null;
+      candleSeriesRef.current = null;
+    };
+  }, [interval]);
+
+  useEffect(() => {
+    if (!candleSeriesRef.current || !chartRef.current) return;
+    const data = toChartCandles(candles);
+    candleSeriesRef.current.setData(data);
+    if (data.length > 0) {
+      chartRef.current.timeScale().scrollToRealTime();
+    }
+  }, [candles]);
+
+  return (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className="h-full w-full" />
+      {!candles.length && (
+        <div className="absolute inset-0 grid place-items-center">
+          <EmptyState text="Waiting for realtime candlestick data..." />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function toChartCandles(candles: KlineTick[]): CandlestickData[] {
+  const unique = new Map<number, CandlestickData>();
+  candles.forEach((candle) => {
+    const time = Math.floor(new Date(candle.openTime).getTime() / 1000);
+    if (!Number.isFinite(time)) return;
+    unique.set(time, {
+      time: time as UTCTimestamp,
+      open: Number(candle.open),
+      high: Number(candle.high),
+      low: Number(candle.low),
+      close: Number(candle.close)
+    });
+  });
+  return Array.from(unique.values()).sort((a, b) => Number(a.time) - Number(b.time));
+}
+
+function klinePollIntervalMs(interval: ChartInterval) {
+  if (interval === "1m") return 2000;
+  if (interval === "5m" || interval === "15m") return 5000;
+  if (interval === "1h") return 15000;
+  return 30000;
 }
 
 function OrderBook({ snapshot }: { snapshot: OrderBookSnapshot | null }) {
@@ -1266,38 +1273,62 @@ function TradeTape({ trades }: { trades: AggTradeTick[] }) {
   );
 }
 
-function OrderUpdates({ updates }: { updates: OrderUpdateEvent[] }) {
-  return (
-    <div className="max-h-[310px] overflow-y-auto text-sm">
-      {updates.map((update) => {
-        const isBuy = update.side === "BUY";
-        const isDone = ["FILLED", "CANCELED", "EXPIRED"].includes(update.orderStatus);
-        const pnl = Number(update.realizedProfit);
+// Riwayat ratchet trailing stop untuk posisi yang SEDANG terbuka. Backend membersihkan
+// datanya saat posisi close, jadi card ini selalu milik satu posisi saja.
+function TrailingStopPanel({ snapshot }: { snapshot?: TrailingStopSnapshot }) {
+  if (!snapshot || snapshot.positionSide === null || snapshot.positionSide === undefined) {
+    return <EmptyState text="Tidak ada posisi aktif. Riwayat trailing stop muncul saat posisi terbuka." />;
+  }
 
-        return (
-          <div key={`${update.orderId}-${update.orderStatus}-${update.accumulatedFilledQuantity}`} className="border-b border-slate-800 py-3 last:border-b-0">
+  const side = snapshot.positionSide === 1 ? "LONG" : "SHORT";
+  const slMoved = snapshot.initialStopLoss != null
+    && snapshot.currentStopLoss != null
+    && snapshot.currentStopLoss !== snapshot.initialStopLoss;
+
+  return (
+    <div className="grid gap-3 text-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className={`font-semibold ${snapshot.positionSide === 1 ? "text-emerald-300" : "text-red-300"}`}>{side}</div>
+          <div className="mt-1 text-xs text-slate-500">Entry {formatNumber(snapshot.entryPrice)}</div>
+          <div className="text-xs text-slate-500">
+            SL awal {snapshot.initialStopLoss != null ? formatNumber(snapshot.initialStopLoss) : "-"}
+          </div>
+        </div>
+        <div className="text-right text-xs text-slate-500">
+          <div>SL sekarang</div>
+          <div className={`font-semibold ${slMoved ? "text-emerald-300" : "text-slate-300"}`}>
+            {snapshot.currentStopLoss != null ? formatNumber(snapshot.currentStopLoss) : "-"}
+          </div>
+        </div>
+      </div>
+
+      <div className="max-h-[270px] overflow-y-auto">
+        {snapshot.events.map((event) => (
+          <div key={event.ratchetedAt} className="border-t border-slate-800 py-3 first:border-t-0 first:pt-0">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="font-semibold text-slate-100">{update.symbol}</div>
-                <div className="mt-1 text-xs uppercase text-slate-500">
-                  {update.source ?? "Binance"} / {update.orderType} / {update.executionType}
+                <div className="text-xs font-semibold text-emerald-300">
+                  SL {event.previousStopLoss != null ? formatNumber(event.previousStopLoss) : "-"} → {formatNumber(event.newStopLoss)}
                 </div>
+                <div className="mt-1 text-xs text-slate-500">{new Date(event.ratchetedAt).toLocaleTimeString()}</div>
               </div>
-              <span className={`rounded px-2 py-1 text-xs font-semibold ${isDone ? "bg-slate-700 text-slate-200" : "bg-amber-500/15 text-amber-300"}`}>
-                {update.orderStatus}
-              </span>
+              <div className="text-right">
+                <div className="text-sm font-semibold text-slate-100">+{formatNumber(event.profitR, 2)}R</div>
+                <div className="text-[10px] uppercase text-slate-500">Profit saat ratchet</div>
+              </div>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-slate-400">
-              <PositionStat label="Side" value={`${update.reduceOnly ? "Close" : "Open"} ${isBuy ? "Buy" : "Sell"}`} />
-              <PositionStat label="Filled" value={`${formatNumber(update.accumulatedFilledQuantity, 4)} / ${formatNumber(update.originalQuantity, 4)}`} />
-              <PositionStat label="Avg Price" value={formatNumber(update.averagePrice || update.lastFilledPrice || update.originalPrice)} />
-              <PositionStat label="Realized PnL" value={formatSignedNumber(pnl)} />
+            <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-400">
+              <PositionStat label="Mark" value={formatNumber(event.markPrice)} />
             </div>
-            <div className="mt-2 text-xs text-slate-500">{new Date(update.orderTradeTime).toLocaleTimeString()}</div>
           </div>
-        );
-      })}
-      {!updates.length && <EmptyState text="No realtime order updates yet." />}
+        ))}
+        {!snapshot.events.length && (
+          <div className="rounded-md border border-dashed border-slate-800 p-4 text-center text-xs text-slate-500">
+            Belum ada ratchet. SL mulai digeser otomatis saat profit mencapai +1R.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1412,31 +1443,42 @@ function PositionHistoryPanel({
   period: PositionHistoryPeriod;
   onPeriodChange: (period: PositionHistoryPeriod) => void;
 }) {
+  const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    setPage(1);
+  }, [period, history?.positions.length]);
+
   if (!history) {
     return <EmptyState text="Loading position history..." />;
   }
+
+  const chartBuckets = pnlBucketsForPeriod(history.positions, period);
+  const activePeriodLabel = positionHistoryPeriods.find((item) => item.value === period)?.label ?? "Mingguan";
+  const pageSize = 5;
+  const totalPages = Math.max(1, Math.ceil(history.positions.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pagedPositions = history.positions.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   return (
     <div className="grid gap-4 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-xs text-slate-500">
-          {period === "week" ? "Closed positions this week" : "Closed positions this month"}
+          Closed positions: {activePeriodLabel.toLowerCase()}
         </div>
-        <div className="grid grid-cols-2 rounded-md border border-slate-800 bg-slate-950 p-1">
-          <button
-            type="button"
-            onClick={() => onPeriodChange("week")}
-            className={`rounded px-3 py-1.5 text-xs font-semibold ${period === "week" ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-200"}`}
-          >
-            This Week
-          </button>
-          <button
-            type="button"
-            onClick={() => onPeriodChange("month")}
-            className={`rounded px-3 py-1.5 text-xs font-semibold ${period === "month" ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-200"}`}
-          >
-            This Month
-          </button>
+        <div className="flex flex-wrap rounded-md border border-slate-800 bg-slate-950 p-1">
+          {positionHistoryPeriods.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              onClick={() => onPeriodChange(item.value)}
+              className={`h-8 rounded px-3 text-xs font-semibold transition-colors ${
+                period === item.value ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-200"
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -1448,10 +1490,7 @@ function PositionHistoryPanel({
         <PositionStat label="Worst" value={formatSignedNumber(history.summary.worstTrade)} />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <PnlLineChart title="Daily PnL" buckets={history.daily} />
-        <PnlLineChart title="Monthly PnL" buckets={history.monthly} />
-      </div>
+      <PnlPerformanceChart title={`${activePeriodLabel} PnL`} buckets={chartBuckets} />
 
       <div className="max-h-[320px] overflow-auto rounded-md border border-slate-800">
         {history.positions.length > 0 && (
@@ -1472,7 +1511,7 @@ function PositionHistoryPanel({
               </tr>
             </thead>
             <tbody>
-              {history.positions.map((position) => {
+              {pagedPositions.map((position) => {
                 const isLong = position.side === "Long";
                 const isProfit = position.realizedPnl >= 0;
                 return (
@@ -1506,111 +1545,210 @@ function PositionHistoryPanel({
         )}
         {!history.positions.length && <EmptyState text="No closed positions recorded yet." />}
       </div>
-    </div>
-  );
-}
-
-function PnlLineChart({ title, buckets }: { title: string; buckets: PositionHistoryResponse["daily"] }) {
-  const width = 620;
-  const height = 180;
-  const padding = { top: 16, right: 20, bottom: 34, left: 58 };
-  const values = buckets.map((bucket) => bucket.realizedPnl);
-  const rawMin = Math.min(0, ...values);
-  const rawMax = Math.max(0, ...values);
-  const minValue = rawMin < 0 ? rawMin * 1.15 : 0;
-  const maxValue = rawMax > 0 ? rawMax * 1.15 : 1;
-  const range = maxValue - minValue || 1;
-  const innerWidth = width - padding.left - padding.right;
-  const innerHeight = height - padding.top - padding.bottom;
-  const xFor = (index: number) =>
-    padding.left + (buckets.length <= 1 ? innerWidth / 2 : (index / (buckets.length - 1)) * innerWidth);
-  const yFor = (value: number) => padding.top + ((maxValue - value) / range) * innerHeight;
-  const points = buckets.map((bucket, index) => ({
-    bucket,
-    x: xFor(index),
-    y: yFor(bucket.realizedPnl)
-  }));
-  const path = points.length === 1
-    ? `M ${(points[0].x - 54).toFixed(2)} ${points[0].y.toFixed(2)} L ${(points[0].x + 54).toFixed(2)} ${points[0].y.toFixed(2)}`
-    : points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
-  const zeroY = yFor(0);
-  const totalPnl = buckets.reduce((sum, bucket) => sum + bucket.realizedPnl, 0);
-  const yTicks = Array.from({ length: 5 }, (_, index) => minValue + (range / 4) * index).reverse();
-
-  return (
-    <div className="rounded-md border border-slate-800 bg-slate-950 p-3">
-      <div className="mb-3 flex items-center justify-between">
-        <div className="font-semibold text-slate-200">{title}</div>
-        <div className={`text-xs font-semibold ${totalPnl >= 0 ? "text-emerald-300" : "text-red-300"}`}>
-          {formatSignedNumber(totalPnl)} / {buckets.reduce((sum, bucket) => sum + bucket.trades, 0)} trades
-        </div>
-      </div>
-      {buckets.length ? (
-        <svg viewBox={`0 0 ${width} ${height}`} className="h-44 w-full overflow-visible">
-          {yTicks.map((tick) => {
-            const y = yFor(tick);
-            return (
-              <g key={`${title}-tick-${tick}`}>
-                <line
-                  x1={padding.left}
-                  y1={y}
-                  x2={width - padding.right}
-                  y2={y}
-                  stroke={Math.abs(tick) < 0.000001 ? "#334155" : "#1e293b"}
-                  strokeDasharray={Math.abs(tick) < 0.000001 ? "4 4" : undefined}
-                />
-                <line x1={padding.left - 10} y1={y} x2={padding.left} y2={y} stroke="#334155" />
-                <text x={padding.left - 16} y={y + 4} textAnchor="end" fill="#64748b" fontSize="11">
-                  {formatSignedNumber(tick, 2)}
-                </text>
-              </g>
-            );
-          })}
-          <line x1={padding.left} y1={padding.top} x2={padding.left} y2={height - padding.bottom} stroke="#475569" strokeWidth="1.5" />
-          <line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="#475569" strokeWidth="1.5" />
-          {points.map((point) => (
-            <line
-              key={`${title}-x-${point.bucket.periodStart}`}
-              x1={point.x}
-              y1={height - padding.bottom}
-              x2={point.x}
-              y2={height - padding.bottom + 8}
-              stroke="#334155"
-            />
-          ))}
-          {path && <path d={path} fill="none" stroke="#ef4444" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />}
-          {points.map((point) => (
-            <g key={`${title}-${point.bucket.periodStart}`}>
-              <circle
-                cx={point.x}
-                cy={point.y}
-                r="6"
-                fill="#ef4444"
-                stroke="#fee2e2"
-                strokeWidth="2"
-              >
-                <title>{`${point.bucket.label}: ${formatSignedNumber(point.bucket.realizedPnl)} (${point.bucket.trades} trades)`}</title>
-              </circle>
-            </g>
-          ))}
-          {points.length > 0 && (
-            <>
-              <text x={padding.left} y={height - 8} fill="#64748b" fontSize="11">
-                {points[0].bucket.label}
-              </text>
-              <text x={width - padding.right} y={height - 8} textAnchor="end" fill="#64748b" fontSize="11">
-                {points[points.length - 1].bucket.label}
-              </text>
-            </>
-          )}
-        </svg>
-      ) : (
-        <div className="flex h-44 items-center justify-center text-xs text-slate-600">
-          No closed positions yet.
+      {history.positions.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
+          <div>
+            Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, history.positions.length)} of {history.positions.length}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={currentPage <= 1}
+              onClick={() => setPage((value) => Math.max(1, value - 1))}
+              className="rounded-md border border-slate-800 px-3 py-1.5 font-semibold text-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Prev
+            </button>
+            <span className="rounded-md border border-slate-800 bg-slate-950 px-3 py-1.5 text-slate-300">
+              {currentPage} / {totalPages}
+            </span>
+            <button
+              type="button"
+              disabled={currentPage >= totalPages}
+              onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
+              className="rounded-md border border-slate-800 px-3 py-1.5 font-semibold text-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
         </div>
       )}
     </div>
   );
+}
+
+function PnlPerformanceChart({ title, buckets }: { title: string; buckets: PositionPnlBucket[] }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const lineSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const histogramSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const totalPnl = buckets.reduce((sum, bucket) => sum + bucket.realizedPnl, 0);
+  const totalTrades = buckets.reduce((sum, bucket) => sum + bucket.trades, 0);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const chart = createChart(containerRef.current, {
+      autoSize: true,
+      layout: {
+        background: { type: ColorType.Solid, color: "#020617" },
+        textColor: "#94a3b8",
+        fontFamily: "Inter, ui-sans-serif, system-ui"
+      },
+      grid: {
+        vertLines: { color: "#0f172a" },
+        horzLines: { color: "#1e293b" }
+      },
+      rightPriceScale: {
+        borderColor: "#1e293b",
+        scaleMargins: { top: 0.12, bottom: 0.18 }
+      },
+      timeScale: {
+        borderColor: "#1e293b",
+        timeVisible: false,
+        secondsVisible: false,
+        rightOffset: 5,
+        barSpacing: 18
+      },
+      crosshair: {
+        vertLine: { color: "#64748b", width: 1, style: 3, labelBackgroundColor: "#111827" },
+        horzLine: { color: "#64748b", width: 1, style: 3, labelBackgroundColor: "#111827" }
+      },
+      handleScale: true,
+      handleScroll: true
+    });
+
+    const histogram = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+      priceScaleId: "right"
+    });
+    const line = chart.addSeries(LineSeries, {
+      color: "#38bdf8",
+      lineWidth: 2,
+      priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+      priceLineVisible: false,
+      lastValueVisible: true
+    });
+
+    chartRef.current = chart;
+    histogramSeriesRef.current = histogram;
+    lineSeriesRef.current = line;
+    applyPnlChartData(histogram, line, buckets);
+    chart.timeScale().fitContent();
+
+    return () => {
+      chart.remove();
+      chartRef.current = null;
+      histogramSeriesRef.current = null;
+      lineSeriesRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!histogramSeriesRef.current || !lineSeriesRef.current || !chartRef.current) return;
+    applyPnlChartData(histogramSeriesRef.current, lineSeriesRef.current, buckets);
+    chartRef.current.timeScale().fitContent();
+  }, [buckets]);
+
+  return (
+    <div className="rounded-md border border-slate-800 bg-slate-950 p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="font-semibold text-slate-200">{title}</div>
+          <div className="text-xs text-slate-500">Bars = period PnL, line = cumulative PnL</div>
+        </div>
+        <div className={`text-xs font-semibold ${totalPnl >= 0 ? "text-emerald-300" : "text-red-300"}`}>
+          {formatSignedNumber(totalPnl)} / {totalTrades} trades
+        </div>
+      </div>
+      <div className="relative h-56 overflow-hidden rounded border border-slate-900">
+        <div ref={containerRef} className="h-full w-full" />
+        {!buckets.length && (
+          <div className="absolute inset-0 grid place-items-center">
+            <EmptyState text="No closed positions yet." />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function applyPnlChartData(
+  histogram: ISeriesApi<"Histogram">,
+  line: ISeriesApi<"Line">,
+  buckets: PositionPnlBucket[]
+) {
+  let cumulative = 0;
+  const sorted = [...buckets].sort((a, b) => new Date(a.periodStart).getTime() - new Date(b.periodStart).getTime());
+  histogram.setData(sorted.map((bucket) => ({
+    time: pnlBucketTime(bucket.periodStart),
+    value: bucket.realizedPnl,
+    color: bucket.realizedPnl >= 0 ? "rgba(22, 199, 132, 0.72)" : "rgba(234, 57, 67, 0.72)"
+  })));
+  line.setData(sorted.map((bucket) => {
+    cumulative += bucket.realizedPnl;
+    return {
+      time: pnlBucketTime(bucket.periodStart),
+      value: Number(cumulative.toFixed(4))
+    };
+  }));
+}
+
+function pnlBucketTime(periodStart: string) {
+  return Math.floor(new Date(periodStart).getTime() / 1000) as UTCTimestamp;
+}
+
+function pnlBucketsForPeriod(positions: PositionHistoryItem[], period: PositionHistoryPeriod): PositionPnlBucket[] {
+  const buckets = new Map<string, { label: string; periodStart: Date; realizedPnl: number; trades: number }>();
+  positions.forEach((position) => {
+    const closed = new Date(position.closedAt);
+    const start = bucketStart(closed, period);
+    const key = start.toISOString();
+    const current = buckets.get(key) ?? {
+      label: bucketLabel(start, period),
+      periodStart: start,
+      realizedPnl: 0,
+      trades: 0
+    };
+    current.realizedPnl += position.realizedPnl;
+    current.trades += 1;
+    buckets.set(key, current);
+  });
+
+  return Array.from(buckets.values())
+    .sort((a, b) => a.periodStart.getTime() - b.periodStart.getTime())
+    .map((bucket) => ({
+      label: bucket.label,
+      periodStart: bucket.periodStart.toISOString(),
+      realizedPnl: Number(bucket.realizedPnl.toFixed(4)),
+      trades: bucket.trades
+    }));
+}
+
+function bucketStart(date: Date, period: PositionHistoryPeriod) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  if (period === "day") return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), date.getUTCHours()));
+  if (period === "week") {
+    const daysSinceMonday = (d.getUTCDay() + 6) % 7;
+    d.setUTCDate(d.getUTCDate() - daysSinceMonday);
+    return d;
+  }
+  if (period === "month") return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+  if (period === "year") return new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+}
+
+function bucketLabel(date: Date, period: PositionHistoryPeriod) {
+  if (period === "day") {
+    return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+  if (period === "week") {
+    return `Week ${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+  }
+  if (period === "year") {
+    return date.toLocaleDateString(undefined, { year: "numeric" });
+  }
+  return date.toLocaleDateString(undefined, { month: "short", year: "numeric" });
 }
 
 function closeReasonLabel(reason: number | string | null | undefined) {
@@ -1625,7 +1763,8 @@ function closeReasonLabel(reason: number | string | null | undefined) {
     1: "Take Profit",
     2: "Stop Loss",
     3: "Auto Close",
-    4: "Manual Close"
+    4: "Manual Close",
+    5: "Trailing Stop"
   };
   return labels[reason] ?? String(reason);
 }
@@ -1646,7 +1785,7 @@ function PositionRiskPanel({ risk }: { risk?: RiskDetailResponse }) {
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className={`font-semibold uppercase ${riskClass}`}>{risk.portfolioRiskLevel}</div>
-          <div className="mt-1 text-xs text-slate-500">Max daily loss {formatPercent(risk.maxDailyLossPercent)} / leverage {formatNumber(risk.defaultLeverage, 0)}x</div>
+          <div className="mt-1 text-xs text-slate-500">Max daily loss {formatPercent(risk.maxDailyLossPercent)}</div>
         </div>
         <span className="rounded bg-slate-900 px-2 py-1 text-xs text-slate-300">{risk.symbol}</span>
       </div>
@@ -1739,6 +1878,9 @@ function OpenPositions({ positions, journal }: { positions: FuturesPositionInfo[
     <div className="grid gap-3 text-sm">
       {activePositions.map((position) => {
         const pnl = Number(position.unrealizedProfit);
+        const margin = position.leverage > 0
+          ? Math.abs(Number(position.positionAmount)) * Number(position.entryPrice) / Number(position.leverage)
+          : Number(position.isolatedMargin);
         const key = `${position.symbol}-${position.positionSide}`;
         const protective = getActiveProtectiveLevels(position, journal);
         return (
@@ -1755,6 +1897,8 @@ function OpenPositions({ positions, journal }: { positions: FuturesPositionInfo[
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-slate-400">
               <PositionStat label="Size" value={formatNumber(position.positionAmount, 4)} />
               <PositionStat label="Leverage" value={`${formatNumber(position.leverage, 0)}x`} />
+              <PositionStat label="Margin" value={formatNumber(margin)} />
+              <PositionStat label="Unreal PnL" value={formatSignedNumber(pnl)} />
               <PositionStat label="Entry" value={formatNumber(position.entryPrice)} />
               <PositionStat label="Break Even" value={formatNumber(position.breakEvenPrice)} />
               <PositionStat label="Mark" value={formatNumber(position.markPrice)} />

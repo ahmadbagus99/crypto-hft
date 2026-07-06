@@ -51,6 +51,7 @@ public enum PositionCloseReason
     Unknown = 0,
     TakeProfit = 1,
     StopLoss = 2,
-    AutoClose = 3,   // app-initiated: open-position revalidation flipped against the side
-    ManualClose = 4  // app-initiated: user closed from the dashboard
+    AutoClose = 3,    // app-initiated: open-position revalidation flipped against the side
+    ManualClose = 4,  // app-initiated: user closed from the dashboard
+    TrailingStop = 5  // exchange-side fill of a ratcheted (breakeven/profit-lock) stop
 }

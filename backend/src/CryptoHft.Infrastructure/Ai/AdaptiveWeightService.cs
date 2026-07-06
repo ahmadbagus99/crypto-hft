@@ -50,9 +50,11 @@ public sealed class AdaptiveWeightService(
     {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
-        var stats = await db.FactorStats
-            .Where(s => s.Regime == (int)regime)
-            .ToListAsync(cancellationToken);
+        var stats = (await db.FactorStats
+                .Where(s => s.Regime == (int)regime)
+                .ToListAsync(cancellationToken))
+            .Where(s => AdvancedDecisionEngine.DirectionalCategories.Contains(s.Factor))
+            .ToList();
 
         if (stats.Count == 0) return new Dictionary<string, FactorAdjustment>();
 
@@ -225,7 +227,9 @@ public sealed class AdaptiveWeightService(
     {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
-        var stats = await db.FactorStats.ToListAsync(cancellationToken);
+        var stats = (await db.FactorStats.ToListAsync(cancellationToken))
+            .Where(s => AdvancedDecisionEngine.DirectionalCategories.Contains(s.Factor))
+            .ToList();
 
         var byRegime = stats.GroupBy(s => s.Regime);
         var result = new List<FactorPerformance>();
@@ -291,17 +295,29 @@ public sealed class AdaptiveWeightService(
             .ToList();
     }
 
-    // Learned execution baselines for a regime; defaults until enough realized exits exist.
+    // Learned execution baselines for a regime. A regime without enough realized exits of
+    // its own borrows the pooled cross-regime counters (ExecutionTuningPolicy.Resolve*);
+    // defaults only remain until the account's first exits exist anywhere at all.
     public async Task<ExecutionTuning> GetExecutionTuningAsync(MarketRegime regime, CancellationToken cancellationToken)
     {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
-        var stat = await db.ExecutionStats
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Regime == (int)regime, cancellationToken);
-        return stat is null
-            ? ExecutionTuning.Default
-            : new ExecutionTuning(stat.SlAtrMultiplier, stat.TpAtrMultiplier, stat.LeverageFactor);
+        var stats = await db.ExecutionStats.AsNoTracking().ToListAsync(cancellationToken);
+        return ResolveTuning(stats, regime);
+    }
+
+    private static ExecutionTuning ResolveTuning(IReadOnlyList<ExecutionStat> stats, MarketRegime regime)
+    {
+        if (stats.Count == 0) return ExecutionTuning.Default;
+
+        var own = stats.FirstOrDefault(s => s.Regime == (int)regime);
+        var (sl, tp) = ExecutionTuningPolicy.ResolveStops(
+            own?.TakeProfitHits ?? 0, own?.StopLossHits ?? 0,
+            stats.Sum(s => s.TakeProfitHits), stats.Sum(s => s.StopLossHits));
+        var leverageFactor = ExecutionTuningPolicy.ResolveLeverageFactor(
+            own?.Wins ?? 0, own?.Losses ?? 0,
+            stats.Sum(s => s.Wins), stats.Sum(s => s.Losses));
+        return new ExecutionTuning(sl, tp, leverageFactor);
     }
 
     // Compact realized-history digest for the LLM prompt. Null when nothing realized yet,
@@ -311,22 +327,24 @@ public sealed class AdaptiveWeightService(
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
 
-        var stat = await db.ExecutionStats
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Regime == (int)regime, cancellationToken);
+        var stats = await db.ExecutionStats.AsNoTracking().ToListAsync(cancellationToken);
+        var stat = stats.FirstOrDefault(s => s.Regime == (int)regime);
         var validation = await GetValidationPerformanceAsync(cancellationToken);
 
-        if (stat is null && validation.Count == 0) return null;
+        if (stats.Count == 0 && validation.Count == 0) return null;
 
+        // Report the baselines actually applied to this proposal — the pooled fallback
+        // included — so Claude's digest never contradicts the execution.
+        var tuning = ResolveTuning(stats, regime);
         var trades = stat is null ? 0 : stat.Wins + stat.Losses;
         return new LearningSnapshot(
             RegimeTrades: trades,
             RegimeWinRate: trades == 0 ? 0m : Math.Round(stat!.Wins * 100m / trades, 1),
             TakeProfitHits: stat?.TakeProfitHits ?? 0,
             StopLossHits: stat?.StopLossHits ?? 0,
-            SlAtrMultiplier: stat?.SlAtrMultiplier ?? ExecutionTuningPolicy.DefaultSlAtrMultiplier,
-            TpAtrMultiplier: stat?.TpAtrMultiplier ?? ExecutionTuningPolicy.DefaultTpAtrMultiplier,
-            LeverageFactor: stat?.LeverageFactor ?? ExecutionTuningPolicy.DefaultLeverageFactor,
+            SlAtrMultiplier: tuning.SlAtrMultiplier,
+            TpAtrMultiplier: tuning.TpAtrMultiplier,
+            LeverageFactor: tuning.LeverageFactor,
             ValidationOutcomes: validation);
     }
 
@@ -479,8 +497,9 @@ public sealed class AdaptiveWeightService(
         if (win) stat.Wins++; else stat.Losses++;
         if (position.CloseReason == PositionCloseReason.TakeProfit) stat.TakeProfitHits++;
         else if (position.CloseReason == PositionCloseReason.StopLoss) stat.StopLossHits++;
-        // Other close reasons (auto/manual/unknown) still teach win/loss for leverage, but
-        // never distort the SL/TP geometry counters.
+        // Other close reasons (trailing/auto/manual/unknown) still teach win/loss for leverage,
+        // but never distort the SL/TP geometry counters — a ratcheted trailing exit says nothing
+        // about whether the ORIGINAL stop geometry was right.
 
         (stat.SlAtrMultiplier, stat.TpAtrMultiplier) =
             ExecutionTuningPolicy.ComputeStops(stat.TakeProfitHits, stat.StopLossHits);

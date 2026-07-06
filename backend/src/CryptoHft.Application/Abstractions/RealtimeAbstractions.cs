@@ -35,6 +35,7 @@ public interface ITradingExecutor
     Task<TradeOrderResult> PlaceAsync(TradeOrderRequest request, CancellationToken cancellationToken);
     Task<TradeOrderResult> ClosePositionAsync(ClosePositionRequest request, CancellationToken cancellationToken);
     Task<TradeOrderResult> CancelOrderAsync(string symbol, string orderId, CancellationToken cancellationToken);
+    Task<TradeOrderResult> AmendStopLossAsync(AmendStopLossRequest request, CancellationToken cancellationToken);
 }
 
 public interface IFuturesExchangeInfoClient

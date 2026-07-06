@@ -150,6 +150,27 @@ export type AccountUpdateEvent = {
   transactionTime: string;
 };
 
+export type TrailingStopEvent = {
+  symbol: string;
+  positionSide: number;
+  entryPrice: number;
+  markPrice: number;
+  previousStopLoss?: number | null;
+  newStopLoss: number;
+  profitR: number;
+  reason: string;
+  ratchetedAt: string;
+};
+
+export type TrailingStopSnapshot = {
+  symbol: string;
+  positionSide?: number | null;
+  entryPrice: number;
+  initialStopLoss?: number | null;
+  currentStopLoss?: number | null;
+  events: TrailingStopEvent[];
+};
+
 export type OrderUpdateEvent = {
   symbol: string;
   orderId: number | string;
@@ -404,6 +425,7 @@ export type TradingSettings = {
   riskPerTradePercent: number;
   maxExposurePercent: number;
   defaultLeverage: number;
+  targetMarginUsdt: number;
   hasApiKey: boolean;
   hasApiSecret: boolean;
   apiKeyPreview: string;

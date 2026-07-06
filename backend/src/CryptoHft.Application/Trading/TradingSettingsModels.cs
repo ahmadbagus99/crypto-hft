@@ -7,6 +7,7 @@ public sealed record TradingSettingsDto(
     decimal RiskPerTradePercent,
     decimal MaxExposurePercent,
     int DefaultLeverage,
+    decimal TargetMarginUsdt,
     bool HasApiKey,
     bool HasApiSecret,
     string ApiKeyPreview,
@@ -29,7 +30,8 @@ public sealed record UpdateTradingSettingsRequest(
     string? AnthropicApiKey,
     string? AiModel,
     decimal? ConfidenceThreshold,
-    string? LunarCrushApiKey);
+    string? LunarCrushApiKey,
+    decimal? TargetMarginUsdt = null);
 
 public sealed record ConnectionTestResult(bool Connected, string Message, string? Detail = null);
 
@@ -61,5 +63,8 @@ public sealed record RuntimeTradingSettings(
     string? AnthropicApiKey,
     string? AiModel,
     decimal ConfidenceThreshold,
-    string? LunarCrushApiKey);
+    string? LunarCrushApiKey,
+    // Margin target (USDT) per posisi saat leverage harus dinaikkan agar order minimum
+    // exchange muat di saldo kecil. Menentukan leverage efektif: ceil(notional / target).
+    decimal TargetMarginUsdt = 3m);
 

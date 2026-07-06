@@ -131,6 +131,7 @@ public sealed class PersistedTradingSettings
     public string? AiModel { get; set; }
     public decimal ConfidenceThreshold { get; set; } = 80m;
     public string? LunarCrushApiKey { get; set; }
+    public decimal TargetMarginUsdt { get; set; } = 3m;
 }
 
 public sealed class NewsItem

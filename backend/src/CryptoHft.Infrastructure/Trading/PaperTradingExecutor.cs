@@ -68,4 +68,17 @@ public sealed class PaperTradingExecutor(TradingDbContext dbContext, IRealtimePu
             "Paper order cancelled",
             DateTimeOffset.UtcNow));
     }
+
+    public Task<TradeOrderResult> AmendStopLossAsync(AmendStopLossRequest request, CancellationToken cancellationToken)
+    {
+        return Task.FromResult(new TradeOrderResult(
+            request.Symbol,
+            $"PAPER-SL-{Guid.NewGuid():N}",
+            OrderStatus.New,
+            request.Quantity,
+            request.NewStopPrice,
+            true,
+            request.Reason,
+            DateTimeOffset.UtcNow));
+    }
 }

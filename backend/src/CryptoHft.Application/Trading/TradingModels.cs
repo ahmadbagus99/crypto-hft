@@ -18,6 +18,16 @@ public sealed record TradeOrderRequest(
 
 public sealed record ClosePositionRequest(string Symbol, TradeSide Side, decimal? Quantity, string Reason);
 
+// Replace the outstanding protective stop of an open position with a new trigger price
+// (trailing/breakeven ratchet). PositionSide is the side of the POSITION, not of the stop
+// order — the executor derives the reduce-only close side itself.
+public sealed record AmendStopLossRequest(
+    string Symbol,
+    TradeSide PositionSide,
+    decimal Quantity,
+    decimal NewStopPrice,
+    string Reason);
+
 public sealed record TradeOrderResult(
     string Symbol,
     string OrderId,

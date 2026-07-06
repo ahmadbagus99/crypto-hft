@@ -81,7 +81,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                     AnthropicApiKey: row.AnthropicApiKey,
                     AiModel: row.AiModel,
                     ConfidenceThreshold: row.ConfidenceThreshold > 0 ? row.ConfidenceThreshold : 80m,
-                    LunarCrushApiKey: row.LunarCrushApiKey);
+                    LunarCrushApiKey: row.LunarCrushApiKey,
+                    TargetMarginUsdt: row.TargetMarginUsdt > 0 ? row.TargetMarginUsdt : 3m);
             }
         }
         catch (Exception ex)
@@ -108,7 +109,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                 AnthropicApiKey = string.IsNullOrWhiteSpace(request.AnthropicApiKey) ? _settings.AnthropicApiKey : request.AnthropicApiKey.Trim(),
                 AiModel = string.IsNullOrWhiteSpace(request.AiModel) ? _settings.AiModel : request.AiModel.Trim(),
                 ConfidenceThreshold = request.ConfidenceThreshold is > 0 ? Math.Clamp(request.ConfidenceThreshold.Value, 1m, 100m) : _settings.ConfidenceThreshold,
-                LunarCrushApiKey = string.IsNullOrWhiteSpace(request.LunarCrushApiKey) ? _settings.LunarCrushApiKey : request.LunarCrushApiKey.Trim()
+                LunarCrushApiKey = string.IsNullOrWhiteSpace(request.LunarCrushApiKey) ? _settings.LunarCrushApiKey : request.LunarCrushApiKey.Trim(),
+                TargetMarginUsdt = request.TargetMarginUsdt is > 0 ? Math.Clamp(request.TargetMarginUsdt.Value, 1m, 1000m) : _settings.TargetMarginUsdt
             };
             updated = _settings;
         }
@@ -142,6 +144,7 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             row.AiModel = s.AiModel;
             row.ConfidenceThreshold = s.ConfidenceThreshold;
             row.LunarCrushApiKey = s.LunarCrushApiKey;
+            row.TargetMarginUsdt = s.TargetMarginUsdt;
 
             db.SaveChanges();
         }
@@ -161,6 +164,7 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             settings.RiskPerTradePercent,
             settings.MaxExposurePercent,
             settings.DefaultLeverage,
+            settings.TargetMarginUsdt,
             !string.IsNullOrWhiteSpace(settings.ApiKey),
             !string.IsNullOrWhiteSpace(settings.ApiSecret),
             Mask(settings.ApiKey),

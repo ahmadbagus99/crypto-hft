@@ -65,4 +65,51 @@ public sealed class ExecutionTuningPolicyTests
         // Excellent winrate → clamps at 1.2x
         Assert.Equal(1.2m, ExecutionTuningPolicy.ComputeLeverageFactor(wins: 20, losses: 2));
     }
+
+    // ---- Regime-pooled fallback -----------------------------------------------------------
+
+    [Fact]
+    public void ResolveStops_YoungRegime_BorrowsPooledEvidence()
+    {
+        // Own regime: 1 exit (thin). Pool: 2 TP vs 18 SL — defensive geometry from the pool.
+        var (sl, tp) = ExecutionTuningPolicy.ResolveStops(
+            ownTpHits: 1, ownSlHits: 0, pooledTpHits: 2, pooledSlHits: 18);
+        Assert.True(sl > ExecutionTuningPolicy.DefaultSlAtrMultiplier);
+        Assert.True(tp < ExecutionTuningPolicy.DefaultTpAtrMultiplier);
+    }
+
+    [Fact]
+    public void ResolveStops_MatureRegime_UsesOwnCountersOverPool()
+    {
+        // Own regime mature at a 50% TP rate (stretch the target) while the pool is defensive.
+        var (sl, tp) = ExecutionTuningPolicy.ResolveStops(
+            ownTpHits: 10, ownSlHits: 10, pooledTpHits: 12, pooledSlHits: 100);
+        Assert.True(tp > ExecutionTuningPolicy.DefaultTpAtrMultiplier);
+        Assert.True(sl < ExecutionTuningPolicy.DefaultSlAtrMultiplier);
+    }
+
+    [Fact]
+    public void ResolveStops_ThinEverywhere_StaysDefault()
+    {
+        var (sl, tp) = ExecutionTuningPolicy.ResolveStops(
+            ownTpHits: 1, ownSlHits: 1, pooledTpHits: 3, pooledSlHits: 5);
+        Assert.Equal(ExecutionTuningPolicy.DefaultSlAtrMultiplier, sl);
+        Assert.Equal(ExecutionTuningPolicy.DefaultTpAtrMultiplier, tp);
+    }
+
+    [Fact]
+    public void ResolveLeverageFactor_YoungRegime_UsesPool()
+    {
+        // Own: 1 trade. Pool: 2W/10L → (3/14)*2 = 0.43 → clamps at 0.5x.
+        Assert.Equal(0.5m, ExecutionTuningPolicy.ResolveLeverageFactor(
+            ownWins: 0, ownLosses: 1, pooledWins: 2, pooledLosses: 10));
+    }
+
+    [Fact]
+    public void ResolveLeverageFactor_MatureRegime_UsesOwnCounters()
+    {
+        // Own: 8W/4L → (9/14)*2 = 1.29 → clamps at 1.2x, regardless of the losing pool.
+        Assert.Equal(1.2m, ExecutionTuningPolicy.ResolveLeverageFactor(
+            ownWins: 8, ownLosses: 4, pooledWins: 10, pooledLosses: 30));
+    }
 }

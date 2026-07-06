@@ -300,6 +300,15 @@ app.MapGet("/api/account/position-revalidations", (
     return Results.Ok(revalidationStore.Get(symbol));
 });
 
+// Trailing-stop ratchet history for the CURRENT open position (cleared on close).
+app.MapGet("/api/account/trailing-stops", (
+    string? symbol,
+    ITrailingStopActivityStore trailingStore) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    return Results.Ok(trailingStore.Get(symbol));
+});
+
 app.MapGet("/api/account/order-updates", async (
     string? symbol,
     IFuturesAccountClient accountClient,
@@ -500,8 +509,11 @@ app.MapGet("/api/positions/history", async (
     var normalizedPeriod = string.IsNullOrWhiteSpace(period) ? "week" : period.Trim().ToLowerInvariant();
     var closedFrom = normalizedPeriod switch
     {
+        "day" => new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero),
         "month" => new DateTimeOffset(now.UtcDateTime.Year, now.UtcDateTime.Month, 1, 0, 0, 0, TimeSpan.Zero),
+        "year" => new DateTimeOffset(now.UtcDateTime.Year, 1, 1, 0, 0, 0, TimeSpan.Zero),
         "week" => StartOfUtcWeek(now),
+        "all" => null,
         _ => (DateTimeOffset?)null
     };
     if (closedFrom is not null)
@@ -847,6 +859,7 @@ using (var scope = app.Services.CreateScope())
             "ConfidenceThreshold" numeric NOT NULL
         );
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "LunarCrushApiKey" text NULL;
+        ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "TargetMarginUsdt" numeric NOT NULL DEFAULT 3;
         CREATE TABLE IF NOT EXISTS trading."AiUsage" (
             "Id" uuid PRIMARY KEY,
             "Model" text NOT NULL,

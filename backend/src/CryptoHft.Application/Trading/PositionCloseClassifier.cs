@@ -14,6 +14,7 @@ public static class PositionCloseClassifier
 
     public static PositionCloseReason Classify(
         TradeSide side,
+        decimal entryPrice,
         decimal lastMarkPrice,
         decimal? stopLoss,
         decimal? takeProfit,
@@ -30,7 +31,13 @@ public static class PositionCloseClassifier
         if (takeProfit is decimal tp && tp > 0 && ReachedFavorable(side, lastMarkPrice, tp))
             return PositionCloseReason.TakeProfit;
         if (stopLoss is decimal sl && sl > 0 && ReachedAdverse(side, lastMarkPrice, sl))
-            return PositionCloseReason.StopLoss;
+        {
+            // A stop resting at/beyond entry on the PROFIT side is a ratcheted trailing stop,
+            // not the original invalidation level — kept distinct so the geometry learner's
+            // SL-hit counter never counts a protected winner as a failed stop.
+            var ratcheted = entryPrice > 0 && (side == TradeSide.Long ? sl >= entryPrice : sl <= entryPrice);
+            return ratcheted ? PositionCloseReason.TrailingStop : PositionCloseReason.StopLoss;
+        }
         return PositionCloseReason.Unknown;
     }
 

@@ -49,11 +49,15 @@ public sealed class BinanceFuturesTradingExecutor(
             }
         }
 
-        // Set leverage on Binance before placing order
-        var leverage = request.Leverage > 0 ? request.Leverage : settings.DefaultLeverage;
+        // Set leverage on Binance before placing an ENTRY order only. Reduce-only orders
+        // (closes) must never touch the symbol leverage: the open position already carries
+        // one, and resetting it mid-close to DefaultLeverage serves nothing.
         if (!request.ReduceOnly)
+        {
+            var leverage = request.Leverage > 0 ? request.Leverage : settings.DefaultLeverage;
             leverage = await ResolveAffordableLeverageAsync(request, leverage, cancellationToken);
-        await SetLeverageAsync(request.Symbol, leverage, settings, cancellationToken);
+            await SetLeverageAsync(request.Symbol, leverage, settings, cancellationToken);
+        }
 
         var parameters = BuildOrderParameters(request);
         using var document = await InvokeSignedAsync("order.place", parameters, cancellationToken);
@@ -85,6 +89,67 @@ public sealed class BinanceFuturesTradingExecutor(
 
         var cleanupMessage = await CancelOutstandingProtectiveOrdersAsync(request.Symbol, cancellationToken);
         return result with { Message = AppendMessage(result.Message, cleanupMessage) };
+    }
+
+    // Trailing/breakeven ratchet: replace the outstanding protective stop with a tighter one.
+    // Order of operations is fail-safe: the NEW stop is placed first (two closePosition stops
+    // coexisting for a moment is harmless — whichever triggers first flattens the position),
+    // and only then is the old one cancelled. If placement fails the old stop is untouched,
+    // so the position is never left unprotected.
+    public async Task<TradeOrderResult> AmendStopLossAsync(AmendStopLossRequest request, CancellationToken cancellationToken)
+    {
+        var closeSide = request.PositionSide == TradeSide.Long ? TradeSide.Short : TradeSide.Long;
+        var normalizedSymbol = request.Symbol.ToUpperInvariant();
+
+        var previous = await dbContext.Orders
+            .Where(o => o.Symbol == normalizedSymbol
+                        && o.ReduceOnly
+                        && o.Side == closeSide
+                        && o.Kind == OrderKind.StopMarket
+                        && o.Status == OrderStatus.New
+                        && o.ExchangeOrderId != null)
+            .OrderByDescending(o => o.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var stopOrder = new TradeOrderRequest(
+            request.Symbol,
+            closeSide,
+            OrderKind.StopMarket,
+            request.Quantity,
+            Price: null,
+            StopPrice: request.NewStopPrice,
+            TakeProfit: null,
+            StopLoss: null,
+            Leverage: 0,
+            ReduceOnly: true,
+            TradingMode.Auto,
+            request.Reason);
+
+        var settings = runtimeSettings.GetRuntimeSettings();
+        var paper = settings.PaperTradingOnly || !HasCredentials(settings) || (previous?.IsPaper ?? false);
+
+        var result = paper
+            ? await PlacePaperProtectiveOrderAsync(stopOrder, cancellationToken)
+            : await PlaceExchangeOrderAsync(stopOrder, cancellationToken);
+
+        if (previous is not null)
+        {
+            try
+            {
+                if (!paper)
+                    await CancelAlgoOrderAsync(request.Symbol, previous.ExchangeOrderId!, cancellationToken);
+                previous.Status = OrderStatus.Cancelled;
+                await dbContext.SaveChangesAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The tighter stop triggers before the stale one can; position-close cleanup
+                // cancels whatever is left. Surface it, don't fail the amendment.
+                return result with { Message = AppendMessage(result.Message, $"old SL {previous.ExchangeOrderId} cancel failed: {ex.Message}") };
+            }
+        }
+
+        return result with { Message = AppendMessage(result.Message, previous is null ? "no previous SL found" : $"old SL {previous.ExchangeOrderId} cancelled") };
     }
 
     public async Task<TradeOrderResult> CancelOrderAsync(string symbol, string orderId, CancellationToken cancellationToken)
@@ -161,10 +226,9 @@ public sealed class BinanceFuturesTradingExecutor(
         // Leverage change failure (e.g. sudah di leverage yang sama) tidak perlu throw — order tetap jalan
     }
 
-    // Target margin per new position (USDT). The exchange forces a minimum order (~0.001 BTC ≈ $60
-    // notional), so on a small account we raise leverage until that order's margin lands near this
-    // target and fits the available balance. Capped for safety.
-    private const decimal TargetMarginUsdt = 3m;
+    // The exchange forces a minimum order (~0.001 BTC ≈ $60 notional), so on a small account we
+    // raise leverage until that order's margin lands near the configured target
+    // (TradingSettings.TargetMarginUsdt) and fits the available balance. Capped for safety.
     private const int MaxAffordableLeverage = 20;
 
     // If the order's margin at the chosen leverage would not fit the wallet, bump leverage up so the
@@ -187,8 +251,11 @@ public sealed class BinanceFuturesTradingExecutor(
             if (available > 0 && marginAtChosen <= available)
                 return chosenLeverage; // already affordable — don't over-leverage
 
-            // Aim for the target margin, but never leave the order unaffordable (95% of balance as buffer).
-            var byTarget = (int)Math.Ceiling(notional / TargetMarginUsdt);
+            // Aim for the configured target margin, but never leave the order unaffordable
+            // (95% of balance as buffer).
+            var targetMargin = runtimeSettings.GetRuntimeSettings().TargetMarginUsdt;
+            if (targetMargin <= 0) targetMargin = 3m;
+            var byTarget = (int)Math.Ceiling(notional / targetMargin);
             var byBalance = available > 0 ? (int)Math.Ceiling(notional / (available * 0.95m)) : byTarget;
             var needed = Math.Max(chosenLeverage, Math.Max(byTarget, byBalance));
             return Math.Clamp(needed, 1, MaxAffordableLeverage);

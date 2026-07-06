@@ -77,7 +77,7 @@ public sealed class PositionHistoryService(
             // SL/TP fills are inferred from the last mark vs the protective levels.
             var closeOrderReason = await GetRecentCloseOrderReasonAsync(db, tracked, closedAt, cancellationToken);
             var closeReason = PositionCloseClassifier.Classify(
-                tracked.Side, tracked.MarkPrice, stopLoss, takeProfit, closeOrderReason);
+                tracked.Side, tracked.EntryPrice, tracked.MarkPrice, stopLoss, takeProfit, closeOrderReason);
 
             db.Positions.Add(new Position
             {

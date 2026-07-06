@@ -30,6 +30,13 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
     public static readonly IReadOnlySet<string> NonDirectionalCategories =
         new HashSet<string> { "volatility", "liquidity" };
 
+    // The categories that vote direction and therefore learn directional accuracy.
+    // FactorStats rows outside this set (e.g. component names from an older scoring
+    // scheme such as "Trend"/"SmartMoney") are stale and must not enter the weight
+    // normalization — their evidence would skew the multipliers of live categories.
+    public static readonly IReadOnlySet<string> DirectionalCategories =
+        new HashSet<string>(CategoryWeights.Keys);
+
     // macro and onchain are flagged dynamically only when their providers return no data.
 
     public AdvancedDecision Evaluate(
@@ -114,6 +121,15 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         var spreadFraction = input.LastPrice == 0 ? 0m : input.Derivatives.BidAskSpread / input.LastPrice;
         var dampener = ConditionDampener(atrPct, spreadFraction);
         directional = 50m + (directional - 50m) * dampener;
+
+        // Anti-chasing dampener: when price has already run far in the signal's own direction
+        // over the recent lookback, high "confluence" mostly restates the move that already
+        // happened — realized calibration shows those late entries lose most often (the 60-70
+        // confidence bucket wins materially less than 50-60). Conviction is pulled toward
+        // neutral so a late signal no longer clears the entry threshold on a move it missed.
+        var recentMoveAtr = RecentMoveInAtr(candles, atr);
+        var chase = ChasingDampener(directional, recentMoveAtr);
+        directional = 50m + (directional - 50m) * chase;
 
         // Symmetric buy/sell/hold confidences derived from the directional score.
         var confidenceBuy = directional;
@@ -205,6 +221,7 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         if (Math.Abs(input.Derivatives.FundingRate) > 0.0010m) cautionReasons.Add("Funding rate unhealthy (crowded)");
         if (input.Derivatives.BidAskSpread > entry * 0.0005m) cautionReasons.Add("Spread too wide / thin liquidity");
         if (dampener < 1m) cautionReasons.Add($"Trading conditions degraded — conviction dampened to {dampener:P0} (ATR {atrPct:F2}%, spread {spreadFraction:P3})");
+        if (chase < 1m) cautionReasons.Add($"Late entry — price already moved {Math.Abs(recentMoveAtr):F1}x ATR with the signal over the last {ChaseLookbackCandles} candles; conviction dampened to {chase:P0}");
         if (input.ActiveEventWindow is string eventLabel)
             cautionReasons.Add(eventLabel);
         cautionReasons.AddRange(profileCautions);
@@ -273,6 +290,39 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         else if (atrPercent < 0.4m) dampener *= 0.92m;
         if (spreadFraction > 0.0005m) dampener *= 0.9m;
         return Math.Max(dampener, 0.65m);
+    }
+
+    // Anti-chasing thresholds (primary-TF candles, move measured in ATR multiples):
+    // dampening starts once the aligned move exceeds ChaseStartAtr and bottoms out at
+    // ChaseFloor by ChaseFullAtr. The floor keeps the conviction visible on the dashboard
+    // while reliably pushing a late signal under the entry threshold.
+    internal const int ChaseLookbackCandles = 6;
+    internal const decimal ChaseStartAtr = 2.5m;
+    internal const decimal ChaseFullAtr = 5.0m;
+    internal const decimal ChaseFloor = 0.4m;
+
+    // How far price travelled over the chase lookback, in ATR multiples (signed).
+    internal static decimal RecentMoveInAtr(IReadOnlyList<Candle> candles, decimal atr)
+    {
+        if (atr <= 0 || candles.Count < 2) return 0m;
+        var lookback = Math.Min(ChaseLookbackCandles, candles.Count - 1);
+        var past = candles[^(lookback + 1)].Close;
+        return (candles[^1].Close - past) / atr;
+    }
+
+    // Anti-chasing compression. 1.0 = untouched. Only a signal pointing the SAME way as an
+    // already-extended move is faded — fading against the move (mean reversion) is not
+    // chasing, and a neutral signal has no direction to chase.
+    internal static decimal ChasingDampener(decimal directional, decimal recentMoveAtr)
+    {
+        var aligned = (directional > 50m && recentMoveAtr > 0m)
+                      || (directional < 50m && recentMoveAtr < 0m);
+        if (!aligned) return 1m;
+
+        var extension = Math.Abs(recentMoveAtr);
+        if (extension <= ChaseStartAtr) return 1m;
+        var t = Math.Min((extension - ChaseStartAtr) / (ChaseFullAtr - ChaseStartAtr), 1m);
+        return 1m - (1m - ChaseFloor) * t;
     }
 
     // Close-to-close move over the last `lookback` closed candles, in percent.

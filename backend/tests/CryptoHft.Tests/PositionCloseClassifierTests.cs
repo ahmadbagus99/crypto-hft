@@ -4,14 +4,15 @@ using Xunit;
 
 namespace CryptoHft.Tests;
 
-// Exit classification feeds the SL/TP geometry learner — ambiguous cases must stay Unknown.
+// Exit classification feeds the SL/TP geometry learner — ambiguous cases must stay Unknown,
+// and a ratcheted (profit-side) stop must classify as TrailingStop, never as StopLoss.
 public sealed class PositionCloseClassifierTests
 {
     [Fact]
     public void LongPosition_MarkAtTakeProfit_IsTakeProfit()
     {
         var reason = PositionCloseClassifier.Classify(
-            TradeSide.Long, lastMarkPrice: 103_900m, stopLoss: 98_000m, takeProfit: 104_000m,
+            TradeSide.Long, entryPrice: 100_000m, lastMarkPrice: 103_900m, stopLoss: 98_000m, takeProfit: 104_000m,
             closeOrderReason: null);
         Assert.Equal(PositionCloseReason.TakeProfit, reason);
     }
@@ -20,7 +21,7 @@ public sealed class PositionCloseClassifierTests
     public void LongPosition_MarkAtStopLoss_IsStopLoss()
     {
         var reason = PositionCloseClassifier.Classify(
-            TradeSide.Long, lastMarkPrice: 98_100m, stopLoss: 98_000m, takeProfit: 104_000m,
+            TradeSide.Long, entryPrice: 100_000m, lastMarkPrice: 98_100m, stopLoss: 98_000m, takeProfit: 104_000m,
             closeOrderReason: null);
         Assert.Equal(PositionCloseReason.StopLoss, reason);
     }
@@ -30,7 +31,7 @@ public sealed class PositionCloseClassifierTests
     {
         // Short: TP sits below entry, SL above.
         var reason = PositionCloseClassifier.Classify(
-            TradeSide.Short, lastMarkPrice: 96_100m, stopLoss: 102_000m, takeProfit: 96_000m,
+            TradeSide.Short, entryPrice: 100_000m, lastMarkPrice: 96_100m, stopLoss: 102_000m, takeProfit: 96_000m,
             closeOrderReason: null);
         Assert.Equal(PositionCloseReason.TakeProfit, reason);
     }
@@ -39,16 +40,36 @@ public sealed class PositionCloseClassifierTests
     public void ShortPosition_MarkAtStopLoss_IsStopLoss()
     {
         var reason = PositionCloseClassifier.Classify(
-            TradeSide.Short, lastMarkPrice: 101_950m, stopLoss: 102_000m, takeProfit: 96_000m,
+            TradeSide.Short, entryPrice: 100_000m, lastMarkPrice: 101_950m, stopLoss: 102_000m, takeProfit: 96_000m,
             closeOrderReason: null);
         Assert.Equal(PositionCloseReason.StopLoss, reason);
+    }
+
+    [Fact]
+    public void LongPosition_RatchetedStopAboveEntry_IsTrailingStop()
+    {
+        // Stop was ratcheted to +1R (above entry): the fill protects profit, not the
+        // original invalidation — must not count as a StopLossHit for geometry learning.
+        var reason = PositionCloseClassifier.Classify(
+            TradeSide.Long, entryPrice: 100_000m, lastMarkPrice: 101_950m, stopLoss: 102_000m, takeProfit: 108_000m,
+            closeOrderReason: null);
+        Assert.Equal(PositionCloseReason.TrailingStop, reason);
+    }
+
+    [Fact]
+    public void ShortPosition_RatchetedStopBelowEntry_IsTrailingStop()
+    {
+        var reason = PositionCloseClassifier.Classify(
+            TradeSide.Short, entryPrice: 100_000m, lastMarkPrice: 98_050m, stopLoss: 98_000m, takeProfit: 92_000m,
+            closeOrderReason: null);
+        Assert.Equal(PositionCloseReason.TrailingStop, reason);
     }
 
     [Fact]
     public void CloseOrder_WithAutoCloseReason_IsAutoClose()
     {
         var reason = PositionCloseClassifier.Classify(
-            TradeSide.Long, lastMarkPrice: 100_500m, stopLoss: 98_000m, takeProfit: 104_000m,
+            TradeSide.Long, entryPrice: 100_000m, lastMarkPrice: 100_500m, stopLoss: 98_000m, takeProfit: 104_000m,
             closeOrderReason: "Auto close: rule-based revalidation invalidated Long position");
         Assert.Equal(PositionCloseReason.AutoClose, reason);
     }
@@ -57,7 +78,7 @@ public sealed class PositionCloseClassifierTests
     public void CloseOrder_WithOtherReason_IsManualClose()
     {
         var reason = PositionCloseClassifier.Classify(
-            TradeSide.Long, lastMarkPrice: 100_500m, stopLoss: 98_000m, takeProfit: 104_000m,
+            TradeSide.Long, entryPrice: 100_000m, lastMarkPrice: 100_500m, stopLoss: 98_000m, takeProfit: 104_000m,
             closeOrderReason: "Closed from dashboard");
         Assert.Equal(PositionCloseReason.ManualClose, reason);
     }
@@ -67,7 +88,7 @@ public sealed class PositionCloseClassifierTests
     {
         // Mid-range close with no app order: cannot attribute — must not teach the learner.
         var reason = PositionCloseClassifier.Classify(
-            TradeSide.Long, lastMarkPrice: 100_800m, stopLoss: 98_000m, takeProfit: 104_000m,
+            TradeSide.Long, entryPrice: 100_000m, lastMarkPrice: 100_800m, stopLoss: 98_000m, takeProfit: 104_000m,
             closeOrderReason: null);
         Assert.Equal(PositionCloseReason.Unknown, reason);
     }
@@ -76,7 +97,7 @@ public sealed class PositionCloseClassifierTests
     public void MissingLevels_IsUnknown()
     {
         var reason = PositionCloseClassifier.Classify(
-            TradeSide.Long, lastMarkPrice: 100_800m, stopLoss: null, takeProfit: null,
+            TradeSide.Long, entryPrice: 100_000m, lastMarkPrice: 100_800m, stopLoss: null, takeProfit: null,
             closeOrderReason: null);
         Assert.Equal(PositionCloseReason.Unknown, reason);
     }

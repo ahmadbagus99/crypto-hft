@@ -33,6 +33,8 @@ public static class DependencyInjection
         services.AddSingleton<IAutoTradeRiskGate, BinanceAutoTradeRiskGate>();
         services.AddSingleton<IOpenPositionRevalidationStore, OpenPositionRevalidationStore>();
         services.AddSingleton<IPositionHistoryService, PositionHistoryService>();
+        services.AddSingleton<ITrailingStopGuard, TrailingStopGuardService>();
+        services.AddSingleton<ITrailingStopActivityStore, TrailingStopActivityStore>();
 
         // AI decision engine (Phase 1): rule-based scoring + dynamic weighting + hybrid LLM validation
         services.Configure<AiOptions>(configuration.GetSection("Ai"));

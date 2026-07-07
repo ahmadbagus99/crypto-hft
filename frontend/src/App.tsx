@@ -1,9 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import {
-  BarController,
-  BarElement,
   CategoryScale,
   Chart as ChartJS,
+  Filler,
   Legend,
   LinearScale,
   LineController,
@@ -16,7 +15,8 @@ import { CandlestickSeries, ColorType, createChart } from "lightweight-charts";
 import type { CandlestickData, IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
 import { Activity, Bot, Radio, Settings, ShieldCheck, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Line } from "react-chartjs-2";
 import { createTradingConnection } from "./lib/signalr";
 import type {
   AccountUpdateEvent,
@@ -35,7 +35,6 @@ import type {
   OrderBookSnapshot,
   Overview,
   PositionHistoryItem,
-  PositionPnlBucket,
   PositionHistoryResponse,
   PriceTick,
   RiskDetailResponse,
@@ -58,7 +57,7 @@ const positionHistoryPeriods: Array<{ value: PositionHistoryPeriod; label: strin
   { value: "all", label: "Semua" },
 ];
 
-ChartJS.register(BarController, LineController, CategoryScale, LinearScale, BarElement, LineElement, PointElement, Tooltip, Legend);
+ChartJS.register(LineController, CategoryScale, LinearScale, LineElement, PointElement, Filler, Tooltip, Legend);
 
 async function fetchTradingSettings(): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", { cache: "no-store" });
@@ -1468,7 +1467,6 @@ function PositionHistoryPanel({
     return <EmptyState text="Loading position history..." />;
   }
 
-  const chartBuckets = pnlBucketsForPeriod(history.positions, period);
   const activePeriodLabel = positionHistoryPeriods.find((item) => item.value === period)?.label ?? "Mingguan";
   const pageSize = 5;
   const totalPages = Math.max(1, Math.ceil(history.positions.length / pageSize));
@@ -1505,7 +1503,7 @@ function PositionHistoryPanel({
         <PositionStat label="Worst" value={formatSignedNumber(history.summary.worstTrade)} />
       </div>
 
-      <PnlPerformanceChart title={`${activePeriodLabel} PnL`} buckets={chartBuckets} />
+      <PnlPerformanceChart title={`${activePeriodLabel} PnL`} positions={history.positions} />
 
       <div className="max-h-[320px] overflow-auto rounded-md border border-slate-800">
         {history.positions.length > 0 && (
@@ -1592,44 +1590,30 @@ function PositionHistoryPanel({
   );
 }
 
-function PnlPerformanceChart({ title, buckets }: { title: string; buckets: PositionPnlBucket[] }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const chartRef = useRef<ChartJS<"bar" | "line", number[], string> | null>(null);
-  const totalPnl = buckets.reduce((sum, bucket) => sum + bucket.realizedPnl, 0);
-  const totalTrades = buckets.reduce((sum, bucket) => sum + bucket.trades, 0);
-
-  useEffect(() => {
-    if (!canvasRef.current) return;
-
-    chartRef.current?.destroy();
-    const chart = new ChartJS(canvasRef.current, {
-      type: "bar",
-      data: pnlChartData(buckets),
-      options: pnlChartOptions()
-    });
-
-    chartRef.current = chart;
-
-    return () => {
-      chart.destroy();
-      chartRef.current = null;
-    };
-  }, [buckets]);
+function PnlPerformanceChart({ title, positions }: { title: string; positions: PositionHistoryItem[] }) {
+  const sortedPositions = useMemo(
+    () => [...positions].sort((a, b) => new Date(a.closedAt).getTime() - new Date(b.closedAt).getTime()),
+    [positions]
+  );
+  const totalPnl = sortedPositions.reduce((sum, position) => sum + position.realizedPnl, 0);
+  const totalTrades = sortedPositions.length;
+  const chartData = useMemo(() => pnlLineChartData(sortedPositions), [sortedPositions]);
+  const chartOptions = useMemo(() => pnlLineChartOptions(), []);
 
   return (
     <div className="rounded-md border border-slate-800 bg-slate-950 p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="font-semibold text-slate-200">{title}</div>
-          <div className="text-xs text-slate-500">Bars = period PnL, line = cumulative PnL</div>
+          <div className="text-xs text-slate-500">Line = realized PnL per closed position</div>
         </div>
         <div className={`text-xs font-semibold ${totalPnl >= 0 ? "text-emerald-300" : "text-red-300"}`}>
           {formatSignedNumber(totalPnl)} / {totalTrades} trades
         </div>
       </div>
       <div className="relative h-56 overflow-hidden rounded border border-slate-900">
-        <canvas ref={canvasRef} className="h-full w-full" />
-        {!buckets.length && (
+        <Line data={chartData} options={chartOptions} />
+        {!sortedPositions.length && (
           <div className="absolute inset-0 grid place-items-center">
             <EmptyState text="No closed positions yet." />
           </div>
@@ -1639,55 +1623,37 @@ function PnlPerformanceChart({ title, buckets }: { title: string; buckets: Posit
   );
 }
 
-function pnlChartData(buckets: PositionPnlBucket[]): ChartData<"bar" | "line", number[], string> {
-  let cumulative = 0;
-  const sorted = [...buckets].sort((a, b) => new Date(a.periodStart).getTime() - new Date(b.periodStart).getTime());
-  const labels = sorted.map((bucket) => bucket.label);
-  const periodValues = sorted.map((bucket) => Number(bucket.realizedPnl.toFixed(4)));
-  const cumulativeValues = sorted.map((bucket) => {
-    cumulative += bucket.realizedPnl;
-    return Number(cumulative.toFixed(4));
-  });
-
+function pnlLineChartData(positions: PositionHistoryItem[]): ChartData<"line", number[], string> {
   return {
-    labels,
+    labels: positions.map((position, index) => {
+      const closedAt = new Date(position.closedAt);
+      return `${index + 1}. ${closedAt.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${closedAt.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+    }),
     datasets: [
       {
-        type: "bar",
-        label: "Period PnL",
-        data: periodValues,
-        stack: "combined",
-        borderColor: periodValues.map((value) => value >= 0 ? "#16c784" : "#ea3943"),
-        backgroundColor: periodValues.map((value) => value >= 0 ? "rgba(22, 199, 132, 0.58)" : "rgba(234, 57, 67, 0.58)"),
-        borderWidth: 1,
-        borderRadius: 4,
-        barPercentage: 0.7,
-        categoryPercentage: 0.72
-      },
-      {
-        type: "line",
-        label: "Cumulative PnL",
-        data: cumulativeValues,
-        stack: "combined",
+        label: "Realized PnL",
+        data: positions.map((position) => Number(position.realizedPnl.toFixed(4))),
         borderColor: "#38bdf8",
         backgroundColor: "rgba(56, 189, 248, 0.16)",
-        pointBackgroundColor: "#38bdf8",
+        pointBackgroundColor: positions.map((position) => position.realizedPnl >= 0 ? "#16c784" : "#ea3943"),
         pointBorderColor: "#0f172a",
         pointBorderWidth: 2,
         pointRadius: 4,
         pointHoverRadius: 5,
         borderWidth: 2,
-        tension: 0.32,
-        fill: false
+        tension: 0.28,
+        fill: true
       }
     ]
   };
 }
 
-function pnlChartOptions(): ChartOptions<"bar" | "line"> {
+function pnlLineChartOptions(): ChartOptions<"line"> {
   return {
     responsive: true,
     maintainAspectRatio: false,
+    animation: false,
+    resizeDelay: 120,
     interaction: {
       mode: "index",
       intersect: false
@@ -1714,7 +1680,6 @@ function pnlChartOptions(): ChartOptions<"bar" | "line"> {
     },
     scales: {
       x: {
-        stacked: true,
         grid: {
           color: "#0f172a"
         },
@@ -1725,7 +1690,7 @@ function pnlChartOptions(): ChartOptions<"bar" | "line"> {
         }
       },
       y: {
-        stacked: true,
+        beginAtZero: true,
         grid: {
           color: "#1e293b"
         },
@@ -1736,59 +1701,6 @@ function pnlChartOptions(): ChartOptions<"bar" | "line"> {
       }
     }
   };
-}
-
-function pnlBucketsForPeriod(positions: PositionHistoryItem[], period: PositionHistoryPeriod): PositionPnlBucket[] {
-  const buckets = new Map<string, { label: string; periodStart: Date; realizedPnl: number; trades: number }>();
-  positions.forEach((position) => {
-    const closed = new Date(position.closedAt);
-    const start = bucketStart(closed, period);
-    const key = start.toISOString();
-    const current = buckets.get(key) ?? {
-      label: bucketLabel(start, period),
-      periodStart: start,
-      realizedPnl: 0,
-      trades: 0
-    };
-    current.realizedPnl += position.realizedPnl;
-    current.trades += 1;
-    buckets.set(key, current);
-  });
-
-  return Array.from(buckets.values())
-    .sort((a, b) => a.periodStart.getTime() - b.periodStart.getTime())
-    .map((bucket) => ({
-      label: bucket.label,
-      periodStart: bucket.periodStart.toISOString(),
-      realizedPnl: Number(bucket.realizedPnl.toFixed(4)),
-      trades: bucket.trades
-    }));
-}
-
-function bucketStart(date: Date, period: PositionHistoryPeriod) {
-  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  if (period === "day") return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), date.getUTCHours()));
-  if (period === "week") {
-    const daysSinceMonday = (d.getUTCDay() + 6) % 7;
-    d.setUTCDate(d.getUTCDate() - daysSinceMonday);
-    return d;
-  }
-  if (period === "month") return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-  if (period === "year") return new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-}
-
-function bucketLabel(date: Date, period: PositionHistoryPeriod) {
-  if (period === "day") {
-    return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  }
-  if (period === "week") {
-    return `Week ${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
-  }
-  if (period === "year") {
-    return date.toLocaleDateString(undefined, { year: "numeric" });
-  }
-  return date.toLocaleDateString(undefined, { month: "short", year: "numeric" });
 }
 
 function closeReasonLabel(reason: number | string | null | undefined) {

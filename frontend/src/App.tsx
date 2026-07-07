@@ -1605,7 +1605,7 @@ function PnlPerformanceChart({ title, positions }: { title: string; positions: P
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="font-semibold text-slate-200">{title}</div>
-          <div className="text-xs text-slate-500">Line = realized PnL per closed position</div>
+          <div className="text-xs text-slate-500">Line = cumulative realized PnL from closed positions</div>
         </div>
         <div className={`text-xs font-semibold ${totalPnl >= 0 ? "text-emerald-300" : "text-red-300"}`}>
           {formatSignedNumber(totalPnl)} / {totalTrades} trades
@@ -1624,6 +1624,8 @@ function PnlPerformanceChart({ title, positions }: { title: string; positions: P
 }
 
 function pnlLineChartData(positions: PositionHistoryItem[]): ChartData<"line", number[], string> {
+  let cumulativePnl = 0;
+
   return {
     labels: positions.map((position, index) => {
       const closedAt = new Date(position.closedAt);
@@ -1631,10 +1633,13 @@ function pnlLineChartData(positions: PositionHistoryItem[]): ChartData<"line", n
     }),
     datasets: [
       {
-        label: "Realized PnL",
-        data: positions.map((position) => Number(position.realizedPnl.toFixed(4))),
+        label: "Cumulative Realized PnL",
+        data: positions.map((position) => {
+          cumulativePnl += position.realizedPnl;
+          return Number(cumulativePnl.toFixed(4));
+        }),
         borderColor: "#38bdf8",
-        backgroundColor: "rgba(56, 189, 248, 0.16)",
+        backgroundColor: "transparent",
         pointBackgroundColor: positions.map((position) => position.realizedPnl >= 0 ? "#16c784" : "#ea3943"),
         pointBorderColor: "#0f172a",
         pointBorderWidth: 2,
@@ -1642,7 +1647,7 @@ function pnlLineChartData(positions: PositionHistoryItem[]): ChartData<"line", n
         pointHoverRadius: 5,
         borderWidth: 2,
         tension: 0.28,
-        fill: true
+        fill: false
       }
     ]
   };

@@ -236,9 +236,13 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
                 "macro" => input.Macro.Available ? $" [{input.Macro.Summary}]" : " [no data source — neutral]",
                 "onchain" => input.Onchain.Available ? $" [{input.Onchain.Summary}]" : " [no data source — neutral]",
                 _ when NonDirectionalCategories.Contains(name) => " [condition gauge — no directional vote]",
-                _ when invertedCategories.Contains(name) => " [inverted by learning — historically anti-predictive]",
                 _ => ""
             };
+            // The inverted tag applies to any directional category — macro/onchain included —
+            // so it is appended on top of their summary note instead of being an unreachable
+            // switch arm behind them.
+            if (invertedCategories.Contains(name))
+                note += " [inverted by learning — historically anti-predictive]";
             reasons.Add($"{name} ({score:F0}, w={weights.GetValueOrDefault(name, 0m):P0}){note}");
         }
         foreach (var comp in components)

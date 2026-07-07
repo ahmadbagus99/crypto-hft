@@ -1,5 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
-import { CandlestickSeries, ColorType, createChart, HistogramSeries, LineSeries } from "lightweight-charts";
+import {
+  BarController,
+  BarElement,
+  CategoryScale,
+  Chart as ChartJS,
+  Legend,
+  LinearScale,
+  LineController,
+  LineElement,
+  PointElement,
+  Tooltip
+} from "chart.js";
+import type { ChartData, ChartOptions } from "chart.js";
+import { CandlestickSeries, ColorType, createChart } from "lightweight-charts";
 import type { CandlestickData, IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
 import { Activity, Bot, Radio, Settings, ShieldCheck, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
@@ -44,6 +57,8 @@ const positionHistoryPeriods: Array<{ value: PositionHistoryPeriod; label: strin
   { value: "year", label: "Tahunan" },
   { value: "all", label: "Semua" },
 ];
+
+ChartJS.register(BarController, LineController, CategoryScale, LinearScale, BarElement, LineElement, PointElement, Tooltip, Legend);
 
 async function fetchTradingSettings(): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", { cache: "no-store" });
@@ -1578,76 +1593,27 @@ function PositionHistoryPanel({
 }
 
 function PnlPerformanceChart({ title, buckets }: { title: string; buckets: PositionPnlBucket[] }) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const lineSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
-  const histogramSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const chartRef = useRef<ChartJS<"bar" | "line", number[], string> | null>(null);
   const totalPnl = buckets.reduce((sum, bucket) => sum + bucket.realizedPnl, 0);
   const totalTrades = buckets.reduce((sum, bucket) => sum + bucket.trades, 0);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!canvasRef.current) return;
 
-    const chart = createChart(containerRef.current, {
-      autoSize: true,
-      layout: {
-        background: { type: ColorType.Solid, color: "#020617" },
-        textColor: "#94a3b8",
-        fontFamily: "Inter, ui-sans-serif, system-ui"
-      },
-      grid: {
-        vertLines: { color: "#0f172a" },
-        horzLines: { color: "#1e293b" }
-      },
-      rightPriceScale: {
-        borderColor: "#1e293b",
-        scaleMargins: { top: 0.12, bottom: 0.18 }
-      },
-      timeScale: {
-        borderColor: "#1e293b",
-        timeVisible: false,
-        secondsVisible: false,
-        rightOffset: 5,
-        barSpacing: 18
-      },
-      crosshair: {
-        vertLine: { color: "#64748b", width: 1, style: 3, labelBackgroundColor: "#111827" },
-        horzLine: { color: "#64748b", width: 1, style: 3, labelBackgroundColor: "#111827" }
-      },
-      handleScale: true,
-      handleScroll: true
-    });
-
-    const histogram = chart.addSeries(HistogramSeries, {
-      priceFormat: { type: "price", precision: 2, minMove: 0.01 },
-      priceScaleId: "right"
-    });
-    const line = chart.addSeries(LineSeries, {
-      color: "#38bdf8",
-      lineWidth: 2,
-      priceFormat: { type: "price", precision: 2, minMove: 0.01 },
-      priceLineVisible: false,
-      lastValueVisible: true
+    chartRef.current?.destroy();
+    const chart = new ChartJS(canvasRef.current, {
+      type: "bar",
+      data: pnlChartData(buckets),
+      options: pnlChartOptions()
     });
 
     chartRef.current = chart;
-    histogramSeriesRef.current = histogram;
-    lineSeriesRef.current = line;
-    applyPnlChartData(histogram, line, buckets);
-    chart.timeScale().fitContent();
 
     return () => {
-      chart.remove();
+      chart.destroy();
       chartRef.current = null;
-      histogramSeriesRef.current = null;
-      lineSeriesRef.current = null;
     };
-  }, []);
-
-  useEffect(() => {
-    if (!histogramSeriesRef.current || !lineSeriesRef.current || !chartRef.current) return;
-    applyPnlChartData(histogramSeriesRef.current, lineSeriesRef.current, buckets);
-    chartRef.current.timeScale().fitContent();
   }, [buckets]);
 
   return (
@@ -1662,7 +1628,7 @@ function PnlPerformanceChart({ title, buckets }: { title: string; buckets: Posit
         </div>
       </div>
       <div className="relative h-56 overflow-hidden rounded border border-slate-900">
-        <div ref={containerRef} className="h-full w-full" />
+        <canvas ref={canvasRef} className="h-full w-full" />
         {!buckets.length && (
           <div className="absolute inset-0 grid place-items-center">
             <EmptyState text="No closed positions yet." />
@@ -1673,29 +1639,103 @@ function PnlPerformanceChart({ title, buckets }: { title: string; buckets: Posit
   );
 }
 
-function applyPnlChartData(
-  histogram: ISeriesApi<"Histogram">,
-  line: ISeriesApi<"Line">,
-  buckets: PositionPnlBucket[]
-) {
+function pnlChartData(buckets: PositionPnlBucket[]): ChartData<"bar" | "line", number[], string> {
   let cumulative = 0;
   const sorted = [...buckets].sort((a, b) => new Date(a.periodStart).getTime() - new Date(b.periodStart).getTime());
-  histogram.setData(sorted.map((bucket) => ({
-    time: pnlBucketTime(bucket.periodStart),
-    value: bucket.realizedPnl,
-    color: bucket.realizedPnl >= 0 ? "rgba(22, 199, 132, 0.72)" : "rgba(234, 57, 67, 0.72)"
-  })));
-  line.setData(sorted.map((bucket) => {
+  const labels = sorted.map((bucket) => bucket.label);
+  const periodValues = sorted.map((bucket) => Number(bucket.realizedPnl.toFixed(4)));
+  const cumulativeValues = sorted.map((bucket) => {
     cumulative += bucket.realizedPnl;
-    return {
-      time: pnlBucketTime(bucket.periodStart),
-      value: Number(cumulative.toFixed(4))
-    };
-  }));
+    return Number(cumulative.toFixed(4));
+  });
+
+  return {
+    labels,
+    datasets: [
+      {
+        type: "bar",
+        label: "Period PnL",
+        data: periodValues,
+        stack: "combined",
+        borderColor: periodValues.map((value) => value >= 0 ? "#16c784" : "#ea3943"),
+        backgroundColor: periodValues.map((value) => value >= 0 ? "rgba(22, 199, 132, 0.58)" : "rgba(234, 57, 67, 0.58)"),
+        borderWidth: 1,
+        borderRadius: 4,
+        barPercentage: 0.7,
+        categoryPercentage: 0.72
+      },
+      {
+        type: "line",
+        label: "Cumulative PnL",
+        data: cumulativeValues,
+        stack: "combined",
+        borderColor: "#38bdf8",
+        backgroundColor: "rgba(56, 189, 248, 0.16)",
+        pointBackgroundColor: "#38bdf8",
+        pointBorderColor: "#0f172a",
+        pointBorderWidth: 2,
+        pointRadius: 4,
+        pointHoverRadius: 5,
+        borderWidth: 2,
+        tension: 0.32,
+        fill: false
+      }
+    ]
+  };
 }
 
-function pnlBucketTime(periodStart: string) {
-  return Math.floor(new Date(periodStart).getTime() / 1000) as UTCTimestamp;
+function pnlChartOptions(): ChartOptions<"bar" | "line"> {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: {
+      mode: "index",
+      intersect: false
+    },
+    plugins: {
+      legend: {
+        labels: {
+          color: "#94a3b8",
+          boxWidth: 10,
+          boxHeight: 10,
+          usePointStyle: true
+        }
+      },
+      tooltip: {
+        backgroundColor: "#020617",
+        borderColor: "#334155",
+        borderWidth: 1,
+        titleColor: "#e2e8f0",
+        bodyColor: "#cbd5e1",
+        callbacks: {
+          label: (context) => `${context.dataset.label}: ${formatSignedNumber(Number(context.raw ?? 0))}`
+        }
+      }
+    },
+    scales: {
+      x: {
+        stacked: true,
+        grid: {
+          color: "#0f172a"
+        },
+        ticks: {
+          color: "#64748b",
+          maxRotation: 0,
+          autoSkip: true
+        }
+      },
+      y: {
+        stacked: true,
+        grid: {
+          color: "#1e293b"
+        },
+        ticks: {
+          color: "#64748b",
+          callback: (value) => formatSignedNumber(Number(value), 2)
+        }
+      }
+    }
+  };
 }
 
 function pnlBucketsForPeriod(positions: PositionHistoryItem[], period: PositionHistoryPeriod): PositionPnlBucket[] {

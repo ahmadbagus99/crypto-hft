@@ -634,3 +634,28 @@ Dua mekanisme saat posisi terbuka — jangan tertukar:
 - **157 unit test pass** via Docker .NET 9 (13 baru: TrailingStopPolicy aktivasi/
   trail/step/ratchet/near-TP/mirror short/fallback-R/degenerate, classifier
   TrailingStop long+short). Frontend `tsc -b` bersih.
+
+---
+
+## 15. FREEZE sistem — periode observasi 1 bulan (2026-07-07 s/d ±2026-08-07)
+
+Keputusan: setelah deploy batch 13-14, **tidak ada tuning/fitur/improvement baru
+selama ±1 bulan**. Sistem dibiarkan berjalan untuk mengumpulkan 30-50 trade dengan
+konfigurasi stabil (threshold 65, RiskPerTrade 1%, TargetMargin 3). Pengecualian:
+bug fix operasional, perbaikan keamanan, dan canary check `openAlgoOrders` saat
+ratchet trailing pertama.
+
+Baseline: 6 trade closed (3W/3L, ~+2.95 USDT), learning aktif (technical/orderbook/
+macro inverted di TrendingUp dengan ratusan sampel fallback).
+
+Evaluasi ±7 Agustus 2026, berbasis data yang sudah tercatat otomatis:
+1. Win rate / profit factor / expectancy (sampel ≥30 trade)
+2. Bucket kalibrasi confidence → keputusan threshold
+3. Exit TrailingStop vs StopLoss vs TakeProfit → efektivitas trailing guard
+4. Stabilitas inversi faktor (bolak-balik = noise)
+5. Validation-performance Claude (confirmed vs hesitant) → keputusan soft-veto
+   & kandidat upgrade model (claude-sonnet-5)
+6. Profit factor > ~1.5 → momen deposit; RiskPerTrade jadi tuas PnL
+
+Prinsip: perbaiki meteran → kumpulkan data dengan meteran stabil → setel dari
+pembacaan. Jangan setel dial di tengah eksperimen.

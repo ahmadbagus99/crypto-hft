@@ -92,10 +92,9 @@ public sealed class BinanceFuturesTradingExecutor(
     }
 
     // Trailing/breakeven ratchet: replace the outstanding protective stop with a tighter one.
-    // Order of operations is fail-safe: the NEW stop is placed first (two closePosition stops
-    // coexisting for a moment is harmless — whichever triggers first flattens the position),
-    // and only then is the old one cancelled. If placement fails the old stop is untouched,
-    // so the position is never left unprotected.
+    // Binance rejects two closePosition stop orders with the same trigger direction (-4130),
+    // so live amendments cancel the old SL first, place the new one, and restore the old SL if
+    // the replacement fails. Paper mode follows the same single-active-stop lifecycle.
     public async Task<TradeOrderResult> AmendStopLossAsync(AmendStopLossRequest request, CancellationToken cancellationToken)
     {
         var closeSide = request.PositionSide == TradeSide.Long ? TradeSide.Short : TradeSide.Long;
@@ -128,10 +127,6 @@ public sealed class BinanceFuturesTradingExecutor(
         var settings = runtimeSettings.GetRuntimeSettings();
         var paper = settings.PaperTradingOnly || !HasCredentials(settings) || (previous?.IsPaper ?? false);
 
-        var result = paper
-            ? await PlacePaperProtectiveOrderAsync(stopOrder, cancellationToken)
-            : await PlaceExchangeOrderAsync(stopOrder, cancellationToken);
-
         if (previous is not null)
         {
             try
@@ -143,13 +138,59 @@ public sealed class BinanceFuturesTradingExecutor(
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // The tighter stop triggers before the stale one can; position-close cleanup
-                // cancels whatever is left. Surface it, don't fail the amendment.
-                return result with { Message = AppendMessage(result.Message, $"old SL {previous.ExchangeOrderId} cancel failed: {ex.Message}") };
+                throw new InvalidOperationException(
+                    $"Trailing stop amend aborted: old SL {previous.ExchangeOrderId} cancel failed; existing protection remains active. {ex.Message}",
+                    ex);
             }
         }
 
-        return result with { Message = AppendMessage(result.Message, previous is null ? "no previous SL found" : $"old SL {previous.ExchangeOrderId} cancelled") };
+        try
+        {
+            var result = paper
+                ? await PlacePaperProtectiveOrderAsync(stopOrder, cancellationToken)
+                : await PlaceExchangeOrderAsync(stopOrder, cancellationToken);
+
+            return result with { Message = AppendMessage(result.Message, previous is null ? "no previous SL found" : $"old SL {previous.ExchangeOrderId} cancelled first") };
+        }
+        catch (Exception placeEx) when (placeEx is not OperationCanceledException)
+        {
+            if (previous is null || previous.StopPrice is null)
+                throw new InvalidOperationException(
+                    $"Trailing stop amend failed after no previous SL was found: {placeEx.Message}",
+                    placeEx);
+
+            var restoreOrder = new TradeOrderRequest(
+                request.Symbol,
+                closeSide,
+                OrderKind.StopMarket,
+                previous.Quantity,
+                Price: null,
+                StopPrice: previous.StopPrice,
+                TakeProfit: null,
+                StopLoss: null,
+                Leverage: 0,
+                ReduceOnly: true,
+                TradingMode.Auto,
+                $"Restore previous trailing SL after amend failure: {placeEx.Message}");
+
+            TradeOrderResult restoreResult;
+            try
+            {
+                restoreResult = paper
+                    ? await PlacePaperProtectiveOrderAsync(restoreOrder, cancellationToken)
+                    : await PlaceExchangeOrderAsync(restoreOrder, cancellationToken);
+            }
+            catch (Exception restoreEx) when (restoreEx is not OperationCanceledException)
+            {
+                throw new InvalidOperationException(
+                    $"CRITICAL: trailing stop amend failed after old SL {previous.ExchangeOrderId} was cancelled, and restore at {previous.StopPrice} also failed. New SL target {request.NewStopPrice}. Amend failure: {placeEx.Message}. Restore failure: {restoreEx.Message}",
+                    restoreEx);
+            }
+
+            throw new InvalidOperationException(
+                $"Trailing stop amend failed after old SL {previous.ExchangeOrderId} was cancelled; restored SL {restoreResult.OrderId} at {previous.StopPrice}. Original failure: {placeEx.Message}",
+                placeEx);
+        }
     }
 
     public async Task<TradeOrderResult> CancelOrderAsync(string symbol, string orderId, CancellationToken cancellationToken)

@@ -37,6 +37,7 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             AnthropicApiKey: null,
             AiModel: null,
             ConfidenceThreshold: 80m,
+            PositionCheckIntervalMinutes: 30,
             LunarCrushApiKey: null);
     }
 
@@ -81,6 +82,7 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                     AnthropicApiKey: row.AnthropicApiKey,
                     AiModel: row.AiModel,
                     ConfidenceThreshold: row.ConfidenceThreshold > 0 ? row.ConfidenceThreshold : 80m,
+                    PositionCheckIntervalMinutes: ClampPositionCheckInterval(row.PositionCheckIntervalMinutes),
                     LunarCrushApiKey: row.LunarCrushApiKey,
                     TargetMarginUsdt: row.TargetMarginUsdt > 0 ? row.TargetMarginUsdt : 3m);
             }
@@ -109,6 +111,7 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                 AnthropicApiKey = string.IsNullOrWhiteSpace(request.AnthropicApiKey) ? _settings.AnthropicApiKey : request.AnthropicApiKey.Trim(),
                 AiModel = string.IsNullOrWhiteSpace(request.AiModel) ? _settings.AiModel : request.AiModel.Trim(),
                 ConfidenceThreshold = request.ConfidenceThreshold is > 0 ? Math.Clamp(request.ConfidenceThreshold.Value, 1m, 100m) : _settings.ConfidenceThreshold,
+                PositionCheckIntervalMinutes = request.PositionCheckIntervalMinutes is > 0 ? ClampPositionCheckInterval(request.PositionCheckIntervalMinutes.Value) : _settings.PositionCheckIntervalMinutes,
                 LunarCrushApiKey = string.IsNullOrWhiteSpace(request.LunarCrushApiKey) ? _settings.LunarCrushApiKey : request.LunarCrushApiKey.Trim(),
                 TargetMarginUsdt = request.TargetMarginUsdt is > 0 ? Math.Clamp(request.TargetMarginUsdt.Value, 1m, 1000m) : _settings.TargetMarginUsdt
             };
@@ -143,6 +146,7 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             row.AnthropicApiKey = s.AnthropicApiKey;
             row.AiModel = s.AiModel;
             row.ConfidenceThreshold = s.ConfidenceThreshold;
+            row.PositionCheckIntervalMinutes = s.PositionCheckIntervalMinutes;
             row.LunarCrushApiKey = s.LunarCrushApiKey;
             row.TargetMarginUsdt = s.TargetMarginUsdt;
 
@@ -172,6 +176,7 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             Mask(settings.AnthropicApiKey),
             settings.AiModel ?? "claude-opus-4-8",
             settings.ConfidenceThreshold,
+            settings.PositionCheckIntervalMinutes,
             !string.IsNullOrWhiteSpace(settings.LunarCrushApiKey),
             Mask(settings.LunarCrushApiKey));
     }
@@ -180,6 +185,11 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
     {
         if (value <= 0) return min;
         return Math.Min(Math.Max(value, min), max);
+    }
+
+    private static int ClampPositionCheckInterval(int minutes)
+    {
+        return Math.Clamp(minutes <= 0 ? 30 : minutes, 5, 120);
     }
 
     private static string Mask(string? value)

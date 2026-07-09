@@ -130,6 +130,7 @@ public sealed class PersistedTradingSettings
     public string? AnthropicApiKey { get; set; }
     public string? AiModel { get; set; }
     public decimal ConfidenceThreshold { get; set; } = 80m;
+    public int PositionCheckIntervalMinutes { get; set; } = 30;
     public string? LunarCrushApiKey { get; set; }
     public decimal TargetMarginUsdt { get; set; } = 3m;
 }

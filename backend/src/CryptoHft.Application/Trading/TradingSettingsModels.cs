@@ -15,6 +15,7 @@ public sealed record TradingSettingsDto(
     string AnthropicKeyPreview,
     string AiModel,
     decimal ConfidenceThreshold,
+    int PositionCheckIntervalMinutes,
     bool HasLunarCrushKey,
     string LunarCrushKeyPreview);
 
@@ -30,6 +31,7 @@ public sealed record UpdateTradingSettingsRequest(
     string? AnthropicApiKey,
     string? AiModel,
     decimal? ConfidenceThreshold,
+    int? PositionCheckIntervalMinutes,
     string? LunarCrushApiKey,
     decimal? TargetMarginUsdt = null);
 
@@ -63,8 +65,8 @@ public sealed record RuntimeTradingSettings(
     string? AnthropicApiKey,
     string? AiModel,
     decimal ConfidenceThreshold,
+    int PositionCheckIntervalMinutes,
     string? LunarCrushApiKey,
     // Margin target (USDT) per posisi saat leverage harus dinaikkan agar order minimum
     // exchange muat di saldo kecil. Menentukan leverage efektif: ceil(notional / target).
     decimal TargetMarginUsdt = 3m);
-

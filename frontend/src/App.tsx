@@ -78,6 +78,7 @@ async function saveTradingSettings(payload: {
   anthropicApiKey?: string;
   aiModel?: string;
   confidenceThreshold?: number;
+  positionCheckIntervalMinutes?: number;
   lunarCrushApiKey?: string;
 }): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", {
@@ -322,6 +323,7 @@ function SettingsPage() {
   const [leverage, setLeverage] = useState("5");
   const [targetMargin, setTargetMargin] = useState("3");
   const [confidenceThreshold, setConfidenceThreshold] = useState("80");
+  const [positionCheckInterval, setPositionCheckInterval] = useState("30");
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
   const [anthropicKey, setAnthropicKey] = useState("");
@@ -358,6 +360,7 @@ function SettingsPage() {
       setTargetMargin(String(current.targetMarginUsdt ?? 3));
       setAiModel(current.aiModel ?? "claude-opus-4-8");
       setConfidenceThreshold(String(current.confidenceThreshold ?? 80));
+      setPositionCheckInterval(String(current.positionCheckIntervalMinutes ?? 30));
       setInitialized(true);
     }
   }, [current, initialized]);
@@ -380,6 +383,7 @@ function SettingsPage() {
         anthropicApiKey: anthropicKey || undefined,
         aiModel: aiModel || undefined,
         confidenceThreshold: Number(confidenceThreshold) || undefined,
+        positionCheckIntervalMinutes: Number(positionCheckInterval) || undefined,
         lunarCrushApiKey: lunarCrushKey || undefined,
       });
       setApiKey("");
@@ -481,6 +485,16 @@ function SettingsPage() {
               type="number"
               min="1"
               max="100"
+            />
+            <SettingInput
+              label="Position Check Interval (menit)"
+              value={positionCheckInterval}
+              onChange={setPositionCheckInterval}
+              hint="Saat posisi terbuka, validasi arah lawan berjalan tiap interval ini. Disarankan 10-15 menit; batas 5-120."
+              type="number"
+              min="5"
+              max="120"
+              step="1"
             />
           </div>
         </section>

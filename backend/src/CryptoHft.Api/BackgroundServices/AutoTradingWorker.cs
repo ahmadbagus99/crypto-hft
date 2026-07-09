@@ -25,11 +25,11 @@ public sealed class AutoTradingWorker(
 {
     private const string Symbol = "BTCUSDT";
     private static readonly TimeSpan Interval = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan OpenPositionRevalidationInterval = TimeSpan.FromMinutes(30);
     private DateTimeOffset _nextOpenPositionRevalidationAt = DateTimeOffset.MinValue;
     private int _openPositionWarningCount;
     private TradeSide? _lastOpenPositionSide;
     private decimal? _lastOpenPositionEntryPrice;
+    private int _lastOpenPositionCheckIntervalMinutes;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -164,6 +164,8 @@ public sealed class AutoTradingWorker(
         var now = DateTimeOffset.UtcNow;
         var openSide = position.PositionAmount > 0 ? TradeSide.Long : TradeSide.Short;
         var quantity = Math.Abs(position.PositionAmount);
+        var checkIntervalMinutes = Math.Clamp(settings.PositionCheckIntervalMinutes <= 0 ? 30 : settings.PositionCheckIntervalMinutes, 5, 120);
+        var checkInterval = TimeSpan.FromMinutes(checkIntervalMinutes);
 
         if (_lastOpenPositionSide != openSide
             || _lastOpenPositionEntryPrice != position.EntryPrice
@@ -171,12 +173,24 @@ public sealed class AutoTradingWorker(
         {
             _lastOpenPositionSide = openSide;
             _lastOpenPositionEntryPrice = position.EntryPrice;
+            _lastOpenPositionCheckIntervalMinutes = checkIntervalMinutes;
             _openPositionWarningCount = 0;
-            _nextOpenPositionRevalidationAt = now.Add(OpenPositionRevalidationInterval);
+            _nextOpenPositionRevalidationAt = now.Add(checkInterval);
             revalidationStore.StartOrUpdatePosition(Symbol, openSide, quantity, position.EntryPrice, _nextOpenPositionRevalidationAt);
             logger.LogInformation(
-                "Position open ({Side} {Qty} {Symbol}); entry analysis paused, first rule-based revalidation at {NextCheck:u}",
-                openSide, quantity, Symbol, _nextOpenPositionRevalidationAt);
+                "Position open ({Side} {Qty} {Symbol}); entry analysis paused, first rule-based revalidation at {NextCheck:u} (interval {Interval}m)",
+                openSide, quantity, Symbol, _nextOpenPositionRevalidationAt, checkIntervalMinutes);
+            return;
+        }
+
+        if (_lastOpenPositionCheckIntervalMinutes != checkIntervalMinutes)
+        {
+            _lastOpenPositionCheckIntervalMinutes = checkIntervalMinutes;
+            _nextOpenPositionRevalidationAt = now.Add(checkInterval);
+            revalidationStore.SetNextCheck(Symbol, _nextOpenPositionRevalidationAt);
+            logger.LogInformation(
+                "Open-position revalidation interval changed to {Interval}m; next check rescheduled at {NextCheck:u}",
+                checkIntervalMinutes, _nextOpenPositionRevalidationAt);
             return;
         }
 
@@ -188,7 +202,7 @@ public sealed class AutoTradingWorker(
             return;
         }
 
-        _nextOpenPositionRevalidationAt = now.Add(OpenPositionRevalidationInterval);
+        _nextOpenPositionRevalidationAt = now.Add(checkInterval);
         revalidationStore.SetNextCheck(Symbol, _nextOpenPositionRevalidationAt);
 
         var decision = await aiDecisionService.AnalyzeRuleBasedAsync(Symbol, cancellationToken);
@@ -252,5 +266,6 @@ public sealed class AutoTradingWorker(
         _openPositionWarningCount = 0;
         _lastOpenPositionSide = null;
         _lastOpenPositionEntryPrice = null;
+        _lastOpenPositionCheckIntervalMinutes = 0;
     }
 }

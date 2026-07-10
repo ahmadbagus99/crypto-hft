@@ -25,7 +25,8 @@ public static class TrailingStopPolicy
         decimal markPrice,
         decimal? initialStopLoss,
         decimal? currentStopLoss,
-        decimal? takeProfit)
+        decimal? takeProfit,
+        decimal trailingDistanceR = TrailDistanceR)
     {
         if (entryPrice <= 0 || markPrice <= 0)
             return new TrailingStopVerdict(null, "price data unavailable");
@@ -34,6 +35,7 @@ public static class TrailingStopPolicy
         if (risk <= 0)
             return new TrailingStopVerdict(null, "risk unit unresolvable (no initial SL or TP)");
 
+        var distanceR = NormalizeTrailingDistance(trailingDistanceR);
         var isLong = side == TradeSide.Long;
         var profitR = (isLong ? markPrice - entryPrice : entryPrice - markPrice) / risk;
         if (profitR < ActivationR)
@@ -51,8 +53,8 @@ public static class TrailingStopPolicy
             ? entryPrice * (1m + BreakevenFeeFraction)
             : entryPrice * (1m - BreakevenFeeFraction);
         var trailed = isLong
-            ? markPrice - TrailDistanceR * risk
-            : markPrice + TrailDistanceR * risk;
+            ? markPrice - distanceR * risk
+            : markPrice + distanceR * risk;
         var candidate = Math.Round(isLong ? Math.Max(breakeven, trailed) : Math.Min(breakeven, trailed), 2);
 
         // Ratchet: only replace the stop for a meaningful tightening, never loosen it.
@@ -65,7 +67,7 @@ public static class TrailingStopPolicy
 
         return new TrailingStopVerdict(
             candidate,
-            $"profit {profitR:F2}R — stop ratcheted to {candidate} (trail {TrailDistanceR:F2}R, floor breakeven+fees)",
+            $"profit {profitR:F2}R — stop ratcheted to {candidate} (trail {distanceR:F2}R, floor breakeven+fees)",
             Math.Round(profitR, 2));
     }
 
@@ -81,5 +83,17 @@ public static class TrailingStopPolicy
             if (risk > 0) return risk;
         }
         return takeProfit is decimal tp && tp > 0 ? Math.Abs(tp - entryPrice) / 2m : 0m;
+    }
+
+    private static decimal NormalizeTrailingDistance(decimal value)
+    {
+        return value switch
+        {
+            0.50m => 0.50m,
+            0.75m => 0.75m,
+            1.00m => 1.00m,
+            1.25m => 1.25m,
+            _ => TrailDistanceR
+        };
     }
 }

@@ -861,6 +861,7 @@ using (var scope = app.Services.CreateScope())
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "LunarCrushApiKey" text NULL;
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "TargetMarginUsdt" numeric NOT NULL DEFAULT 3;
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "PositionCheckIntervalMinutes" integer NOT NULL DEFAULT 30;
+        ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "TrailingStopDistanceR" numeric NOT NULL DEFAULT 1.0;
         CREATE TABLE IF NOT EXISTS trading."AiUsage" (
             "Id" uuid PRIMARY KEY,
             "Model" text NOT NULL,

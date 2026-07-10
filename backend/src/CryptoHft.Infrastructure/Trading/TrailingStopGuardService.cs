@@ -46,7 +46,8 @@ public sealed class TrailingStopGuardService(
             activityStore.StartOrUpdatePosition(symbol, side, position.EntryPrice, initialStopLoss, currentStopLoss);
 
             var verdict = TrailingStopPolicy.Evaluate(
-                side, position.EntryPrice, position.MarkPrice, initialStopLoss, currentStopLoss, takeProfit);
+                side, position.EntryPrice, position.MarkPrice, initialStopLoss, currentStopLoss, takeProfit,
+                settings.TrailingStopDistanceR);
             if (verdict.NewStopLoss is not decimal newStop) return;
 
             var executor = scope.ServiceProvider.GetRequiredService<ITradingExecutor>();

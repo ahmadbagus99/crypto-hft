@@ -79,6 +79,7 @@ async function saveTradingSettings(payload: {
   aiModel?: string;
   confidenceThreshold?: number;
   positionCheckIntervalMinutes?: number;
+  trailingStopDistanceR?: number;
   lunarCrushApiKey?: string;
 }): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", {
@@ -324,6 +325,7 @@ function SettingsPage() {
   const [targetMargin, setTargetMargin] = useState("3");
   const [confidenceThreshold, setConfidenceThreshold] = useState("80");
   const [positionCheckInterval, setPositionCheckInterval] = useState("30");
+  const [trailingStopDistance, setTrailingStopDistance] = useState("1.00");
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
   const [anthropicKey, setAnthropicKey] = useState("");
@@ -361,6 +363,7 @@ function SettingsPage() {
       setAiModel(current.aiModel ?? "claude-opus-4-8");
       setConfidenceThreshold(String(current.confidenceThreshold ?? 80));
       setPositionCheckInterval(String(current.positionCheckIntervalMinutes ?? 30));
+      setTrailingStopDistance((current.trailingStopDistanceR ?? 1).toFixed(2));
       setInitialized(true);
     }
   }, [current, initialized]);
@@ -384,6 +387,7 @@ function SettingsPage() {
         aiModel: aiModel || undefined,
         confidenceThreshold: Number(confidenceThreshold) || undefined,
         positionCheckIntervalMinutes: Number(positionCheckInterval) || undefined,
+        trailingStopDistanceR: Number(trailingStopDistance) || undefined,
         lunarCrushApiKey: lunarCrushKey || undefined,
       });
       setApiKey("");
@@ -496,6 +500,20 @@ function SettingsPage() {
               max="120"
               step="1"
             />
+            <div>
+              <label className="mb-1 block text-xs text-slate-400">Trailing Stop Distance</label>
+              <select
+                value={trailingStopDistance}
+                onChange={e => setTrailingStopDistance(e.target.value)}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                <option value="0.50">Agresif — 0.50R</option>
+                <option value="0.75">Seimbang — 0.75R</option>
+                <option value="1.00">Konservatif — 1.00R</option>
+                <option value="1.25">Longgar — 1.25R</option>
+              </select>
+              <p className="mt-1 text-xs text-slate-600">Jarak SL trailing dari mark price setelah profit melewati +1R. Default lama: 1.00R.</p>
+            </div>
           </div>
         </section>
 

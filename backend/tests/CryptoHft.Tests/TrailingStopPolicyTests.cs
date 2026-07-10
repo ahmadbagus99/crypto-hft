@@ -40,6 +40,16 @@ public sealed class TrailingStopPolicyTests
     }
 
     [Fact]
+    public void ConfiguredDistance_TrailsCloserWhenDistanceIsLower()
+    {
+        var verdict = TrailingStopPolicy.Evaluate(
+            TradeSide.Long, Entry, markPrice: 103_000m, InitialSl, currentStopLoss: 100_120m, Tp,
+            trailingDistanceR: 0.75m);
+
+        Assert.Equal(101_500m, verdict.NewStopLoss);
+    }
+
+    [Fact]
     public void SmallImprovement_IsSkipped()
     {
         // Only +200 over the current stop (< 0.15R = 300): not worth an exchange amendment.

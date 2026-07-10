@@ -434,6 +434,7 @@ export type TradingSettings = {
   aiModel: string;
   confidenceThreshold: number;
   positionCheckIntervalMinutes: number;
+  trailingStopDistanceR: number;
   hasLunarCrushKey: boolean;
   lunarCrushKeyPreview: string;
 };

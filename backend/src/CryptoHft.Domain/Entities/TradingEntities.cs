@@ -125,6 +125,8 @@ public sealed class PersistedTradingSettings
     public decimal RiskPerTradePercent { get; set; } = 0.01m;
     public decimal MaxExposurePercent { get; set; } = 0.25m;
     public int DefaultLeverage { get; set; } = 5;
+    public int AutoSizingMode { get; set; }
+    public int TargetLeverage { get; set; } = 20;
     public string? ApiKey { get; set; }
     public string? ApiSecret { get; set; }
     public string? AnthropicApiKey { get; set; }

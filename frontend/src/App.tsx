@@ -73,6 +73,8 @@ async function saveTradingSettings(payload: {
   maxExposurePercent: number;
   defaultLeverage: number;
   targetMarginUsdt?: number;
+  autoSizingMode?: number;
+  targetLeverage?: number;
   apiKey?: string;
   apiSecret?: string;
   anthropicApiKey?: string;
@@ -323,6 +325,8 @@ function SettingsPage() {
   const [maxExposure, setMaxExposure] = useState("25");
   const [leverage, setLeverage] = useState("5");
   const [targetMargin, setTargetMargin] = useState("3");
+  const [autoSizingMode, setAutoSizingMode] = useState("0");
+  const [targetLeverage, setTargetLeverage] = useState("20");
   const [confidenceThreshold, setConfidenceThreshold] = useState("80");
   const [positionCheckInterval, setPositionCheckInterval] = useState("30");
   const [trailingStopDistance, setTrailingStopDistance] = useState("1.00");
@@ -360,6 +364,8 @@ function SettingsPage() {
       setMaxExposure(String(Math.round(current.maxExposurePercent * 100)));
       setLeverage(String(current.defaultLeverage));
       setTargetMargin(String(current.targetMarginUsdt ?? 3));
+      setAutoSizingMode(String(current.autoSizingMode ?? 0));
+      setTargetLeverage(String(current.targetLeverage ?? 20));
       setAiModel(current.aiModel ?? "claude-opus-4-8");
       setConfidenceThreshold(String(current.confidenceThreshold ?? 80));
       setPositionCheckInterval(String(current.positionCheckIntervalMinutes ?? 30));
@@ -381,6 +387,8 @@ function SettingsPage() {
         maxExposurePercent: Number(maxExposure) / 100,
         defaultLeverage: Number(leverage),
         targetMarginUsdt: Number(targetMargin) || undefined,
+        autoSizingMode: Number(autoSizingMode),
+        targetLeverage: Number(targetLeverage) || undefined,
         apiKey: apiKey || undefined,
         apiSecret: apiSecret || undefined,
         anthropicApiKey: anthropicKey || undefined,
@@ -475,12 +483,38 @@ function SettingsPage() {
               label="Target Margin per Posisi (USDT)"
               value={targetMargin}
               onChange={setTargetMargin}
-              hint="Margin yang dikunci saat leverage dinaikkan agar order minimum muat di saldo kecil; leverage efektif = notional ÷ target (cap 20x)"
+              hint="Risk mode: acuan margin untuk order minimum. Margin x Leverage mode: notional target = nilai ini × target leverage."
               type="number"
               min="1"
               max="1000"
               step="0.5"
             />
+            <div>
+              <label className="mb-1 block text-xs text-slate-400">Auto Position Sizing</label>
+              <select
+                value={autoSizingMode}
+                onChange={e => setAutoSizingMode(e.target.value)}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                <option value="0">Risk Engine — size dari risk per trade</option>
+                <option value="1">Margin × Leverage — pakai notional target</option>
+              </select>
+              <p className="mt-1 text-xs text-slate-600">Mode kedua memperbesar quantity dari target margin × leverage, lalu tetap dipotong risk gate jika melewati exposure cap.</p>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-400">Target Leverage</label>
+              <select
+                value={targetLeverage}
+                onChange={e => setTargetLeverage(e.target.value)}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                <option value="5">5x</option>
+                <option value="10">10x</option>
+                <option value="15">15x</option>
+                <option value="20">20x</option>
+              </select>
+              <p className="mt-1 text-xs text-slate-600">Dipakai saat Auto Position Sizing = Margin × Leverage. Cap sistem tetap 20x.</p>
+            </div>
             <SettingInput
               label="Min Confidence Open Order (%)"
               value={confidenceThreshold}

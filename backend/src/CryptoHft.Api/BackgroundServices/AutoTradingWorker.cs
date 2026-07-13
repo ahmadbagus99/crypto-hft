@@ -86,23 +86,37 @@ public sealed class AutoTradingWorker(
         // Order placement only in Auto mode.
         if (!settings.AutoTradingEnabled) return;
         if (!decision.ShouldTrade) return;
-        if (decision.PositionSizeQuantity <= 0)
+        var sizing = AutoPositionSizingPolicy.Resolve(
+            settings.AutoSizingMode,
+            decision.PositionSizeQuantity,
+            decision.Leverage,
+            decision.EntryPrice,
+            settings.TargetMarginUsdt,
+            settings.TargetLeverage);
+
+        if (sizing.Quantity <= 0)
         {
             logger.LogWarning("Auto-trade skipped: computed quantity is zero");
             return;
+        }
+        if (settings.AutoSizingMode == AutoPositionSizingPolicy.TargetMarginLeverageMode)
+        {
+            logger.LogInformation(
+                "Auto sizing override: qty {DecisionQty} -> {Qty}, leverage {DecisionLev}x -> {Lev}x ({Reason})",
+                decision.PositionSizeQuantity, sizing.Quantity, decision.Leverage, sizing.Leverage, sizing.Reason);
         }
 
         // Account-level risk gate: daily loss / consecutive losses pause trading; the exposure
         // cap only trims the quantity. The signal itself is never re-judged here — confidence
         // above the threshold already decided that the position opens.
         var verdict = await riskGate.EvaluateAsync(
-            Symbol, decision.PositionSizeQuantity, decision.EntryPrice, decision.Leverage, cancellationToken);
+            Symbol, sizing.Quantity, decision.EntryPrice, sizing.Leverage, cancellationToken);
         if (!verdict.Allowed)
         {
             logger.LogWarning("Auto-trade blocked by risk gate: {Reason}", verdict.Reason);
             return;
         }
-        var quantity = verdict.AdjustedQuantity ?? decision.PositionSizeQuantity;
+        var quantity = verdict.AdjustedQuantity ?? sizing.Quantity;
         if (verdict.AdjustedQuantity is not null)
             logger.LogInformation("Risk gate resized order: {Reason}", verdict.Reason);
 
@@ -124,7 +138,7 @@ public sealed class AutoTradingWorker(
             StopPrice: null,
             TakeProfit: decision.TakeProfit,
             StopLoss: decision.StopLoss,
-            Leverage: decision.Leverage,
+            Leverage: sizing.Leverage,
             ReduceOnly: false,
             TradingMode.Auto,
             reason);

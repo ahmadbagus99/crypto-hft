@@ -426,6 +426,8 @@ export type TradingSettings = {
   maxExposurePercent: number;
   defaultLeverage: number;
   targetMarginUsdt: number;
+  autoSizingMode: number;
+  targetLeverage: number;
   hasApiKey: boolean;
   hasApiSecret: boolean;
   apiKeyPreview: string;

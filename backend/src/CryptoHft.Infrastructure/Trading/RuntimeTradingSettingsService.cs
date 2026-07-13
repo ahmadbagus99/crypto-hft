@@ -32,6 +32,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             RiskPerTradePercent: 0.01m,
             MaxExposurePercent: 0.25m,
             DefaultLeverage: 5,
+            AutoSizingMode: 0,
+            TargetLeverage: 20,
             ApiKey: options.Value.ApiKey,
             ApiSecret: options.Value.ApiSecret,
             AnthropicApiKey: null,
@@ -77,6 +79,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                     RiskPerTradePercent: row.RiskPerTradePercent,
                     MaxExposurePercent: row.MaxExposurePercent,
                     DefaultLeverage: row.DefaultLeverage,
+                    AutoSizingMode: NormalizeAutoSizingMode(row.AutoSizingMode),
+                    TargetLeverage: ClampTargetLeverage(row.TargetLeverage),
                     // Fall back to env-provided keys if the DB row never stored one.
                     ApiKey: string.IsNullOrWhiteSpace(row.ApiKey) ? _settings.ApiKey : row.ApiKey,
                     ApiSecret: string.IsNullOrWhiteSpace(row.ApiSecret) ? _settings.ApiSecret : row.ApiSecret,
@@ -108,6 +112,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                 RiskPerTradePercent = ClampPercent(request.RiskPerTradePercent, 0.001m, 0.20m),
                 MaxExposurePercent = ClampPercent(request.MaxExposurePercent, 0.01m, 5m),
                 DefaultLeverage = Math.Clamp(request.DefaultLeverage, 1, 125),
+                AutoSizingMode = request.AutoSizingMode is not null ? NormalizeAutoSizingMode(request.AutoSizingMode.Value) : _settings.AutoSizingMode,
+                TargetLeverage = request.TargetLeverage is > 0 ? ClampTargetLeverage(request.TargetLeverage.Value) : _settings.TargetLeverage,
                 ApiKey = string.IsNullOrWhiteSpace(request.ApiKey) ? _settings.ApiKey : request.ApiKey.Trim(),
                 ApiSecret = string.IsNullOrWhiteSpace(request.ApiSecret) ? _settings.ApiSecret : request.ApiSecret.Trim(),
                 AnthropicApiKey = string.IsNullOrWhiteSpace(request.AnthropicApiKey) ? _settings.AnthropicApiKey : request.AnthropicApiKey.Trim(),
@@ -144,6 +150,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             row.RiskPerTradePercent = s.RiskPerTradePercent;
             row.MaxExposurePercent = s.MaxExposurePercent;
             row.DefaultLeverage = s.DefaultLeverage;
+            row.AutoSizingMode = s.AutoSizingMode;
+            row.TargetLeverage = s.TargetLeverage;
             row.ApiKey = s.ApiKey;
             row.ApiSecret = s.ApiSecret;
             row.AnthropicApiKey = s.AnthropicApiKey;
@@ -173,6 +181,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             settings.MaxExposurePercent,
             settings.DefaultLeverage,
             settings.TargetMarginUsdt,
+            settings.AutoSizingMode,
+            settings.TargetLeverage,
             !string.IsNullOrWhiteSpace(settings.ApiKey),
             !string.IsNullOrWhiteSpace(settings.ApiSecret),
             Mask(settings.ApiKey),
@@ -195,6 +205,16 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
     private static int ClampPositionCheckInterval(int minutes)
     {
         return Math.Clamp(minutes <= 0 ? 30 : minutes, 5, 120);
+    }
+
+    private static int NormalizeAutoSizingMode(int value)
+    {
+        return value == 1 ? 1 : 0;
+    }
+
+    private static int ClampTargetLeverage(int leverage)
+    {
+        return Math.Clamp(leverage <= 0 ? 20 : leverage, 1, 20);
     }
 
     private static decimal NormalizeTrailingStopDistance(decimal value, decimal fallback)

@@ -5,6 +5,7 @@ using CryptoHft.Application.Account;
 using CryptoHft.Application.Ai;
 using CryptoHft.Application.DecisionEngine;
 using CryptoHft.Application.Risk;
+using CryptoHft.Application.Notifications;
 using CryptoHft.Application.Trading;
 using CryptoHft.Domain.Enums;
 using CryptoHft.Infrastructure;
@@ -52,6 +53,38 @@ app.UseCors();
 app.UseSwagger();
 app.UseSwaggerUI();
 app.MapHub<TradingHub>("/hubs/trading");
+
+app.MapPost("/api/notifications/devices", async (
+    RegisterPushDeviceRequest request,
+    IPushNotificationService pushNotifications,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await pushNotifications.RegisterDeviceAsync(request, cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapDelete("/api/notifications/devices/{deviceToken}", async (
+    string deviceToken,
+    IPushNotificationService pushNotifications,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await pushNotifications.UnregisterDeviceAsync(deviceToken, cancellationToken);
+        return Results.NoContent();
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
 
 app.MapGet("/health", () => Results.Ok(new
 {
@@ -909,6 +942,17 @@ using (var scope = app.Services.CreateScope())
         );
         CREATE UNIQUE INDEX IF NOT EXISTS "IX_ExecutionStats_Regime"
             ON trading."ExecutionStats" ("Regime");
+        CREATE TABLE IF NOT EXISTS trading."PushDevices" (
+            "Id" uuid PRIMARY KEY,
+            "DeviceToken" text NOT NULL,
+            "Platform" text NOT NULL,
+            "Environment" text NOT NULL,
+            "Enabled" boolean NOT NULL,
+            "CreatedAt" timestamptz NOT NULL,
+            "UpdatedAt" timestamptz NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_PushDevices_DeviceToken"
+            ON trading."PushDevices" ("DeviceToken");
         """);
 
     // Hydrate the in-memory runtime settings (incl. API keys) from the DB so they

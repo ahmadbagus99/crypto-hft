@@ -22,6 +22,20 @@ services:
       Ai__AnthropicApiKey: ${ANTHROPIC_API_KEY:-}
       Ai__Model: claude-opus-4-8
       Ai__LlmConfidenceThreshold: '80'
+      Apns__Enabled: ${APNS_ENABLED:-false}
+      Apns__TeamId: ${APNS_TEAM_ID:-}
+      Apns__KeyId: ${APNS_KEY_ID:-}
+      Apns__BundleId: ${APNS_BUNDLE_ID:-com.ahmadbagus.cryptoHFT}
+      Apns__PrivateKeyBase64: ${APNS_PRIVATE_KEY_BASE64:-}
+      Bark__Enabled: ${BARK_ENABLED:-false}
+      Bark__PushUrl: ${BARK_PUSH_URL:-}
+      Bark__ServerUrl: ${BARK_SERVER_URL:-https://api.day.app}
+      Bark__DeviceKey: ${BARK_DEVICE_KEY:-}
+      Bark__Sound: ${BARK_SOUND:-minuet}
+      Bark__Group: ${BARK_GROUP:-seqra-quant}
+      Bark__Level: ${BARK_LEVEL:-timeSensitive}
+      Bark__IconUrl: ${BARK_ICON_URL:-}
+      Bark__OpenUrl: ${BARK_OPEN_URL:-https://trading.seqra.space}
     restart: unless-stopped
     networks:
       - creatio-shared

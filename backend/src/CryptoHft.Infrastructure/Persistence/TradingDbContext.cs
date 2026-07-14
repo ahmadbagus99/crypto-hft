@@ -7,6 +7,7 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
 {
     public DbSet<User> Users => Set<User>();
     public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
+    public DbSet<PushDevice> PushDevices => Set<PushDevice>();
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<Position> Positions => Set<Position>();
     public DbSet<Signal> Signals => Set<Signal>();
@@ -32,6 +33,7 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
         modelBuilder.Entity<ExecutionStat>().ToTable("ExecutionStats");
         modelBuilder.Entity<ExecutionStat>().HasIndex(x => x.Regime).IsUnique();
         modelBuilder.Entity<User>().HasIndex(x => x.Email).IsUnique();
+        modelBuilder.Entity<PushDevice>().HasIndex(x => x.DeviceToken).IsUnique();
         modelBuilder.Entity<Order>().HasIndex(x => new { x.Symbol, x.CreatedAt });
         modelBuilder.Entity<Position>().HasIndex(x => new { x.Symbol, x.OpenedAt });
         modelBuilder.Entity<Signal>().HasIndex(x => new { x.Symbol, x.CreatedAt });

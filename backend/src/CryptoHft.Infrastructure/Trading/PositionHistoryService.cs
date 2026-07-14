@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using CryptoHft.Application.Account;
 using CryptoHft.Application.Trading;
+using CryptoHft.Application.Notifications;
 using CryptoHft.Domain.Entities;
 using CryptoHft.Domain.Enums;
 using CryptoHft.Infrastructure.Binance;
@@ -20,19 +21,23 @@ public sealed class PositionHistoryService(
     IRuntimeTradingSettingsService settingsService,
     IHttpClientFactory httpClientFactory,
     IOptions<BinanceOptions> options,
+    IPushNotificationService pushNotifications,
     ILogger<PositionHistoryService> logger) : IPositionHistoryService
 {
     private readonly object _lock = new();
     private readonly Dictionary<string, TrackedPosition> _active = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _initializedSymbols = new(StringComparer.OrdinalIgnoreCase);
     private readonly BinanceOptions _options = options.Value;
 
     public async Task ObserveAsync(string symbol, FuturesPositionInfo? openPosition, CancellationToken cancellationToken)
     {
         symbol = symbol.ToUpperInvariant();
         TrackedPosition? toClose = null;
+        FuturesPositionInfo? toOpen = null;
 
         lock (_lock)
         {
+            var isFirstObservation = _initializedSymbols.Add(symbol);
             if (openPosition is null || Math.Abs(openPosition.PositionAmount) <= 0)
             {
                 _active.Remove(symbol, out toClose);
@@ -47,6 +52,8 @@ public sealed class PositionHistoryService(
                         toClose = tracked;
                     tracked = TrackedPosition.From(openPosition, side);
                     _active[symbol] = tracked;
+                    if (!isFirstObservation)
+                        toOpen = openPosition;
                 }
                 else
                 {
@@ -57,6 +64,8 @@ public sealed class PositionHistoryService(
 
         if (toClose is not null)
             await SaveClosedAsync(toClose, cancellationToken);
+        if (toOpen is not null)
+            await pushNotifications.NotifyPositionOpenedAsync(toOpen, cancellationToken);
     }
 
     private async Task SaveClosedAsync(TrackedPosition tracked, CancellationToken cancellationToken)
@@ -101,6 +110,15 @@ public sealed class PositionHistoryService(
             logger.LogInformation(
                 "Position history saved: {Side} {Qty} {Symbol} realizedPnL={Pnl:F4}",
                 tracked.Side, Math.Abs(tracked.Quantity), tracked.Symbol, realizedPnl);
+
+            await pushNotifications.NotifyPositionClosedAsync(new ClosedPositionPush(
+                tracked.Symbol,
+                tracked.Side,
+                Math.Abs(tracked.Quantity),
+                tracked.EntryPrice,
+                tracked.MarkPrice,
+                realizedPnl,
+                closeReason), cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

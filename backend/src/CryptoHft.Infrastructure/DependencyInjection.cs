@@ -1,11 +1,13 @@
 using CryptoHft.Application.Abstractions;
 using CryptoHft.Application.Ai;
 using CryptoHft.Application.DecisionEngine;
+using CryptoHft.Application.Notifications;
 using CryptoHft.Application.Risk;
 using CryptoHft.Application.Trading;
 using CryptoHft.Infrastructure.Ai;
 using CryptoHft.Infrastructure.Binance;
 using CryptoHft.Infrastructure.Persistence;
+using CryptoHft.Infrastructure.Notifications;
 using CryptoHft.Infrastructure.Trading;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -18,6 +20,8 @@ public static class DependencyInjection
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
         services.Configure<BinanceOptions>(configuration.GetSection("Binance"));
+        services.Configure<ApnsOptions>(configuration.GetSection("Apns"));
+        services.Configure<BarkOptions>(configuration.GetSection("Bark"));
         services.AddDbContext<TradingDbContext>(options =>
             options.UseNpgsql(configuration.GetConnectionString("Postgres")));
         services.AddScoped<ITradingExecutor, BinanceFuturesTradingExecutor>();
@@ -35,6 +39,9 @@ public static class DependencyInjection
         services.AddSingleton<IPositionHistoryService, PositionHistoryService>();
         services.AddSingleton<ITrailingStopGuard, TrailingStopGuardService>();
         services.AddSingleton<ITrailingStopActivityStore, TrailingStopActivityStore>();
+        services.AddSingleton<ApnsPushNotificationService>();
+        services.AddSingleton<BarkPushNotificationService>();
+        services.AddSingleton<IPushNotificationService, CompositePushNotificationService>();
 
         // AI decision engine (Phase 1): rule-based scoring + dynamic weighting + hybrid LLM validation
         services.Configure<AiOptions>(configuration.GetSection("Ai"));

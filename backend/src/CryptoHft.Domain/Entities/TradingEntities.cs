@@ -22,6 +22,17 @@ public sealed class ApiKey
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
+public sealed class PushDevice
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string DeviceToken { get; set; } = string.Empty;
+    public string Platform { get; set; } = "ios";
+    public string Environment { get; set; } = "sandbox";
+    public bool Enabled { get; set; } = true;
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
 public sealed class Order
 {
     public Guid Id { get; set; } = Guid.NewGuid();

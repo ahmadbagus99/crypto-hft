@@ -115,7 +115,8 @@ public interface IAdaptiveWeightService
     // Matches closed positions (Position History) to the decisions that opened them and updates
     // factor stats from realized PnL. Returns the number of positions matched.
     Task<int> EvaluateClosedPositionsAsync(CancellationToken cancellationToken);
-    // Price-movement fallback for decisions that never became a trade.
+    // Price-movement fallback for decisions that never became a trade. Correlated snapshots
+    // are collapsed to one weak evidence point per independent one-hour bucket.
     Task<int> EvaluatePendingAsync(decimal currentPrice, CancellationToken cancellationToken);
     Task<IReadOnlyList<FactorPerformance>> GetPerformanceAsync(CancellationToken cancellationToken);
     // Realized outcomes grouped by Claude's verdict — the empirical answer to whether

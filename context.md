@@ -272,7 +272,8 @@ File inti: `AdaptiveWeightService.cs`, `AiLearningWorker.cs`, `ExecutionTuningPo
 - **Anti double-count:** 1 posisi hanya match 1 decision 1×; decision matched
   di-set Evaluated sehingga dilewati horizon 60 menit.
 - **Fallback tetap ada:** decision yang tak pernah jadi trade → evaluasi price
-  60-menit lama (bobot 1). Decision yang MEMBUKA order live (ada row Orders
+  60-menit, tetapi snapshot berkorelasi di-collapse menjadi maksimal 1 evidence per
+  symbol+regime+arah+jam dan berbobot lemah 0.25×. Decision yang MEMBUKA order live (ada row Orders
   entry non-paper ≤ 5 mnt setelahnya) di-DEFER dari fallback s/d closed position
   muncul (deadline fail-safe 48 jam). Order paper tetap fallback.
 - `AiLearningWorker` (5 menit): pass closed-position dulu (tak butuh price feed),
@@ -409,7 +410,8 @@ File inti: `AdvancedDecisionEngine.cs`, `AdaptiveLearningPolicy.cs` (baru),
   (dulu: hanya faktor yang "setuju dengan trade" dapat kredit/blame — faktor yang
   konsisten salah arah tak pernah terukur). Win long / loss short = harga naik, dst.
 - **Recency decay**: excess evidence di atas prior Beta(1,1) half-life 30 hari
-  (roadmap #1 SELESAI). Diterapkan saat update, deterministik.
+  (roadmap #1 SELESAI). FactorStats di-rebuild deterministik dari source evidence;
+  window 120 hari mencakup 4 half-life dan mencegah counter incremental drift.
 - **Auto-inversi**: akurasi < 40% dengan ≥15 sampel → engine melipat skor faktor
   (100−s) sebelum blend + multiplier pakai akurasi efektif (1−mean). Weight scaling
   saja tak bisa memperbaiki faktor yang reliably wrong-way (clamp 0.5×).
@@ -645,8 +647,9 @@ konfigurasi stabil (threshold 65, RiskPerTrade 1%, TargetMargin 3). Pengecualian
 bug fix operasional, perbaikan keamanan, dan canary check `openAlgoOrders` saat
 ratchet trailing pertama.
 
-Baseline: 6 trade closed (3W/3L, ~+2.95 USDT), learning aktif (technical/orderbook/
-macro inverted di TrendingUp dengan ratusan sampel fallback).
+Baseline lama: 6 trade closed (3W/3L, ~+2.95 USDT). Catatan "ratusan sampel
+fallback" sudah tidak berlaku sejak batch correlation-safe learning; loop berulang
+tidak lagi dihitung sebagai evidence independen.
 
 Evaluasi ±7 Agustus 2026, berbasis data yang sudah tercatat otomatis:
 1. Win rate / profit factor / expectancy (sampel ≥30 trade)
@@ -659,3 +662,25 @@ Evaluasi ±7 Agustus 2026, berbasis data yang sudah tercatat otomatis:
 
 Prinsip: perbaiki meteran → kumpulkan data dengan meteran stabil → setel dari
 pembacaan. Jangan setel dial di tengah eksperimen.
+
+---
+
+## 16. Correlation-safe factor learning (2026-07-21, batch 7)
+
+Audit production: 28 closed positions, net +5.4881 USDT, win rate 53.6%; hanya
+21 posisi matched ke opening decision. Database mempunyai 8.128 AiDecisionLogs
+(8.079 evaluated), tetapi hanya sekitar 265 bucket symbol+regime+arah+jam yang
+independen. Counter lama membuat FactorStats melaporkan hingga ~1.200 sampel per
+faktor dan memicu auto-inversion dengan keyakinan palsu.
+
+- `FactorStats` sekarang di-rebuild idempotent dari `AiDecisionLogs` + `Positions`.
+- Setiap matched Position History dipertahankan sebagai evidence utama dengan bobot
+  `clamp(1+|ROI|, 1, 3)`.
+- Unmatched 60-minute fallback tetap berguna, tetapi maksimal 1 per
+  symbol+regime+arah+jam, bobot 0.25×, dan dead band 0.15% tetap berlaku.
+- Recency diterapkan langsung per evidence (half-life 30 hari; lookback 120 hari).
+- Rebuild otomatis pada tick `AiLearningWorker`; tidak menghapus Position History,
+  AiDecisionLogs, ExecutionStats, atau calibration data.
+- Gate confidence production tetap setting-driven (audit saat implementasi: 62).
+
+Testing: 165/165 unit test pass di Docker .NET 9; production image build sukses.

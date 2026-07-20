@@ -4,8 +4,9 @@ namespace CryptoHft.Api.BackgroundServices;
 
 // Periodically evaluates logged AI decisions and updates the Bayesian per-factor performance
 // stats that feed the adaptive weighting. Realized outcomes from closed positions (Position
-// History) are evaluated first; the price-movement horizon is only a fallback for decisions
-// that never became a trade.
+// History) are evaluated first; the price-movement horizon is only a weak, correlation-safe
+// fallback for decisions that never became a trade. EvaluatePending also deterministically
+// reconciles FactorStats, repairing legacy counters that over-counted repeated loop snapshots.
 public sealed class AiLearningWorker(
     IAdaptiveWeightService adaptiveWeights,
     IMultiTimeframeProvider priceProvider,

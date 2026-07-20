@@ -17,8 +17,8 @@ public sealed class AdaptiveWeightLearningTests
 {
     private const string Symbol = "BTCUSDT";
     // Factor score 80 agrees with BUY (>=55); 20 agrees with SELL (<=45).
-    private const string BullishScores = """{"Trend":80}""";
-    private const string BearishScores = """{"Trend":20}""";
+    private const string BullishScores = """{"technical":80}""";
+    private const string BearishScores = """{"technical":20}""";
 
     private static (AdaptiveWeightService Service, ServiceProvider Provider) CreateService()
     {
@@ -63,11 +63,14 @@ public sealed class AdaptiveWeightLearningTests
             ClosedAt = openedAt.AddHours(2)
         };
 
-    private static async Task<FactorStat> TrendStatAsync(ServiceProvider provider)
+    private static async Task<FactorStat> TechnicalStatAsync(ServiceProvider provider)
     {
         using var db = Db(provider);
-        return await db.FactorStats.SingleAsync(s => s.Factor == "Trend");
+        return await db.FactorStats.SingleAsync(s => s.Factor == "technical");
     }
+
+    private static void AssertRecentEvidence(decimal expected, decimal actual)
+        => Assert.InRange(actual, expected - 0.02m, expected + 0.001m);
 
     [Fact]
     public async Task ClosedWinningPosition_UpdatesAlpha_ForAgreeingFactor()
@@ -88,8 +91,8 @@ public sealed class AdaptiveWeightLearningTests
         var matched = await service.EvaluateClosedPositionsAsync(CancellationToken.None);
 
         Assert.Equal(1, matched);
-        var stat = await TrendStatAsync(provider);
-        Assert.Equal(1m + 1.4m, stat.Alpha); // weight = 1 + |roi| = 1.4 on top of the Beta(1,1) prior
+        var stat = await TechnicalStatAsync(provider);
+        AssertRecentEvidence(1m + 1.4m, stat.Alpha); // ROI weight, slightly recency-decayed
         Assert.Equal(1m, stat.Beta);
 
         using var verify = Db(provider);
@@ -115,9 +118,9 @@ public sealed class AdaptiveWeightLearningTests
         var matched = await service.EvaluateClosedPositionsAsync(CancellationToken.None);
 
         Assert.Equal(1, matched);
-        var stat = await TrendStatAsync(provider);
+        var stat = await TechnicalStatAsync(provider);
         Assert.Equal(1m, stat.Alpha);
-        Assert.Equal(1m + 1.25m, stat.Beta); // loss weighted by 1 + |roi|
+        AssertRecentEvidence(1m + 1.25m, stat.Beta); // loss weighted by 1 + |roi|
     }
 
     [Fact]
@@ -135,9 +138,9 @@ public sealed class AdaptiveWeightLearningTests
 
         await service.EvaluateClosedPositionsAsync(CancellationToken.None);
 
-        var stat = await TrendStatAsync(provider);
+        var stat = await TechnicalStatAsync(provider);
         Assert.Equal(1m, stat.Alpha);
-        Assert.Equal(2m, stat.Beta); // realizedPnl <= 0 is a loss, weight floor 1
+        AssertRecentEvidence(2m, stat.Beta); // realizedPnl <= 0 is a loss, weight floor 1
     }
 
     [Fact]
@@ -155,8 +158,8 @@ public sealed class AdaptiveWeightLearningTests
 
         await service.EvaluateClosedPositionsAsync(CancellationToken.None);
 
-        var stat = await TrendStatAsync(provider);
-        Assert.Equal(1m + 3m, stat.Alpha); // 1 + |8| clamped to the max weight of 3
+        var stat = await TechnicalStatAsync(provider);
+        AssertRecentEvidence(1m + 3m, stat.Alpha); // 1 + |8| clamped to max weight 3
     }
 
     [Fact]
@@ -179,8 +182,8 @@ public sealed class AdaptiveWeightLearningTests
 
         Assert.Equal(1, first);
         Assert.Equal(0, second);
-        var stat = await TrendStatAsync(provider);
-        Assert.Equal(1m + 1.4m, stat.Alpha); // single weighted update only
+        var stat = await TechnicalStatAsync(provider);
+        AssertRecentEvidence(1m + 1.4m, stat.Alpha); // single weighted update only
         Assert.Equal(1m, stat.Beta);
     }
 
@@ -202,8 +205,8 @@ public sealed class AdaptiveWeightLearningTests
         var evaluated = await service.EvaluatePendingAsync(110_000m, CancellationToken.None);
 
         Assert.Equal(0, evaluated);
-        var stat = await TrendStatAsync(provider);
-        Assert.Equal(1m + 1.4m, stat.Alpha); // unchanged by the fallback pass
+        var stat = await TechnicalStatAsync(provider);
+        AssertRecentEvidence(1m + 1.4m, stat.Alpha); // unchanged by the fallback pass
         Assert.Equal(1m, stat.Beta);
     }
 
@@ -219,12 +222,12 @@ public sealed class AdaptiveWeightLearningTests
             await db.SaveChangesAsync();
         }
 
-        // +1% favorable move >= 0.3% threshold -> win with plain weight 1.
+        // +1% favorable move clears the dead band; fallback is intentionally weak (0.25x).
         var evaluated = await service.EvaluatePendingAsync(101_000m, CancellationToken.None);
 
         Assert.Equal(1, evaluated);
-        var stat = await TrendStatAsync(provider);
-        Assert.Equal(2m, stat.Alpha);
+        var stat = await TechnicalStatAsync(provider);
+        AssertRecentEvidence(1m + AdaptiveLearningPolicy.FallbackEvidenceWeight, stat.Alpha);
         Assert.Equal(1m, stat.Beta);
 
         using var verify = Db(provider);
@@ -232,6 +235,118 @@ public sealed class AdaptiveWeightLearningTests
         Assert.True(log.Evaluated);
         Assert.True(log.Win);
         Assert.Null(log.MatchedPositionId);
+    }
+
+    [Fact]
+    public async Task PriceFallback_DeduplicatesCorrelatedDecisionsWithinOneHour()
+    {
+        var (service, provider) = CreateService();
+        var bucket = DateTimeOffset.UtcNow.AddHours(-3);
+        bucket = new DateTimeOffset(bucket.Year, bucket.Month, bucket.Day, bucket.Hour, 0, 0, TimeSpan.Zero);
+
+        using (var db = Db(provider))
+        {
+            db.AiDecisionLogs.AddRange(
+                Decision(DecisionAction.Buy, bucket.AddMinutes(5), BullishScores),
+                Decision(DecisionAction.Buy, bucket.AddMinutes(20), BullishScores),
+                Decision(DecisionAction.Buy, bucket.AddMinutes(45), BullishScores));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(3, await service.EvaluatePendingAsync(101_000m, CancellationToken.None));
+
+        var stat = await TechnicalStatAsync(provider);
+        AssertRecentEvidence(1m + AdaptiveLearningPolicy.FallbackEvidenceWeight, stat.Alpha);
+        Assert.Equal(1m, stat.Beta);
+    }
+
+    [Fact]
+    public async Task PriceFallback_KeepsIndependentHourlyEvidence()
+    {
+        var (service, provider) = CreateService();
+        var first = DateTimeOffset.UtcNow.AddHours(-4);
+        first = new DateTimeOffset(first.Year, first.Month, first.Day, first.Hour, 10, 0, TimeSpan.Zero);
+
+        using (var db = Db(provider))
+        {
+            db.AiDecisionLogs.AddRange(
+                Decision(DecisionAction.Buy, first, BullishScores),
+                Decision(DecisionAction.Buy, first.AddHours(1), BullishScores));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(2, await service.EvaluatePendingAsync(101_000m, CancellationToken.None));
+
+        var stat = await TechnicalStatAsync(provider);
+        AssertRecentEvidence(1m + AdaptiveLearningPolicy.FallbackEvidenceWeight * 2m, stat.Alpha);
+    }
+
+    [Fact]
+    public async Task DeterministicRebuild_ReplacesLegacyInflatedCounters_AndIsIdempotent()
+    {
+        var (service, provider) = CreateService();
+        var evaluatedAt = DateTimeOffset.UtcNow.AddHours(-1);
+
+        using (var db = Db(provider))
+        {
+            var log = Decision(DecisionAction.Buy, DateTimeOffset.UtcNow.AddHours(-2), BullishScores);
+            log.Evaluated = true;
+            log.Win = true;
+            log.PriceMovePercent = 1m;
+            log.EvaluatedAt = evaluatedAt;
+            db.AiDecisionLogs.Add(log);
+            db.FactorStats.Add(new FactorStat
+            {
+                Regime = 0,
+                Factor = "technical",
+                Alpha = 100m,
+                Beta = 1m
+            });
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(0, await service.EvaluatePendingAsync(101_000m, CancellationToken.None));
+        var first = await TechnicalStatAsync(provider);
+        AssertRecentEvidence(1m + AdaptiveLearningPolicy.FallbackEvidenceWeight, first.Alpha);
+
+        var alpha = first.Alpha;
+        var beta = first.Beta;
+        Assert.Equal(0, await service.EvaluatePendingAsync(101_000m, CancellationToken.None));
+        var second = await TechnicalStatAsync(provider);
+        Assert.InRange(Math.Abs(second.Alpha - alpha), 0m, 0.0001m);
+        Assert.Equal(beta, second.Beta);
+    }
+
+    [Fact]
+    public async Task RealizedPositionOutcome_OutweighsFallbackSnapshot()
+    {
+        var (service, provider) = CreateService();
+        var now = DateTimeOffset.UtcNow;
+
+        using (var db = Db(provider))
+        {
+            var position = ClosedPosition(TradeSide.Long, now.AddHours(-3), realizedPnl: -1m, roi: -0.4m);
+            var realized = Decision(DecisionAction.Buy, position.OpenedAt.AddSeconds(-30), BullishScores);
+            realized.Evaluated = true;
+            realized.Win = false;
+            realized.MatchedPositionId = position.Id;
+            realized.EvaluatedAt = now.AddMinutes(-30);
+
+            var fallback = Decision(DecisionAction.Buy, now.AddHours(-2), BullishScores);
+            fallback.Evaluated = true;
+            fallback.Win = true;
+            fallback.PriceMovePercent = 1m;
+            fallback.EvaluatedAt = now.AddMinutes(-20);
+
+            db.Positions.Add(position);
+            db.AiDecisionLogs.AddRange(realized, fallback);
+            await db.SaveChangesAsync();
+        }
+
+        await service.EvaluatePendingAsync(101_000m, CancellationToken.None);
+
+        var stat = await TechnicalStatAsync(provider);
+        Assert.True(stat.Beta - 1m > (stat.Alpha - 1m) * 4m);
     }
 
     [Fact]
@@ -377,7 +492,7 @@ public sealed class AdaptiveWeightLearningTests
             ShouldTrade: true,
             NoTradeReason: "",
             Cautions: Array.Empty<string>(),
-            Scores: new Dictionary<string, decimal> { ["Trend"] = 80m },
+            Scores: new Dictionary<string, decimal> { ["technical"] = 80m },
             Weights: new Dictionary<string, decimal>(),
             Components: Array.Empty<ScoreComponent>(),
             Reasons: Array.Empty<string>(),

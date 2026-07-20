@@ -41,56 +41,15 @@ public sealed class BinanceAutoTradeRiskGate(
     public async Task<AutoTradeRiskVerdict> EvaluateAsync(
         string symbol, decimal quantity, decimal entryPrice, int leverage, CancellationToken cancellationToken)
     {
+        var status = await GetStatusAsync(cancellationToken);
+        if (!status.TradingAllowed)
+            return new AutoTradeRiskVerdict(false, status.Reason);
+
         var settings = settingsService.GetRuntimeSettings();
+        if (status.Status == "paper")
+            return new AutoTradeRiskVerdict(true, status.Reason);
 
-        if (settings.PaperTradingOnly
-            || string.IsNullOrWhiteSpace(settings.ApiKey)
-            || string.IsNullOrWhiteSpace(settings.ApiSecret))
-        {
-            return new AutoTradeRiskVerdict(true, "paper mode — account risk gate not applicable");
-        }
-
-        decimal equity;
-        try
-        {
-            var wallets = await accountClient.GetWalletBalancesAsync(cancellationToken);
-            equity = wallets.UsdEquity();
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "risk gate: equity fetch failed");
-            return new AutoTradeRiskVerdict(false, "equity unavailable — order skipped (fail-safe)");
-        }
-        if (equity <= 0)
-            return new AutoTradeRiskVerdict(false, "equity is zero/unknown — order skipped (fail-safe)");
-
-        IReadOnlyList<RealizedPnlEntry> todaysPnl;
-        try
-        {
-            todaysPnl = await FetchTodaysRealizedPnlAsync(settings, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "risk gate: realized PnL fetch failed");
-            return new AutoTradeRiskVerdict(false, "realized PnL unavailable — order skipped (fail-safe)");
-        }
-
-        var dailyLoss = DailyLoss(todaysPnl);
-        var maxDailyLoss = equity * settings.MaxDailyLossPercent;
-        if (maxDailyLoss > 0 && dailyLoss >= maxDailyLoss)
-        {
-            return new AutoTradeRiskVerdict(false,
-                $"daily realized loss {dailyLoss:F2} USDT >= limit {maxDailyLoss:F2} USDT " +
-                $"({settings.MaxDailyLossPercent:P0} of equity) — trading paused until next UTC day");
-        }
-
-        var consecutiveLosses = CountTrailingLosses(todaysPnl, SameTradeGap);
-        if (consecutiveLosses >= MaxConsecutiveLosses)
-        {
-            return new AutoTradeRiskVerdict(false,
-                $"{consecutiveLosses} consecutive losing trades today >= limit {MaxConsecutiveLosses} " +
-                "— trading paused until next UTC day or manual intervention");
-        }
+        var equity = status.Equity!.Value;
 
         // Exposure: the trade still opens (confidence is the only signal gate) — only its
         // margin is capped at MaxExposurePercent of equity.
@@ -108,6 +67,76 @@ public sealed class BinanceAutoTradeRiskGate(
         }
 
         return new AutoTradeRiskVerdict(true, "account risk checks passed");
+    }
+
+    public async Task<AutoTradeRiskStatus> GetStatusAsync(CancellationToken cancellationToken)
+    {
+        var checkedAt = DateTimeOffset.UtcNow;
+        var settings = settingsService.GetRuntimeSettings();
+
+        if (!settings.AutoTradingEnabled)
+        {
+            return Status(
+                false,
+                "disabled",
+                "auto trading is disabled in settings",
+                checkedAt);
+        }
+
+        if (settings.PaperTradingOnly
+            || string.IsNullOrWhiteSpace(settings.ApiKey)
+            || string.IsNullOrWhiteSpace(settings.ApiSecret))
+        {
+            return Status(
+                true,
+                "paper",
+                "paper mode — account risk gate not applicable",
+                checkedAt);
+        }
+
+        decimal equity;
+        try
+        {
+            var wallets = await accountClient.GetWalletBalancesAsync(cancellationToken);
+            equity = wallets.UsdEquity();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "risk gate status: equity fetch failed");
+            return Status(
+                false,
+                "unavailable",
+                "equity unavailable — auto trading paused (fail-safe)",
+                checkedAt);
+        }
+
+        if (equity <= 0)
+        {
+            return Status(
+                false,
+                "unavailable",
+                "equity is zero/unknown — auto trading paused (fail-safe)",
+                checkedAt,
+                equity: equity);
+        }
+
+        IReadOnlyList<RealizedPnlEntry> todaysPnl;
+        try
+        {
+            todaysPnl = await FetchTodaysRealizedPnlAsync(settings, checkedAt, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "risk gate status: realized PnL fetch failed");
+            return Status(
+                false,
+                "unavailable",
+                "realized PnL unavailable — auto trading paused (fail-safe)",
+                checkedAt,
+                equity: equity);
+        }
+
+        return ResolveAccountStatus(settings, equity, todaysPnl, checkedAt);
     }
 
     // Sum of today's realized PnL, expressed as a positive loss figure (0 when net positive).
@@ -150,11 +179,94 @@ public sealed class BinanceAutoTradeRiskGate(
         return entries;
     }
 
-    private async Task<IReadOnlyList<RealizedPnlEntry>> FetchTodaysRealizedPnlAsync(
-        RuntimeTradingSettings settings, CancellationToken cancellationToken)
+    internal static AutoTradeRiskStatus ResolveAccountStatus(
+        RuntimeTradingSettings settings,
+        decimal equity,
+        IReadOnlyList<RealizedPnlEntry> todaysPnl,
+        DateTimeOffset checkedAt)
     {
-        var startOfDay = new DateTimeOffset(DateTimeOffset.UtcNow.UtcDateTime.Date, TimeSpan.Zero);
-        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var dailyLoss = DailyLoss(todaysPnl);
+        var dailyLossLimit = equity * settings.MaxDailyLossPercent;
+        var consecutiveLosses = CountTrailingLosses(todaysPnl, SameTradeGap);
+
+        if (dailyLossLimit > 0 && dailyLoss >= dailyLossLimit)
+        {
+            return Status(
+                false,
+                "daily-loss",
+                $"daily realized loss {dailyLoss:F2} USDT >= limit {dailyLossLimit:F2} USDT " +
+                $"({settings.MaxDailyLossPercent:P0} of equity) — trading paused until next UTC day",
+                checkedAt,
+                equity,
+                dailyLoss,
+                dailyLossLimit,
+                settings.MaxDailyLossPercent,
+                consecutiveLosses,
+                NextUtcDay(checkedAt));
+        }
+
+        if (consecutiveLosses >= MaxConsecutiveLosses)
+        {
+            return Status(
+                false,
+                "consecutive-losses",
+                $"{consecutiveLosses} consecutive losing trades today >= limit {MaxConsecutiveLosses} " +
+                "— trading paused until next UTC day or manual intervention",
+                checkedAt,
+                equity,
+                dailyLoss,
+                dailyLossLimit,
+                settings.MaxDailyLossPercent,
+                consecutiveLosses,
+                NextUtcDay(checkedAt));
+        }
+
+        return Status(
+            true,
+            "active",
+            "account risk checks passed",
+            checkedAt,
+            equity,
+            dailyLoss,
+            dailyLossLimit,
+            settings.MaxDailyLossPercent,
+            consecutiveLosses);
+    }
+
+    internal static DateTimeOffset NextUtcDay(DateTimeOffset now)
+        => new(now.UtcDateTime.Date.AddDays(1), TimeSpan.Zero);
+
+    private static AutoTradeRiskStatus Status(
+        bool tradingAllowed,
+        string status,
+        string reason,
+        DateTimeOffset checkedAt,
+        decimal? equity = null,
+        decimal? dailyLoss = null,
+        decimal? dailyLossLimit = null,
+        decimal? dailyLossLimitPercent = null,
+        int? consecutiveLosses = null,
+        DateTimeOffset? resetsAt = null)
+        => new(
+            tradingAllowed,
+            status,
+            reason,
+            equity,
+            dailyLoss,
+            dailyLossLimit,
+            dailyLossLimitPercent,
+            consecutiveLosses,
+            MaxConsecutiveLosses,
+            resetsAt,
+            checkedAt);
+
+    private async Task<IReadOnlyList<RealizedPnlEntry>> FetchTodaysRealizedPnlAsync(
+        RuntimeTradingSettings settings,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var startOfDay = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
+        var timestamp = now.ToUnixTimeMilliseconds();
         var query = $"incomeType=REALIZED_PNL&startTime={startOfDay.ToUnixTimeMilliseconds()}" +
                     $"&limit=1000&timestamp={timestamp}&recvWindow=5000";
 

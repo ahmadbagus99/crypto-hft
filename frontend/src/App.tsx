@@ -13,7 +13,7 @@ import {
 import type { ChartData, ChartOptions } from "chart.js";
 import { CandlestickSeries, ColorType, createChart } from "lightweight-charts";
 import type { CandlestickData, IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
-import { Activity, Bot, Radio, Settings, ShieldCheck, Wallet } from "lucide-react";
+import { Activity, Bot, CheckCircle2, Clock3, Radio, Settings, ShieldAlert, ShieldCheck, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Line } from "react-chartjs-2";
@@ -22,6 +22,7 @@ import type {
   AccountUpdateEvent,
   AiDecision,
   AggTradeTick,
+  AutoTradeRiskStatus,
   BacktestResult,
   FuturesPositionInfo,
   FuturesSymbolRules,
@@ -162,6 +163,12 @@ async function fetchPositionHistory(period: PositionHistoryPeriod): Promise<Posi
 async function fetchRiskDetails(): Promise<RiskDetailResponse> {
   const response = await fetch(`/api/risk/positions?symbol=${symbol}`, { cache: "no-store" });
   if (!response.ok) throw new Error("Failed to load risk details");
+  return response.json();
+}
+
+async function fetchAutoTradeRiskStatus(): Promise<AutoTradeRiskStatus> {
+  const response = await fetch("/api/risk/auto-trading-status", { cache: "no-store" });
+  if (!response.ok) throw new Error("Failed to load auto-trading risk status");
   return response.json();
 }
 
@@ -826,6 +833,12 @@ function DashboardPage() {
     retry: false
   });
   const { data: riskDetails } = useQuery({ queryKey: ["risk-details", symbol], queryFn: fetchRiskDetails, refetchInterval: 5000, retry: false });
+  const { data: autoTradeRiskStatus } = useQuery({
+    queryKey: ["auto-trading-risk-status"],
+    queryFn: fetchAutoTradeRiskStatus,
+    refetchInterval: 30000,
+    retry: false
+  });
   const { data: backtest } = useQuery({ queryKey: ["backtest", symbol, "1h"], queryFn: fetchBacktest, retry: false });
   const { data: aiDecision } = useQuery({ queryKey: ["ai-decision", symbol], queryFn: fetchAiDecision, refetchInterval: 30000, retry: false });
   // Binance keeps futures margin across several 1:1 USD stablecoins; aggregate them so a
@@ -955,6 +968,8 @@ function DashboardPage() {
       </div>
         {marginCall && <MarginCallAlert event={marginCall} onDismiss={() => setMarginCall(null)} />}
         {streamExpired && <UserStreamExpiredAlert event={streamExpired} onDismiss={() => setStreamExpired(null)} />}
+
+        {autoTradeRiskStatus && <AutoTradeRiskStatusCard status={autoTradeRiskStatus} />}
 
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <Metric title={tradingSettings?.paperTradingOnly ? "Wallet (Paper)" : "Wallet (Live)"} value={usdtWallet?.balance ?? overview?.walletBalance ?? 0} icon={<Wallet />} />
@@ -1160,6 +1175,82 @@ function Panel({ title, children }: { title: string; children: ReactNode }) {
       <div className="p-4">{children}</div>
     </div>
   );
+}
+
+function AutoTradeRiskStatusCard({ status }: { status: AutoTradeRiskStatus }) {
+  const paused = !status.tradingAllowed;
+  const blockedByLimit = status.status === "daily-loss" || status.status === "consecutive-losses";
+  const tone = paused
+    ? blockedByLimit
+      ? "border-red-800 bg-red-950/20"
+      : "border-amber-800 bg-amber-950/20"
+    : "border-emerald-900 bg-emerald-950/10";
+  const badgeTone = paused
+    ? blockedByLimit
+      ? "border-red-700 bg-red-500/10 text-red-300"
+      : "border-amber-700 bg-amber-500/10 text-amber-300"
+    : "border-emerald-800 bg-emerald-500/10 text-emerald-300";
+  const title = paused ? "Auto Trading Dijeda" : status.status === "paper" ? "Paper Trading Aktif" : "Auto Trading Siap";
+  const resetTime = status.resetsAt
+    ? new Date(status.resetsAt).toLocaleString("id-ID", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZoneName: "short"
+      })
+    : null;
+  const resumesAt = resetTime
+    ?? (status.status === "disabled" ? "Setelah diaktifkan" : status.status === "unavailable" ? "Saat data pulih" : "Sekarang");
+
+  return (
+    <section className={`rounded-lg border p-4 ${tone}`}>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className={`mt-0.5 shrink-0 ${paused ? (blockedByLimit ? "text-red-300" : "text-amber-300") : "text-emerald-300"}`}>
+            {paused ? <ShieldAlert className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold text-slate-100">Account Risk Guard</h2>
+              <span className={`rounded-md border px-2 py-1 text-xs font-semibold ${badgeTone}`}>{title}</span>
+            </div>
+            <p className="mt-2 text-sm text-slate-300">{status.reason}</p>
+          </div>
+        </div>
+
+        <div className="grid shrink-0 grid-cols-2 gap-x-8 gap-y-3 text-sm sm:grid-cols-4">
+          <RiskStatusValue label="Daily Loss" value={formatRiskValue(status.dailyLoss, "USDT")} danger={status.status === "daily-loss"} />
+          <RiskStatusValue label="Daily Limit" value={formatRiskValue(status.dailyLossLimit, "USDT")} />
+          <RiskStatusValue
+            label="Loss Beruntun"
+            value={status.consecutiveLosses === null ? "-" : `${status.consecutiveLosses} / ${status.maxConsecutiveLosses}`}
+          />
+          <div>
+            <div className="text-xs text-slate-500">Aktif Lagi</div>
+            <div className={`mt-1 flex items-center gap-1.5 font-semibold ${resetTime ? "text-amber-200" : "text-slate-300"}`}>
+              {resetTime && <Clock3 className="h-3.5 w-3.5 shrink-0" />}
+              <span>{resumesAt}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function RiskStatusValue({ label, value, danger = false }: { label: string; value: string; danger?: boolean }) {
+  return (
+    <div>
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className={`mt-1 font-semibold ${danger ? "text-red-300" : "text-slate-200"}`}>{value}</div>
+    </div>
+  );
+}
+
+function formatRiskValue(value: number | null, suffix: string) {
+  return value === null ? "-" : `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${suffix}`;
 }
 
 function RealtimeChartPanel({

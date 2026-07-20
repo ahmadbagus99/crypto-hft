@@ -358,6 +358,20 @@ export type RiskDetailResponse = {
   positions: PositionRisk[];
 };
 
+export type AutoTradeRiskStatus = {
+  tradingAllowed: boolean;
+  status: "active" | "daily-loss" | "consecutive-losses" | "disabled" | "paper" | "unavailable" | string;
+  reason: string;
+  equity: number | null;
+  dailyLoss: number | null;
+  dailyLossLimit: number | null;
+  dailyLossLimitPercent: number | null;
+  consecutiveLosses: number | null;
+  maxConsecutiveLosses: number;
+  resetsAt: string | null;
+  checkedAt: string;
+};
+
 export type BacktestResult = {
   symbol: string;
   interval: string;

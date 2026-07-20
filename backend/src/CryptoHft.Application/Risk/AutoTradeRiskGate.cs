@@ -9,8 +9,25 @@ public sealed record AutoTradeRiskVerdict(
     string Reason,
     decimal? AdjustedQuantity = null);
 
+// Read-only snapshot for dashboard observability. ResetsAt is populated only for
+// account limits that reset with Binance's UTC realized-PnL day.
+public sealed record AutoTradeRiskStatus(
+    bool TradingAllowed,
+    string Status,
+    string Reason,
+    decimal? Equity,
+    decimal? DailyLoss,
+    decimal? DailyLossLimit,
+    decimal? DailyLossLimitPercent,
+    int? ConsecutiveLosses,
+    int MaxConsecutiveLosses,
+    DateTimeOffset? ResetsAt,
+    DateTimeOffset CheckedAt);
+
 public interface IAutoTradeRiskGate
 {
+    Task<AutoTradeRiskStatus> GetStatusAsync(CancellationToken cancellationToken);
+
     Task<AutoTradeRiskVerdict> EvaluateAsync(
         string symbol,
         decimal quantity,

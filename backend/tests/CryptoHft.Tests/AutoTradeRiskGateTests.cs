@@ -1,3 +1,4 @@
+using CryptoHft.Application.Trading;
 using CryptoHft.Infrastructure.Trading;
 using Xunit;
 
@@ -10,6 +11,26 @@ public sealed class AutoTradeRiskGateTests
 
     private static RealizedPnlEntry E(int minutesAfterT0, decimal pnl)
         => new(T0.AddMinutes(minutesAfterT0), pnl);
+
+    private static RuntimeTradingSettings Settings(decimal maxDailyLossPercent = 0.10m)
+        => new(
+            PaperTradingOnly: false,
+            AutoTradingEnabled: true,
+            MaxDailyLossPercent: maxDailyLossPercent,
+            RiskPerTradePercent: 0.01m,
+            MaxExposurePercent: 0.50m,
+            DefaultLeverage: 20,
+            AutoSizingMode: 1,
+            TargetLeverage: 20,
+            ApiKey: "key",
+            ApiSecret: "secret",
+            AnthropicApiKey: null,
+            AiModel: null,
+            ConfidenceThreshold: 60m,
+            PositionCheckIntervalMinutes: 10,
+            TrailingStopDistanceR: 0.5m,
+            LunarCrushApiKey: null,
+            TargetMarginUsdt: 7m);
 
     [Fact]
     public void DailyLoss_IsZero_WhenNetPositive()
@@ -85,5 +106,64 @@ public sealed class AutoTradeRiskGateTests
         Assert.Equal(-1.25m, entries[0].Pnl);
         Assert.Equal(2.50m, entries[1].Pnl);
         Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1770000000000), entries[0].Time);
+    }
+
+    [Fact]
+    public void NextUtcDay_ReturnsNextMidnightUtc()
+    {
+        var now = new DateTimeOffset(2026, 7, 21, 18, 42, 0, TimeSpan.Zero);
+
+        var reset = BinanceAutoTradeRiskGate.NextUtcDay(now);
+
+        Assert.Equal(new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero), reset);
+    }
+
+    [Fact]
+    public void ResolveAccountStatus_PausesUntilNextUtcDay_WhenDailyLossLimitReached()
+    {
+        var checkedAt = new DateTimeOffset(2026, 7, 21, 12, 0, 0, TimeSpan.Zero);
+
+        var status = BinanceAutoTradeRiskGate.ResolveAccountStatus(
+            Settings(),
+            equity: 10m,
+            todaysPnl: new[] { E(0, -1.25m) },
+            checkedAt: checkedAt);
+
+        Assert.False(status.TradingAllowed);
+        Assert.Equal("daily-loss", status.Status);
+        Assert.Equal(1.25m, status.DailyLoss);
+        Assert.Equal(1m, status.DailyLossLimit);
+        Assert.Equal(new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero), status.ResetsAt);
+    }
+
+    [Fact]
+    public void ResolveAccountStatus_PausesForConsecutiveLosses_WhenDailyNetLossIsBelowLimit()
+    {
+        var entries = new[] { E(0, 5m), E(10, -1m), E(20, -1m), E(30, -1m) };
+
+        var status = BinanceAutoTradeRiskGate.ResolveAccountStatus(
+            Settings(maxDailyLossPercent: 0.50m),
+            equity: 10m,
+            todaysPnl: entries,
+            checkedAt: T0);
+
+        Assert.False(status.TradingAllowed);
+        Assert.Equal("consecutive-losses", status.Status);
+        Assert.Equal(3, status.ConsecutiveLosses);
+        Assert.NotNull(status.ResetsAt);
+    }
+
+    [Fact]
+    public void ResolveAccountStatus_IsActive_WhenLimitsHaveRoom()
+    {
+        var status = BinanceAutoTradeRiskGate.ResolveAccountStatus(
+            Settings(),
+            equity: 10m,
+            todaysPnl: new[] { E(0, -0.25m) },
+            checkedAt: T0);
+
+        Assert.True(status.TradingAllowed);
+        Assert.Equal("active", status.Status);
+        Assert.Null(status.ResetsAt);
     }
 }

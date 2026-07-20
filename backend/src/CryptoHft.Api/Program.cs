@@ -711,6 +711,14 @@ app.MapGet("/api/risk/positions", async (
     }
 });
 
+app.MapGet("/api/risk/auto-trading-status", async (
+    IAutoTradeRiskGate riskGate,
+    CancellationToken cancellationToken) =>
+{
+    var status = await riskGate.GetStatusAsync(cancellationToken);
+    return Results.Ok(status);
+});
+
 app.MapGet("/api/backtest/run", async (
     string? symbol,
     string? interval,

@@ -14,7 +14,8 @@ public static class AutoPositionSizingPolicy
         int decisionLeverage,
         decimal entryPrice,
         decimal targetMarginUsdt,
-        int targetLeverage)
+        int targetLeverage,
+        decimal? defensiveSizeMultiplier = null)
     {
         if (mode != TargetMarginLeverageMode)
         {
@@ -34,10 +35,14 @@ public static class AutoPositionSizingPolicy
         }
 
         var targetNotional = targetMarginUsdt * leverage;
-        var quantity = Math.Round(targetNotional / entryPrice, 6);
+        var cap = defensiveSizeMultiplier is null
+            ? 1m
+            : Math.Min(1m, Math.Clamp(defensiveSizeMultiplier.Value, 0.1m, 1.5m));
+        var quantity = Math.Round(targetNotional / entryPrice * cap, 6);
+        var defensiveNote = cap < 1m ? $"; Claude defensive cap {cap:P0}" : "";
         return new AutoPositionSizingVerdict(
             quantity,
             leverage,
-            $"target margin sizing: {targetMarginUsdt:F2} USDT x {leverage}x = {targetNotional:F2} USDT notional");
+            $"target margin sizing: {targetMarginUsdt:F2} USDT x {leverage}x = {targetNotional:F2} USDT notional{defensiveNote}");
     }
 }

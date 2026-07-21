@@ -29,6 +29,22 @@ public sealed class PositionHistoryService(
     private readonly HashSet<string> _initializedSymbols = new(StringComparer.OrdinalIgnoreCase);
     private readonly BinanceOptions _options = options.Value;
 
+    public async Task<LatestClosedPosition?> GetLatestClosedAsync(
+        string symbol,
+        CancellationToken cancellationToken)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+        return await db.Positions
+            .AsNoTracking()
+            .Where(position => position.Symbol == symbol.ToUpperInvariant() && position.ClosedAt != null)
+            .OrderByDescending(position => position.ClosedAt)
+            .Select(position => new LatestClosedPosition(
+                position.ClosedAt!.Value,
+                position.CloseReason))
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
     public async Task ObserveAsync(string symbol, FuturesPositionInfo? openPosition, CancellationToken cancellationToken)
     {
         symbol = symbol.ToUpperInvariant();

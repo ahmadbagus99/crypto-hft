@@ -60,6 +60,7 @@ public interface ILlmDecisionValidator
 public interface IAiDecisionService
 {
     Task<AdvancedDecision> AnalyzeAsync(string symbol, CancellationToken cancellationToken);
+    Task<AdvancedDecision> AnalyzeRuleBasedAndLogAsync(string symbol, CancellationToken cancellationToken);
     Task<AdvancedDecision> AnalyzeRuleBasedAsync(string symbol, CancellationToken cancellationToken);
 }
 

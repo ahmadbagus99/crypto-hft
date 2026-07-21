@@ -28,6 +28,9 @@ public sealed class AiDecisionService(
     public async Task<AdvancedDecision> AnalyzeAsync(string symbol, CancellationToken cancellationToken)
         => await AnalyzeCoreAsync(symbol, useLlm: true, logDecision: true, cancellationToken);
 
+    public async Task<AdvancedDecision> AnalyzeRuleBasedAndLogAsync(string symbol, CancellationToken cancellationToken)
+        => await AnalyzeCoreAsync(symbol, useLlm: false, logDecision: true, cancellationToken);
+
     public async Task<AdvancedDecision> AnalyzeRuleBasedAsync(string symbol, CancellationToken cancellationToken)
         => await AnalyzeCoreAsync(symbol, useLlm: false, logDecision: false, cancellationToken);
 

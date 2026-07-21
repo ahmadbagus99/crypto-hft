@@ -1,0 +1,160 @@
+using CryptoHft.Application.DecisionEngine;
+using CryptoHft.Application.Trading;
+using CryptoHft.Domain.Enums;
+using Xunit;
+
+namespace CryptoHft.Tests;
+
+public sealed class AutoEntryPolicyTests
+{
+    private static readonly DateTimeOffset T0 = new(2026, 7, 22, 0, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void Confirmation_FirstMarginalSignalWaits()
+    {
+        var verdict = AutoEntryPolicy.EvaluateConfirmation(Decision(TradeSide.Long, 60m), 60m, null, T0);
+
+        Assert.Equal(AutoEntryConfirmationAction.Wait, verdict.Action);
+        Assert.Equal(TradeSide.Long, verdict.Candidate?.Side);
+    }
+
+    [Fact]
+    public void Confirmation_SameDirectionAfterFiveMinutesIsReady()
+    {
+        var candidate = new AutoEntryCandidate(TradeSide.Long, T0);
+
+        var verdict = AutoEntryPolicy.EvaluateConfirmation(
+            Decision(TradeSide.Long, 61m), 60m, candidate, T0.AddMinutes(5));
+
+        Assert.Equal(AutoEntryConfirmationAction.Ready, verdict.Action);
+        Assert.Equal(TradeSide.Long, verdict.Side);
+    }
+
+    [Fact]
+    public void Confirmation_OppositeDirectionRestartsWindow()
+    {
+        var candidate = new AutoEntryCandidate(TradeSide.Long, T0);
+
+        var verdict = AutoEntryPolicy.EvaluateConfirmation(
+            Decision(TradeSide.Short, 61m), 60m, candidate, T0.AddMinutes(6));
+
+        Assert.Equal(AutoEntryConfirmationAction.Wait, verdict.Action);
+        Assert.Equal(TradeSide.Short, verdict.Candidate?.Side);
+        Assert.Equal(T0.AddMinutes(6), verdict.Candidate?.FirstSeenAt);
+    }
+
+    [Fact]
+    public void Confirmation_StrongSignalIsReadyImmediately()
+    {
+        var verdict = AutoEntryPolicy.EvaluateConfirmation(Decision(TradeSide.Short, 67m), 60m, null, T0);
+
+        Assert.Equal(AutoEntryConfirmationAction.Ready, verdict.Action);
+        Assert.Equal(TradeSide.Short, verdict.Side);
+    }
+
+    [Fact]
+    public void Confirmation_ExpiredCandidateDoesNotConfirm()
+    {
+        var candidate = new AutoEntryCandidate(TradeSide.Long, T0);
+
+        var verdict = AutoEntryPolicy.EvaluateConfirmation(
+            Decision(TradeSide.Long, 61m), 60m, candidate, T0.AddMinutes(16));
+
+        Assert.Equal(AutoEntryConfirmationAction.Wait, verdict.Action);
+        Assert.Equal(T0.AddMinutes(16), verdict.Candidate?.FirstSeenAt);
+    }
+
+    [Fact]
+    public void Llm_HesitantSignalBelowDefensiveThresholdIsBlocked()
+    {
+        var decision = Decision(TradeSide.Long, 61.9m, llmUsed: true, llmConfirmed: false);
+
+        var verdict = AutoEntryPolicy.EvaluateLlm(decision, TradeSide.Long, 60m);
+
+        Assert.False(verdict.Allowed);
+    }
+
+    [Fact]
+    public void Llm_HesitantSignalAtDefensiveThresholdIsAllowed()
+    {
+        var decision = Decision(TradeSide.Long, 62m, llmUsed: true, llmConfirmed: false);
+
+        var verdict = AutoEntryPolicy.EvaluateLlm(decision, TradeSide.Long, 60m);
+
+        Assert.True(verdict.Allowed);
+    }
+
+    [Fact]
+    public void Llm_ConfirmedSignalUsesNormalThreshold()
+    {
+        var decision = Decision(TradeSide.Long, 60m, llmUsed: true, llmConfirmed: true);
+
+        var verdict = AutoEntryPolicy.EvaluateLlm(decision, TradeSide.Long, 60m);
+
+        Assert.True(verdict.Allowed);
+    }
+
+    [Fact]
+    public void Llm_UnavailableRetainsConfirmedRuleBasedSignal()
+    {
+        var decision = Decision(TradeSide.Long, 60m, llmUsed: false);
+
+        var verdict = AutoEntryPolicy.EvaluateLlm(decision, TradeSide.Long, 60m);
+
+        Assert.True(verdict.Allowed);
+    }
+
+    [Fact]
+    public void Llm_DirectionChangeIsBlocked()
+    {
+        var decision = Decision(TradeSide.Short, 70m, llmUsed: true, llmConfirmed: true);
+
+        var verdict = AutoEntryPolicy.EvaluateLlm(decision, TradeSide.Long, 60m);
+
+        Assert.False(verdict.Allowed);
+    }
+
+    [Fact]
+    public void Cooldown_StopLossIsLongerThanSuccessfulExit()
+    {
+        Assert.Equal(TimeSpan.FromMinutes(60), AutoEntryPolicy.CooldownFor(PositionCloseReason.StopLoss));
+        Assert.Equal(TimeSpan.FromMinutes(60), AutoEntryPolicy.CooldownFor(PositionCloseReason.Unknown));
+        Assert.Equal(TimeSpan.FromMinutes(30), AutoEntryPolicy.CooldownFor(PositionCloseReason.TakeProfit));
+        Assert.Equal(TimeSpan.FromMinutes(30), AutoEntryPolicy.CooldownFor(PositionCloseReason.TrailingStop));
+    }
+
+    private static AdvancedDecision Decision(
+        TradeSide side,
+        decimal confidence,
+        bool llmUsed = false,
+        bool llmConfirmed = true)
+    {
+        var buy = side == TradeSide.Long ? confidence : 100m - confidence;
+        var sell = side == TradeSide.Short ? confidence : 100m - confidence;
+        return new AdvancedDecision(
+            Symbol: "BTCUSDT",
+            Action: side == TradeSide.Long ? DecisionAction.WeakBuy : DecisionAction.WeakSell,
+            Confidence: confidence,
+            ConfidenceBuy: buy,
+            ConfidenceSell: sell,
+            ConfidenceHold: 0m,
+            ProbabilityOfSuccess: 0m,
+            Regime: MarketRegime.Trending,
+            EntryPrice: 100m,
+            StopLoss: side == TradeSide.Long ? 90m : 110m,
+            TakeProfit: side == TradeSide.Long ? 120m : 80m,
+            TrailingStopPercent: 1m,
+            RiskReward: 2m,
+            PositionSizeQuantity: 1m,
+            Leverage: 3,
+            ShouldTrade: true,
+            NoTradeReason: "",
+            Cautions: Array.Empty<string>(),
+            Scores: new Dictionary<string, decimal>(),
+            Weights: new Dictionary<string, decimal>(),
+            Components: Array.Empty<ScoreComponent>(),
+            Reasons: Array.Empty<string>(),
+            Llm: new LlmValidation(llmConfirmed, confidence, "", Array.Empty<string>(), llmUsed),
+            Time: T0);
+    }
+}

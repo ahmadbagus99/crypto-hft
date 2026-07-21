@@ -7,9 +7,8 @@ using CryptoHft.Domain.Enums;
 
 namespace CryptoHft.Api.BackgroundServices;
 
-// The autonomous trading loop. On each tick (when Auto mode is enabled) it runs the AI
-// decision engine, applies a hard risk gate, and — if the signal is actionable and no
-// position is already open — places an order through the executor (paper or live per settings).
+// The autonomous trading loop. Auto mode first confirms a rule-based signal over time,
+// checks account risk, then invokes Claude once as a bounded validator before execution.
 public sealed class AutoTradingWorker(
     IServiceScopeFactory scopeFactory,
     IAiDecisionService aiDecisionService,
@@ -30,6 +29,11 @@ public sealed class AutoTradingWorker(
     private TradeSide? _lastOpenPositionSide;
     private decimal? _lastOpenPositionEntryPrice;
     private int _lastOpenPositionCheckIntervalMinutes;
+    private AutoEntryCandidate? _entryCandidate;
+    private DateTimeOffset _entryCooldownUntil = DateTimeOffset.MinValue;
+    private DateTimeOffset? _lastCooldownSourceClosedAt;
+    private bool _entryCooldownInitialized;
+    private bool _observedOpenPosition;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -59,40 +63,103 @@ public sealed class AutoTradingWorker(
 
         // While a position is open, keep entry analysis paused so no new trade can be opened and
         // no Claude tokens are spent. Every tick the trailing guard may ratchet the stop
-        // (breakeven at +1R, then trail); every 30 minutes a rule-based health check runs — if the
+        // (breakeven at +1R, then trail); at the configured interval a rule-based health check runs — if the
         // opposite side confirms twice (or becomes extremely strong once), close via reduce-only.
         if (openPosition is not null)
         {
+            _observedOpenPosition = true;
+            _entryCandidate = null;
             await trailingStopGuard.ApplyAsync(Symbol, openPosition, cancellationToken);
             await RevalidateOpenPositionAsync(settings, openPosition, cancellationToken);
             return;
         }
+        var positionJustClosed = _observedOpenPosition;
+        _observedOpenPosition = false;
         ResetOpenPositionRevalidationState();
         revalidationStore.Clear(Symbol);
         // Position closed: the trailing history belongs to that position only — wipe it so
         // the dashboard card starts fresh with the next position.
         trailingStopActivity.Clear(Symbol);
 
-        // Run the analysis once per tick and cache it — this is the single place that may call
-        // Claude. The dashboard reads the cached result so opening it never triggers extra
-        // (billed) analyses.
+        var now = DateTimeOffset.UtcNow;
+        if (!_entryCooldownInitialized || positionJustClosed)
+            await RefreshEntryCooldownAsync(positionJustClosed, now, cancellationToken);
+
+        // Manual mode keeps the existing dashboard analysis behavior. Auto mode starts with a
+        // rule-only scan so Claude is called only after the signal persists long enough.
+        if (!settings.AutoTradingEnabled)
+        {
+            _entryCandidate = null;
+            var manualDecision = await aiDecisionService.AnalyzeAsync(Symbol, cancellationToken);
+            decisionStore.Set(Symbol, manualDecision);
+            LogDecision(manualDecision);
+            return;
+        }
+
+        var scanDecision = await aiDecisionService.AnalyzeRuleBasedAndLogAsync(Symbol, cancellationToken);
+        decisionStore.Set(Symbol, scanDecision);
+        LogDecision(scanDecision);
+
+        if (now < _entryCooldownUntil)
+        {
+            _entryCandidate = null;
+            var cooldownReason = $"entry cooldown active until {_entryCooldownUntil:u}";
+            decisionStore.Set(Symbol, BlockDecision(scanDecision, cooldownReason));
+            logger.LogInformation("Auto-entry blocked: {Reason}", cooldownReason);
+            return;
+        }
+
+        var confirmation = AutoEntryPolicy.EvaluateConfirmation(
+            scanDecision,
+            settings.ConfidenceThreshold,
+            _entryCandidate,
+            now);
+        _entryCandidate = confirmation.Candidate;
+        if (confirmation.Action != AutoEntryConfirmationAction.Ready || confirmation.Side is null)
+        {
+            if (confirmation.Action == AutoEntryConfirmationAction.Wait)
+            {
+                decisionStore.Set(Symbol, BlockDecision(scanDecision, confirmation.Reason));
+                logger.LogInformation("Auto-entry confirmation: {Reason}", confirmation.Reason);
+            }
+            return;
+        }
+
+        // Account pauses are checked before Claude to avoid spending tokens on an order that
+        // cannot execute. Exposure is still evaluated later against the final quantity.
+        var accountStatus = await riskGate.GetStatusAsync(cancellationToken);
+        if (!accountStatus.TradingAllowed)
+        {
+            _entryCandidate = null;
+            decisionStore.Set(Symbol, BlockDecision(scanDecision, accountStatus.Reason));
+            logger.LogWarning("Auto-entry blocked before Claude: {Reason}", accountStatus.Reason);
+            return;
+        }
+
         var decision = await aiDecisionService.AnalyzeAsync(Symbol, cancellationToken);
+        var llmVerdict = AutoEntryPolicy.EvaluateLlm(
+            decision,
+            confirmation.Side.Value,
+            settings.ConfidenceThreshold);
+        if (!llmVerdict.Allowed)
+        {
+            _entryCandidate = null;
+            decisionStore.Set(Symbol, BlockDecision(decision, llmVerdict.Reason));
+            logger.LogWarning("Auto-entry blocked after Claude validation: {Reason}", llmVerdict.Reason);
+            return;
+        }
+
         decisionStore.Set(Symbol, decision);
+        logger.LogInformation("Auto-entry validated: {Reason}", llmVerdict.Reason);
 
-        logger.LogInformation(
-            "AI decision: {Action} conf={Confidence} regime={Regime} shouldTrade={ShouldTrade} {Reason}",
-            decision.Action, decision.Confidence, decision.Regime, decision.ShouldTrade, decision.NoTradeReason);
-
-        // Order placement only in Auto mode.
-        if (!settings.AutoTradingEnabled) return;
-        if (!decision.ShouldTrade) return;
         var sizing = AutoPositionSizingPolicy.Resolve(
             settings.AutoSizingMode,
             decision.PositionSizeQuantity,
             decision.Leverage,
             decision.EntryPrice,
             settings.TargetMarginUsdt,
-            settings.TargetLeverage);
+            settings.TargetLeverage,
+            decision.Llm.Used ? decision.Llm.SizeMultiplier : null);
 
         if (sizing.Quantity <= 0)
         {
@@ -146,6 +213,7 @@ public sealed class AutoTradingWorker(
         try
         {
             var result = await executor.PlaceAsync(order, cancellationToken);
+            _entryCandidate = null;
             logger.LogInformation("Auto-trade placed: {Side} {Qty} {Symbol} order {OrderId} (paper={Paper}) {Message}",
                 side, quantity, Symbol, result.OrderId, result.IsPaper, result.Message);
         }
@@ -153,6 +221,62 @@ public sealed class AutoTradingWorker(
         {
             logger.LogWarning(ex, "Auto-trade order rejected");
         }
+    }
+
+    private async Task RefreshEntryCooldownAsync(
+        bool positionJustClosed,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        _entryCooldownInitialized = true;
+
+        // ObserveAsync persists the close before this method runs. Keep a conservative fallback
+        // if that write or its close-reason classification fails, so a database problem cannot
+        // cause an immediate re-entry. Unknown exits use the same 60-minute window as stop losses.
+        if (positionJustClosed)
+        {
+            _entryCandidate = null;
+            _entryCooldownUntil = now.Add(AutoEntryPolicy.StopLossCooldown);
+        }
+
+        var latest = await positionHistoryService.GetLatestClosedAsync(Symbol, cancellationToken);
+        if (latest is null)
+            return;
+
+        if (positionJustClosed && latest.ClosedAt < now.AddMinutes(-2))
+        {
+            logger.LogWarning(
+                "Latest Position History row ({ClosedAt:u}) does not match the close just observed; " +
+                "keeping conservative entry cooldown until {ResumeAt:u}",
+                latest.ClosedAt, _entryCooldownUntil);
+            return;
+        }
+
+        if (latest.ClosedAt == _lastCooldownSourceClosedAt)
+            return;
+
+        _lastCooldownSourceClosedAt = latest.ClosedAt;
+        _entryCooldownUntil = latest.ClosedAt.Add(AutoEntryPolicy.CooldownFor(latest.CloseReason));
+        _entryCandidate = null;
+        logger.LogInformation(
+            "Entry cooldown updated from {CloseReason} close at {ClosedAt:u}; entries resume at {ResumeAt:u}",
+            latest.CloseReason, latest.ClosedAt, _entryCooldownUntil);
+    }
+
+    private static AdvancedDecision BlockDecision(AdvancedDecision decision, string reason)
+        => decision with
+        {
+            ShouldTrade = false,
+            NoTradeReason = decision.NoTradeReason.Length == 0
+                ? reason
+                : $"{decision.NoTradeReason}; {reason}"
+        };
+
+    private void LogDecision(AdvancedDecision decision)
+    {
+        logger.LogInformation(
+            "AI decision: {Action} conf={Confidence} regime={Regime} shouldTrade={ShouldTrade} {Reason}",
+            decision.Action, decision.Confidence, decision.Regime, decision.ShouldTrade, decision.NoTradeReason);
     }
 
     private async Task<(bool StateKnown, FuturesPositionInfo? Position)> GetOpenPositionAsync(CancellationToken cancellationToken)

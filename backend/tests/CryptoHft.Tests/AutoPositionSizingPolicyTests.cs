@@ -49,4 +49,36 @@ public sealed class AutoPositionSizingPolicyTests
         Assert.Equal(20, verdict.Leverage);
         Assert.Equal(0.0028m, verdict.Quantity);
     }
+
+    [Fact]
+    public void TargetMarginLeverageMode_AppliesClaudeDefensiveCapAfterTargetSizing()
+    {
+        var verdict = AutoPositionSizingPolicy.Resolve(
+            AutoPositionSizingPolicy.TargetMarginLeverageMode,
+            decisionQuantity: 0.00021m,
+            decisionLeverage: 2,
+            entryPrice: 62_897m,
+            targetMarginUsdt: 7m,
+            targetLeverage: 20,
+            defensiveSizeMultiplier: 0.25m);
+
+        Assert.Equal(0.000556m, verdict.Quantity);
+        Assert.Equal(20, verdict.Leverage);
+        Assert.Contains("Claude defensive cap 25", verdict.Reason);
+    }
+
+    [Fact]
+    public void TargetMarginLeverageMode_NeverLetsClaudeIncreaseTargetSizing()
+    {
+        var verdict = AutoPositionSizingPolicy.Resolve(
+            AutoPositionSizingPolicy.TargetMarginLeverageMode,
+            decisionQuantity: 0.00021m,
+            decisionLeverage: 3,
+            entryPrice: 50_000m,
+            targetMarginUsdt: 7m,
+            targetLeverage: 20,
+            defensiveSizeMultiplier: 1.5m);
+
+        Assert.Equal(0.0028m, verdict.Quantity);
+    }
 }

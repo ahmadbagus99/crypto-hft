@@ -1,6 +1,11 @@
 # Context — Penggunaan & Biaya API (Anthropic + LunarCrush)
 
-> Update terakhir (2026-07-05): **Akurasi confidence dirombak (Bagian 9)** —
+> Update terakhir (2026-07-22): **Entry quality gate (Bagian 17)** — sinyal
+> marginal harus terkonfirmasi dua kali dengan jarak 5 menit, sinyal kuat boleh
+> langsung lanjut, risk pause dicek sebelum Claude, verdict hesitant menaikkan
+> hurdle 2 poin, multiplier Claude menjadi defensive cap untuk target sizing,
+> dan entry diberi cooldown 30/60 menit setelah posisi tertutup.
+> Sebelumnya (2026-07-05): **Akurasi confidence dirombak (Bagian 9)** —
 > volatility/liquidity tak lagi ikut voting arah (jadi condition dampener), OI×harga
 > matrix + CVD + liquidation stream + cumulative funding, regime Trending dipecah
 > Up/Down, learning per-faktor berbasis directional accuracy + recency decay +
@@ -26,9 +31,10 @@ Hanya **2 tempat**:
 File: `backend/src/CryptoHft.Infrastructure/Ai/ClaudeDecisionValidator.cs`
 
 - Lapisan "Hybrid" — Claude jadi **second opinion** atas sinyal rule-based.
-- Dipanggil hanya jika sinyal **kuat & actionable**: `confidence >= ConfidenceThreshold`
-  DAN `action != NoTrade`. Threshold ini **bisa di-set** dari dashboard
-  (Settings → "Min Confidence Open Order"), default 80. Sama dengan gate buka order.
+- Di Auto mode, dipanggil setelah sinyal rule-based siap entry: dua konfirmasi searah
+  berjarak minimal 5 menit, atau satu sinyal kuat `confidence >= threshold + 7`.
+  Risk pause akun diperiksa lebih dulu agar Claude tidak dipanggil untuk order yang
+  memang tidak dapat dieksekusi.
   Catatan: `confidence` sekarang = **conviction sisi terpilih** (lihat Bagian 6), jadi
   SHORT kuat juga bisa lolos gate — beda dgn versi lama yg bias bullish.
 - System prompt sekarang persona **"institutional quantitative crypto trader"**; dikirim
@@ -38,10 +44,15 @@ File: `backend/src/CryptoHft.Infrastructure/Ai/ClaudeDecisionValidator.cs`
   diminta tidak mengarang nilainya.
 - Claude balas JSON: `{confirmed, adjusted_confidence, size_multiplier, leverage,
   stop_loss, take_profit, narrative, risks}`.
-- **Claude TIDAK bisa veto** (sejak 2026-07-01/02). `confirmed` cuma label backdrop
-  (bersih vs ragu). Sizing SELALU dari Claude (size_multiplier/leverage/SL-TP,
-  dalam hard cap), lepas dari confirmed — lihat Bagian 7. Narasi + risiko tampil
-  di panel AI Decision. Frontend label: CONFIRMED / "HESITANT — DEFENSIVE SIZING".
+- Claude tetap tidak boleh membalik arah atau menambah risiko. Namun verdict-nya
+  sekarang menjadi **bounded entry hurdle**: `confirmed=true` memakai threshold
+  normal; `confirmed=false` hanya lolos jika confidence rule engine minimal
+  `threshold + 2`. Jika API Claude tidak tersedia, sinyal rule-based yang sudah
+  terkonfirmasi tetap dapat lanjut (fail-open terukur, tetap melalui risk gate).
+- Pada mode Margin × Leverage, `size_multiplier` Claude diterapkan sebagai cap
+  defensif setelah target sizing dan dibatasi maksimal 1.0×, sehingga Claude bisa
+  mengecilkan tetapi tidak bisa membesarkan target. SL/TP Claude tetap tunduk pada
+  validasi geometri/hard cap yang sudah ada.
 - **Model bisa dipilih** dari dashboard (Settings → dropdown): Opus / Sonnet / Haiku.
 - **Tiap call dicatat** ke tabel `trading.AiUsage` (token + cost) → tampil di panel
   "Claude API Usage".
@@ -60,19 +71,23 @@ File: `backend/src/CryptoHft.Infrastructure/Ai/ConnectionTester.cs` (`TestAnthro
 
 ## 2. Siapa yang memicu panggilan Claude (PENTING)
 
-Sejak decision caching, **hanya 1 sumber**: `AutoTradingWorker` (tiap 30 detik).
+Sejak decision caching, **hanya 1 sumber**: `AutoTradingWorker`.
 
-- Worker jalankan analisa 1× per tick → simpan ke cache `ILatestDecisionStore`.
-- Order hanya di-place kalau mode **Auto** aktif; analisa tetap jalan di mode Manual.
+- Di Auto mode, worker menjalankan dan mencatat scan rule-based tiap 30 detik.
+  Scan ini tidak memakai token Claude.
+- Claude baru dipanggil setelah entry candidate lolos konfirmasi 5 menit atau sinyal
+  kuat `threshold + 7`, dan status risk gate mengizinkan trading.
+- Setelah Claude menolak sinyal marginal, candidate di-reset; percobaan berikutnya
+  perlu dua konfirmasi baru. Jika order berhasil, analisa berhenti selama posisi terbuka.
+- Di Manual mode, perilaku dashboard lama dipertahankan: `AnalyzeAsync` berjalan tiap
+  tick, tetapi validator tetap hanya memanggil API untuk sinyal actionable.
 - Dashboard baca cache via `/api/ai/decision` (read-only, 204 kalau belum ada) —
   **buka dashboard / banyak tab = $0 tambahan**, tidak memicu analisa baru.
 - Endpoint lama `/api/ai/analyze` masih ada (trigger analisa baru) tapi tidak dipakai
   dashboard.
 
-**Konsekuensi:** biaya Claude konstan & terprediksi (~1 analisa/30 detik), terlepas
-dari jumlah dashboard. Analisa jalan di kedua mode (Manual & Auto) — kalau mau Manual
-benar-benar $0 saat idle, tambahkan gate `if (!AutoTradingEnabled) return;` sebelum
-analisa di `AutoTradingWorker`.
+**Konsekuensi:** biaya Claude di Auto mode mengikuti jumlah entry attempt yang sudah
+terkonfirmasi, bukan jumlah tick worker. Jumlah dashboard tetap tidak memengaruhi biaya.
 
 **PAUSE saat posisi terbuka (2026-07-02):** `AutoTradingWorker` cek posisi di AWAL tiap
 tick; kalau ADA posisi terbuka → langsung `return` SEBELUM `AnalyzeAsync`, jadi **nol
@@ -87,8 +102,8 @@ dashboard tetap menampilkan decision terakhir yang membuka trade.
 ### Parameter (dari kode)
 | Faktor | Nilai |
 |---|---|
-| Loop analisa | tiap 30 detik → 2.880 cycle/hari (AutoTradingWorker) |
-| Gate panggil Claude | confidence >= ConfidenceThreshold (default 80) DAN action != NoTrade |
+| Loop rule scan | tiap 30 detik → 2.880 cycle/hari; tidak memakai token Claude |
+| Gate panggil Claude | 2 konfirmasi/5 menit, atau confidence >= threshold + 7; risk gate harus aktif |
 | Model | dipilih di Settings: opus/sonnet/haiku |
 | Token per call | input ~600, output max 1024 (realistis ~400) |
 
@@ -97,20 +112,17 @@ dashboard tetap menampilkan decision terakhir yang membuka trade.
 - Output ~400 tok × $25/1M = $0.010
 - **≈ $0.013 per validasi (~Rp 210)**
 
-### Estimasi per hari (tergantung % cycle yang lolos gate)
-| Skenario | % cycle | Calls/hari | Biaya/hari | ≈ Rupiah/hari |
-|---|---|---|---|---|
-| Pasar sepi | ~3% | ~85 | ~$1.1 | ~Rp 18 rb |
-| Normal | ~10% | ~290 | ~$3.8 | ~Rp 62 rb |
-| Tren kuat | ~25% | ~720 | ~$9.4 | ~Rp 153 rb |
-| Worst case | 100% | 2.880 | ~$37 | ~Rp 605 rb |
+### Estimasi per hari
 
-**Realistis: $2–$5/hari (~Rp 30rb–80rb) untuk operasi normal 24 jam.**
+Tidak lagi tepat mengalikan 2.880 tick dengan biaya per call. Di Auto mode, ukur
+langsung jumlah entry attempt pada `AiUsage`: satu sinyal marginal yang stabil baru
+boleh memicu call setelah 5 menit, dan order yang berhasil menghentikan seluruh call
+selama posisi masih terbuka.
 
 ### Cara nekan biaya
 1. Naikkan **Min Confidence** di Settings 80 → 88 (pengontrol paling efektif).
 2. Ganti **Model** ke Haiku di Settings (5x lebih murah → ~$0.5–1/hari).
-3. Perlambat loop AutoTradingWorker 30s → 60s (potong call setengah).
+3. Naikkan confirmation delay di kode jika entry attempt masih terlalu sering.
 4. Kosongkan Anthropic key → full rule-based, $0.
 
 > **Catatan saldo:** Anthropic TIDAK punya API sisa saldo/credit. Panel "Claude API
@@ -684,3 +696,33 @@ faktor dan memicu auto-inversion dengan keyakinan palsu.
 - Gate confidence production tetap setting-driven (audit saat implementasi: 62).
 
 Testing: 165/165 unit test pass di Docker .NET 9; production image build sukses.
+
+---
+
+## 17. Entry quality gate + bounded Claude influence (2026-07-22)
+
+Audit 30 closed positions menunjukkan bucket confidence 60-61.9 hanya menang
+5/14 dan net -4.020 USDT. Entry sebelumnya dapat dibuka dari satu snapshot 30 detik,
+tanpa cooldown setelah close, sedangkan defensive multiplier Claude tertimpa mode
+Margin × Leverage.
+
+- **Konfirmasi temporal**: sinyal pada threshold normal harus muncul dua kali searah
+  dengan jarak minimal 5 menit; candidate kedaluwarsa setelah 15 menit. Sinyal
+  `threshold + 7` boleh langsung lanjut. Pergantian arah me-reset candidate.
+- **Risk-before-LLM**: daily loss/consecutive loss pause diperiksa sebelum Claude.
+  Rule scan tetap dicatat ke `AiDecisionLogs`, sehingga learning tidak kehilangan
+  observasi meskipun call Claude ditunda.
+- **Bounded hurdle**: Claude confirmed memakai threshold normal; Claude hesitant
+  memerlukan `threshold + 2`. Claude tidak boleh membalik arah engine. API Claude
+  gagal/tidak tersedia mempertahankan hasil rule engine yang sudah terkonfirmasi.
+- **Defensive target sizing**: pada mode Margin × Leverage, multiplier Claude
+  diterapkan setelah target quantity dan dicap maksimum 1.0×. Target 7×20 dengan
+  multiplier 0.25 berarti request quantity 25% dari target, sebelum normalisasi
+  minimum quantity/notional Binance dan exposure cap.
+- **Cooldown setelah close**: TakeProfit/TrailingStop/Manual/AutoClose = 30 menit;
+  StopLoss/Unknown = 60 menit. Jika row Position History terbaru gagal tersimpan,
+  worker memakai fallback konservatif 60 menit agar tidak langsung re-entry.
+- **Tidak menyentuh position management**: Position Check tetap rule-based tanpa
+  token Claude, dan trailing stop tetap dievaluasi tiap tick saat posisi terbuka.
+
+Testing: 182/182 unit test pass via Docker .NET 9; production image build sukses.

@@ -15,6 +15,15 @@
 pipeline {
     agent any
 
+    parameters {
+        string(
+            name: 'DEPLOY_BRANCH',
+            defaultValue: 'main',
+            trim: true,
+            description: 'Git branch yang akan di-checkout dan di-deploy ke VPS'
+        )
+    }
+
     options {
         timeout(time: 30, unit: 'MINUTES')
         disableConcurrentBuilds()
@@ -30,7 +39,6 @@ pipeline {
         VPS_USER     = 'root'
         DEPLOY_PATH  = '/opt/crypto-hft'
         REPO_URL     = 'https://github.com/ahmadbagus99/crypto-hft.git'
-        DEPLOY_BRANCH = 'main'
         COMPOSE_FILE = 'docker-compose.prod.yml'
         API_HEALTH   = 'http://localhost:5006/health'
     }
@@ -39,6 +47,23 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
+            }
+        }
+
+        stage('Validate deploy branch') {
+            steps {
+                sh '''
+                    if [ -z "${DEPLOY_BRANCH}" ]; then
+                        echo "DEPLOY_BRANCH tidak boleh kosong"
+                        exit 1
+                    fi
+                    if ! printf '%s' "${DEPLOY_BRANCH}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]*$'; then
+                        echo "DEPLOY_BRANCH mengandung karakter yang tidak diizinkan"
+                        exit 1
+                    fi
+                    git check-ref-format --branch "${DEPLOY_BRANCH}" >/dev/null
+                    echo "Branch yang akan di-deploy: ${DEPLOY_BRANCH}"
+                '''
             }
         }
 
@@ -52,8 +77,8 @@ pipeline {
                                 git clone "${REPO_URL}" "${DEPLOY_PATH}"
                             fi
                             cd "${DEPLOY_PATH}"
-                            git fetch origin "${DEPLOY_BRANCH}"
-                            git checkout "${DEPLOY_BRANCH}"
+                            git fetch --prune origin "+refs/heads/${DEPLOY_BRANCH}:refs/remotes/origin/${DEPLOY_BRANCH}"
+                            git checkout -B "${DEPLOY_BRANCH}" "origin/${DEPLOY_BRANCH}"
                             git reset --hard "origin/${DEPLOY_BRANCH}"
                             docker compose -f "${COMPOSE_FILE}" up --build -d
                             docker image prune -f
@@ -89,7 +114,7 @@ EOF
 
     post {
         success {
-            echo "Deploy sukses: frontend http://${VPS_HOST}:5005 | api http://${VPS_HOST}:5006"
+            echo "Deploy branch ${params.DEPLOY_BRANCH} sukses: frontend http://${VPS_HOST}:5005 | api http://${VPS_HOST}:5006"
         }
         failure {
             echo 'Deploy gagal. Cek log stage di atas.'

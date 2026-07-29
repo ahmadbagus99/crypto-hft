@@ -792,3 +792,47 @@ File baru: `FibonacciAnalysis.cs`, `ChartPatternDetector.cs`,
 - Ukur lewat meteran yang sudah ada: `/api/ai/performance` (kategori structure),
   `/api/ai/confidence-calibration`, ExecutionStats TP-hit-rate, dan bandingkan WR
   pra/pasca deploy. Threshold tetap setting-driven (server: 60).
+
+---
+
+## 19. Trading Style: Intraday vs Scalper (2026-07-29, batch 2)
+
+Setting baru **Metode Trading** di dashboard (Settings → dropdown, 2 opsi), kolom
+`TradingSettings.TradingStyle` (0 = Intraday default, 1 = Scalper; ALTER idempotent).
+Dibaca per tick — ganti mode berlaku di scan berikutnya tanpa restart.
+
+| | Intraday (default, perilaku lama) | Scalper |
+|---|---|---|
+| TF anchor (ATR/regime/level) | 1h | **15m** |
+| TF SMC | 15m | **5m** |
+| Bobot vote MTF | 5m 10 / 15m 20 / 1h 30 / 4h 25 / 1d 15 | **5m 30 / 15m 35 / 1h 25 / 4h 10** |
+| SL/TP baseline | 2× / 4× ATR(1h) + learned tuning | **1.5× / 3× ATR(15m), tuning learned di-bypass** |
+| Konfirmasi entry | 2 menit | **30 detik** (1 tick ekstra) |
+| Cooldown TP/SL | 30 / 60 menit | **10 / 20 menit** |
+| Target realistis | 1–2% | ~0.4–0.8% (RR tetap 2.0) |
+
+File: `TradingStyleProfile.cs` (baru), `AutoEntryTiming` di `AutoEntryPolicy.cs`,
+`AdvancedDecisionEngine.Evaluate(..., styleProfile)`, `AiDecisionService` (regime
+dideteksi di TF anchor style), `AutoTradingWorker` (timing per tick).
+
+Keputusan desain penting:
+- **Scalper TIDAK memakai learned execution tuning** — multiplier itu dipelajari dari
+  exit geometri 1h; menskalakan stop 15m dengannya salah kaprah. Leverage factor juga
+  netral (1.0) di scalper.
+- **TP floor de-facto ~3× fee**: SL 1.5×/TP 3× ATR(15m) dipilih supaya target minimal
+  ~0.4% vs fee taker round-trip ~0.1%. Scalp lebih tipis dari itu kalah secara
+  matematis sebelum mulai.
+- **Cooldown tetap ada di scalper** (10/20 mnt) — re-entry instan pasca stop adalah
+  pola terburuk di Position History, berlaku untuk kedua style.
+- Trailing guard tidak perlu diubah: ratchet berbasis R otomatis mengetat karena R
+  scalper lebih kecil.
+- Semua analisis batch 18 (fib/pattern/S&R/volume profile) otomatis ikut pindah ke
+  TF 15m di mode scalper karena mereka membaca TF anchor.
+- ⚠️ Learning (FactorStats/ExecutionStats) TIDAK dipisah per style — bucket regime
+  akan tercampur bila style sering diganti-ganti. Rekomendasi: pilih satu style dan
+  konsisten selama pengumpulan data; pemisahan per-style jadi kandidat batch
+  berikutnya bila scalper dipakai serius.
+
+Testing: **213/213 unit test pass** via Docker .NET 9 (7 baru: scalper timing
+30 detik/cooldown/resolusi style, engine anchor 15m, bypass learned tuning, default
+intraday). Full solution build + frontend `tsc` bersih.

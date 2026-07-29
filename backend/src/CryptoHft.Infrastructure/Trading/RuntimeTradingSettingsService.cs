@@ -90,7 +90,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                     PositionCheckIntervalMinutes: ClampPositionCheckInterval(row.PositionCheckIntervalMinutes),
                     TrailingStopDistanceR: NormalizeTrailingStopDistance(row.TrailingStopDistanceR, 1.0m),
                     LunarCrushApiKey: row.LunarCrushApiKey,
-                    TargetMarginUsdt: row.TargetMarginUsdt > 0 ? row.TargetMarginUsdt : 3m);
+                    TargetMarginUsdt: row.TargetMarginUsdt > 0 ? row.TargetMarginUsdt : 3m,
+                    TradingStyle: NormalizeTradingStyle(row.TradingStyle));
             }
         }
         catch (Exception ex)
@@ -122,7 +123,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                 PositionCheckIntervalMinutes = request.PositionCheckIntervalMinutes is > 0 ? ClampPositionCheckInterval(request.PositionCheckIntervalMinutes.Value) : _settings.PositionCheckIntervalMinutes,
                 TrailingStopDistanceR = request.TrailingStopDistanceR is > 0 ? NormalizeTrailingStopDistance(request.TrailingStopDistanceR.Value, _settings.TrailingStopDistanceR) : _settings.TrailingStopDistanceR,
                 LunarCrushApiKey = string.IsNullOrWhiteSpace(request.LunarCrushApiKey) ? _settings.LunarCrushApiKey : request.LunarCrushApiKey.Trim(),
-                TargetMarginUsdt = request.TargetMarginUsdt is > 0 ? Math.Clamp(request.TargetMarginUsdt.Value, 1m, 1000m) : _settings.TargetMarginUsdt
+                TargetMarginUsdt = request.TargetMarginUsdt is > 0 ? Math.Clamp(request.TargetMarginUsdt.Value, 1m, 1000m) : _settings.TargetMarginUsdt,
+                TradingStyle = request.TradingStyle is not null ? NormalizeTradingStyle(request.TradingStyle.Value) : _settings.TradingStyle
             };
             updated = _settings;
         }
@@ -161,6 +163,7 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             row.TrailingStopDistanceR = s.TrailingStopDistanceR;
             row.LunarCrushApiKey = s.LunarCrushApiKey;
             row.TargetMarginUsdt = s.TargetMarginUsdt;
+            row.TradingStyle = s.TradingStyle;
 
             db.SaveChanges();
         }
@@ -193,7 +196,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             settings.PositionCheckIntervalMinutes,
             settings.TrailingStopDistanceR,
             !string.IsNullOrWhiteSpace(settings.LunarCrushApiKey),
-            Mask(settings.LunarCrushApiKey));
+            Mask(settings.LunarCrushApiKey),
+            settings.TradingStyle);
     }
 
     private static decimal ClampPercent(decimal value, decimal min, decimal max)
@@ -208,6 +212,12 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
     }
 
     private static int NormalizeAutoSizingMode(int value)
+    {
+        return value == 1 ? 1 : 0;
+    }
+
+    // Only two styles exist: 0 = Intraday, 1 = Scalper. Anything else falls back to Intraday.
+    private static int NormalizeTradingStyle(int value)
     {
         return value == 1 ? 1 : 0;
     }

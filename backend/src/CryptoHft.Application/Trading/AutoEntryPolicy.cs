@@ -20,6 +20,36 @@ public sealed record AutoEntryConfirmationVerdict(
 
 public sealed record AutoEntryLlmVerdict(bool Allowed, string Reason);
 
+// Style-dependent entry timings. Intraday keeps the batch-18 values; scalper compresses
+// everything: a 30-second persistence check (one extra scan tick), a short candidate
+// life, and 10/20-minute cooldowns — a scalper that sits out a full hour after one
+// stop-out isn't scalping, but the cooldown itself stays because instant re-entry after
+// a stop was the single worst-performing pattern in Position History for BOTH styles.
+public sealed record AutoEntryTiming(
+    TimeSpan ConfirmationDelay,
+    TimeSpan CandidateLifetime,
+    TimeSpan StandardCooldown,
+    TimeSpan StopLossCooldown,
+    decimal StrongSignalOffset)
+{
+    public static readonly AutoEntryTiming Intraday = new(
+        ConfirmationDelay: TimeSpan.FromMinutes(2),
+        CandidateLifetime: TimeSpan.FromMinutes(15),
+        StandardCooldown: TimeSpan.FromMinutes(30),
+        StopLossCooldown: TimeSpan.FromMinutes(60),
+        StrongSignalOffset: 4m);
+
+    public static readonly AutoEntryTiming Scalper = new(
+        ConfirmationDelay: TimeSpan.FromSeconds(30),
+        CandidateLifetime: TimeSpan.FromMinutes(5),
+        StandardCooldown: TimeSpan.FromMinutes(10),
+        StopLossCooldown: TimeSpan.FromMinutes(20),
+        StrongSignalOffset: 4m);
+
+    public static AutoEntryTiming For(TradingStyle style)
+        => style == TradingStyle.Scalper ? Scalper : Intraday;
+}
+
 // Pure entry rules. Direction remains owned by the deterministic engine; this policy only
 // requires persistence before spending an LLM call. It never lets Claude reverse a signal
 // or increase risk. Tuned for responsiveness (owner call, 2026-07-29): the original
@@ -30,20 +60,17 @@ public sealed record AutoEntryLlmVerdict(bool Allowed, string Reason);
 // after a stop-out were the single worst-performing pattern in Position History.
 public static class AutoEntryPolicy
 {
-    public static readonly TimeSpan ConfirmationDelay = TimeSpan.FromMinutes(2);
-    public static readonly TimeSpan CandidateLifetime = TimeSpan.FromMinutes(15);
-    public static readonly TimeSpan StandardCooldown = TimeSpan.FromMinutes(30);
-    public static readonly TimeSpan StopLossCooldown = TimeSpan.FromMinutes(60);
-    public const decimal StrongSignalOffset = 4m;
     public const decimal HesitantSignalOffset = 0m;
 
     public static AutoEntryConfirmationVerdict EvaluateConfirmation(
         AdvancedDecision decision,
         decimal confidenceThreshold,
         AutoEntryCandidate? candidate,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        AutoEntryTiming? timing = null)
     {
-        if (candidate is not null && now - candidate.FirstSeenAt > CandidateLifetime)
+        var t = timing ?? AutoEntryTiming.Intraday;
+        if (candidate is not null && now - candidate.FirstSeenAt > t.CandidateLifetime)
             candidate = null;
 
         if (!TryGetActionableSide(decision, confidenceThreshold, out var side))
@@ -55,16 +82,16 @@ public static class AutoEntryPolicy
                     candidate,
                     candidate.Side,
                     $"waiting for second {candidate.Side} confirmation; candidate expires at " +
-                    $"{candidate.FirstSeenAt.Add(CandidateLifetime):u}");
+                    $"{candidate.FirstSeenAt.Add(t.CandidateLifetime):u}");
         }
 
-        if (decision.Confidence >= confidenceThreshold + StrongSignalOffset)
+        if (decision.Confidence >= confidenceThreshold + t.StrongSignalOffset)
         {
             return new(
                 AutoEntryConfirmationAction.Ready,
                 null,
                 side,
-                $"strong {side} signal {decision.Confidence:F1} >= {confidenceThreshold + StrongSignalOffset:F1}");
+                $"strong {side} signal {decision.Confidence:F1} >= {confidenceThreshold + t.StrongSignalOffset:F1}");
         }
 
         if (candidate is null || candidate.Side != side)
@@ -75,17 +102,17 @@ public static class AutoEntryPolicy
                 next,
                 side,
                 $"first {side} confirmation {decision.Confidence:F1}; confirm again after " +
-                $"{now.Add(ConfirmationDelay):u}");
+                $"{now.Add(t.ConfirmationDelay):u}");
         }
 
         var elapsed = now - candidate.FirstSeenAt;
-        if (elapsed < ConfirmationDelay)
+        if (elapsed < t.ConfirmationDelay)
         {
             return new(
                 AutoEntryConfirmationAction.Wait,
                 candidate,
                 side,
-                $"{side} confirmation pending for {(ConfirmationDelay - elapsed).TotalMinutes:F1} more minutes");
+                $"{side} confirmation pending for {(t.ConfirmationDelay - elapsed).TotalMinutes:F1} more minutes");
         }
 
         return new(
@@ -118,10 +145,13 @@ public static class AutoEntryPolicy
             : new(false, $"Claude hesitant: confidence {decision.Confidence:F1} below defensive threshold {required:F1}");
     }
 
-    public static TimeSpan CooldownFor(PositionCloseReason closeReason)
-        => closeReason is PositionCloseReason.StopLoss or PositionCloseReason.Unknown
-            ? StopLossCooldown
-            : StandardCooldown;
+    public static TimeSpan CooldownFor(PositionCloseReason closeReason, AutoEntryTiming? timing = null)
+    {
+        var t = timing ?? AutoEntryTiming.Intraday;
+        return closeReason is PositionCloseReason.StopLoss or PositionCloseReason.Unknown
+            ? t.StopLossCooldown
+            : t.StandardCooldown;
+    }
 
     private static bool TryGetActionableSide(
         AdvancedDecision decision,

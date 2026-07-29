@@ -84,6 +84,7 @@ async function saveTradingSettings(payload: {
   positionCheckIntervalMinutes?: number;
   trailingStopDistanceR?: number;
   lunarCrushApiKey?: string;
+  tradingStyle?: number;
 }): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", {
     method: "PUT",
@@ -333,6 +334,7 @@ function SettingsPage() {
   const [leverage, setLeverage] = useState("5");
   const [targetMargin, setTargetMargin] = useState("3");
   const [autoSizingMode, setAutoSizingMode] = useState("0");
+  const [tradingStyle, setTradingStyle] = useState("0");
   const [targetLeverage, setTargetLeverage] = useState("20");
   const [confidenceThreshold, setConfidenceThreshold] = useState("80");
   const [positionCheckInterval, setPositionCheckInterval] = useState("30");
@@ -372,6 +374,7 @@ function SettingsPage() {
       setLeverage(String(current.defaultLeverage));
       setTargetMargin(String(current.targetMarginUsdt ?? 3));
       setAutoSizingMode(String(current.autoSizingMode ?? 0));
+      setTradingStyle(String(current.tradingStyle ?? 0));
       setTargetLeverage(String(current.targetLeverage ?? 20));
       setAiModel(current.aiModel ?? "claude-opus-4-8");
       setConfidenceThreshold(String(current.confidenceThreshold ?? 80));
@@ -395,6 +398,7 @@ function SettingsPage() {
         defaultLeverage: Number(leverage),
         targetMarginUsdt: Number(targetMargin) || undefined,
         autoSizingMode: Number(autoSizingMode),
+        tradingStyle: Number(tradingStyle),
         targetLeverage: Number(targetLeverage) || undefined,
         apiKey: apiKey || undefined,
         apiSecret: apiSecret || undefined,
@@ -496,6 +500,18 @@ function SettingsPage() {
               max="1000"
               step="0.5"
             />
+            <div>
+              <label className="mb-1 block text-xs text-slate-400">Metode Trading</label>
+              <select
+                value={tradingStyle}
+                onChange={e => setTradingStyle(e.target.value)}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                <option value="0">Intraday — geometri 1h, target 1–2%, hold beberapa jam</option>
+                <option value="1">Scalper — geometri 15m, target 0.4–0.8%, in-out cepat</option>
+              </select>
+              <p className="mt-1 text-xs text-slate-600">Scalper: konfirmasi 30 detik, cooldown 10/20 menit, SL/TP dari ATR 15m. Fee round-trip ~0.1% — target di bawah itu tidak diambil. Berlaku di scan berikutnya tanpa restart.</p>
+            </div>
             <div>
               <label className="mb-1 block text-xs text-slate-400">Auto Position Sizing</label>
               <select

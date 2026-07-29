@@ -20,7 +20,8 @@ public sealed record TradingSettingsDto(
     int PositionCheckIntervalMinutes,
     decimal TrailingStopDistanceR,
     bool HasLunarCrushKey,
-    string LunarCrushKeyPreview);
+    string LunarCrushKeyPreview,
+    int TradingStyle);
 
 public sealed record UpdateTradingSettingsRequest(
     bool PaperTradingOnly,
@@ -39,7 +40,8 @@ public sealed record UpdateTradingSettingsRequest(
     int? PositionCheckIntervalMinutes,
     decimal? TrailingStopDistanceR,
     string? LunarCrushApiKey,
-    decimal? TargetMarginUsdt = null);
+    decimal? TargetMarginUsdt = null,
+    int? TradingStyle = null);
 
 public sealed record ConnectionTestResult(bool Connected, string Message, string? Detail = null);
 
@@ -78,4 +80,7 @@ public sealed record RuntimeTradingSettings(
     string? LunarCrushApiKey,
     // Margin target (USDT) per posisi saat leverage harus dinaikkan agar order minimum
     // exchange muat di saldo kecil. Menentukan leverage efektif: ceil(notional / target).
-    decimal TargetMarginUsdt = 3m);
+    decimal TargetMarginUsdt = 3m,
+    // 0 = Intraday (perilaku asli, geometri 1h), 1 = Scalper (geometri 15m, target
+    // lebih dekat, konfirmasi & cooldown lebih cepat).
+    int TradingStyle = 0);

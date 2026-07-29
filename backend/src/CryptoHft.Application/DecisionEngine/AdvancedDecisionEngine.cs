@@ -42,20 +42,29 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
     public AdvancedDecision Evaluate(
         AdvancedDecisionInput input, RiskProfile profile, decimal equity,
         IReadOnlyDictionary<string, FactorAdjustment>? factorAdjustments = null,
-        ExecutionTuning? tuning = null)
+        ExecutionTuning? tuning = null,
+        TradingStyleProfile? styleProfile = null)
     {
-        var exec = tuning ?? ExecutionTuning.Default;
-        var primary = GetTimeframe(input, "1h") ?? input.Timeframes.OrderByDescending(t => t.Candles.Count).First();
+        var style = styleProfile ?? TradingStyleProfile.Intraday;
+        // The learned execution tuning was collected from intraday (1h-geometry) exits;
+        // a style that anchors on a different timeframe uses its own fixed baseline and
+        // a neutral leverage factor instead of consuming evidence that doesn't apply.
+        var exec = style.UseLearnedTuning
+            ? tuning ?? ExecutionTuning.Default
+            : new ExecutionTuning(style.FallbackSlAtrMultiplier, style.FallbackTpAtrMultiplier, 1m);
+        var primary = GetTimeframe(input, style.PrimaryInterval)
+                      ?? input.Timeframes.OrderByDescending(t => t.Candles.Count).First();
         var candles = primary.Candles;
-        // SMC + order-flow run on the entry timeframe (15m/5m) for finer structure
-        var smcTf = GetTimeframe(input, "15m") ?? primary;
+        // SMC + order-flow run on the entry timeframe (one step below primary) for finer structure
+        var smcTf = GetTimeframe(input, style.StructureInterval) ?? primary;
         var flowTf = GetTimeframe(input, "5m") ?? smcTf;
         var regime = MarketRegimeDetector.Detect(candles);
 
         // Per-timeframe directional votes feed the trend/momentum/structure consensus.
         // Higher timeframes carry more weight (they set the bias), lower ones time the
-        // entry — a single noisy timeframe can no longer flip the technical read.
-        var votes = CollectTimeframeVotes(input);
+        // entry — a single noisy timeframe can no longer flip the technical read. The
+        // style shifts where that weight sits (scalper leans on 5m/15m).
+        var votes = CollectTimeframeVotes(input, style.VoteWeights);
 
         // Primary-timeframe ATR anchors all level/geometry analysis below.
         var atr = TechnicalIndicators.Atr(candles)[^1];
@@ -257,7 +266,9 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
 
         var shouldTrade = noTradeReasons.Count == 0;
 
-        // Category scores ordered by weight, then the detailed factor breakdown.
+        // Style banner first (which lens produced this read), then category scores
+        // ordered by weight, then the detailed factor breakdown.
+        reasons.Add($"style {style.Name}: primary TF {primary.Interval}, SL {exec.SlAtrMultiplier:0.#}x / TP {exec.TpAtrMultiplier:0.#}x ATR");
         foreach (var (name, score) in scores.OrderByDescending(kv => weights.GetValueOrDefault(kv.Key, 0m)))
         {
             var note = name switch
@@ -394,18 +405,15 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
     // Each timeframe casts trend/momentum/structure votes; the consensus is the weighted
     // blend. Higher timeframes set the bias and weigh more, lower ones time the entry.
     // Missing/short timeframes simply drop out and the remaining weights renormalize.
-    private static readonly (string Interval, decimal Weight)[] TimeframeVoteWeights =
-    [
-        ("5m", 0.10m), ("15m", 0.20m), ("1h", 0.30m), ("4h", 0.25m), ("1d", 0.15m)
-    ];
-
     internal sealed record TimeframeVote(
         string Interval, decimal Weight, decimal Trend, decimal Momentum, decimal Structure);
 
-    internal static List<TimeframeVote> CollectTimeframeVotes(AdvancedDecisionInput input)
+    internal static List<TimeframeVote> CollectTimeframeVotes(
+        AdvancedDecisionInput input,
+        IReadOnlyList<(string Interval, decimal Weight)>? voteWeights = null)
     {
         var votes = new List<TimeframeVote>();
-        foreach (var (interval, weight) in TimeframeVoteWeights)
+        foreach (var (interval, weight) in voteWeights ?? TradingStyleProfile.Intraday.VoteWeights)
         {
             var tf = GetTimeframe(input, interval);
             if (tf is null || tf.Candles.Count < 60) continue;

@@ -67,15 +67,21 @@ public sealed class AiDecisionService(
             MinimumRiskReward: 2m,
             AutoTradeConfidenceThreshold: settings.ConfidenceThreshold);
 
+        // The trading style picks the lens: which timeframe anchors regime/geometry and
+        // how the MTF votes are weighted. Read per tick, so a settings change takes
+        // effect on the next scan without a restart.
+        var styleProfile = TradingStyleProfile.For((TradingStyle)settings.TradingStyle);
+
         // Adaptive learning: load learned weight multipliers + execution baselines
-        // (SL/TP geometry, leverage factor) for the current regime
-        var primary = input.Timeframes.FirstOrDefault(t => t.Interval == "1h")
+        // (SL/TP geometry, leverage factor) for the current regime — detected on the
+        // style's primary timeframe so the engine and the learning lookup agree.
+        var primary = input.Timeframes.FirstOrDefault(t => t.Interval == styleProfile.PrimaryInterval)
                       ?? input.Timeframes.OrderByDescending(t => t.Candles.Count).First();
         var regime = MarketRegimeDetector.Detect(primary.Candles);
         var adjustments = await adaptiveWeights.GetFactorAdjustmentsAsync(regime, cancellationToken);
         var tuning = await adaptiveWeights.GetExecutionTuningAsync(regime, cancellationToken);
 
-        var decision = engine.Evaluate(input, profile, equity ?? 0m, adjustments, tuning);
+        var decision = engine.Evaluate(input, profile, equity ?? 0m, adjustments, tuning, styleProfile);
 
         // Live mode with unknown equity: sizing against a guessed balance is dangerous, so the
         // trade is blocked for this tick (analysis still runs for the dashboard).

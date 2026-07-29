@@ -247,4 +247,42 @@ public sealed class DecisionEngineImprovementTests
         Assert.Contains(decision.Components, c => c.Name == "Pattern");
         Assert.Contains(decision.Components, c => c.Name == "SupportResistance");
     }
+
+    // ---- Trading style profile -----------------------------------------------------------------
+
+    [Fact]
+    public void ScalperStyle_AnchorsOn15mAndUsesScalperGeometry()
+    {
+        var engine = new AdvancedDecisionEngine();
+
+        var decision = engine.Evaluate(
+            SyntheticInput(), Profile, 10_000m,
+            styleProfile: TradingStyleProfile.Scalper);
+
+        Assert.Contains(decision.Reasons, r => r.Contains("style scalper: primary TF 15m"));
+        Assert.Contains(decision.Reasons, r => r.Contains("SL 1.5x / TP 3x ATR"));
+    }
+
+    [Fact]
+    public void ScalperStyle_IgnoresLearnedIntradayTuning()
+    {
+        var engine = new AdvancedDecisionEngine();
+        var learned = new ExecutionTuning(2.6m, 3.2m, 0.5m);
+
+        var intraday = engine.Evaluate(SyntheticInput(), Profile, 10_000m, tuning: learned);
+        var scalper = engine.Evaluate(SyntheticInput(), Profile, 10_000m, tuning: learned,
+            styleProfile: TradingStyleProfile.Scalper);
+
+        Assert.Contains(intraday.Reasons, r => r.Contains("SL 2.6x / TP 3.2x ATR"));
+        Assert.Contains(scalper.Reasons, r => r.Contains("SL 1.5x / TP 3x ATR"));
+    }
+
+    [Fact]
+    public void DefaultStyle_IsIntradayOn1h()
+    {
+        var engine = new AdvancedDecisionEngine();
+        var decision = engine.Evaluate(SyntheticInput(), Profile, 10_000m);
+
+        Assert.Contains(decision.Reasons, r => r.Contains("style intraday: primary TF 1h"));
+    }
 }

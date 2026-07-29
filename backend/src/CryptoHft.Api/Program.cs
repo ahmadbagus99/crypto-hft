@@ -905,6 +905,7 @@ using (var scope = app.Services.CreateScope())
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "TrailingStopDistanceR" numeric NOT NULL DEFAULT 1.0;
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "AutoSizingMode" integer NOT NULL DEFAULT 0;
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "TargetLeverage" integer NOT NULL DEFAULT 20;
+        ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "TradingStyle" integer NOT NULL DEFAULT 0;
         CREATE TABLE IF NOT EXISTS trading."AiUsage" (
             "Id" uuid PRIMARY KEY,
             "Model" text NOT NULL,

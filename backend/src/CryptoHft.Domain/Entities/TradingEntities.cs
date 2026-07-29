@@ -147,6 +147,7 @@ public sealed class PersistedTradingSettings
     public decimal TrailingStopDistanceR { get; set; } = 1.0m;
     public string? LunarCrushApiKey { get; set; }
     public decimal TargetMarginUsdt { get; set; } = 3m;
+    public int TradingStyle { get; set; } // 0 = Intraday (default), 1 = Scalper
 }
 
 public sealed class NewsItem

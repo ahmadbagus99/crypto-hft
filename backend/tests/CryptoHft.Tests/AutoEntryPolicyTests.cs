@@ -137,6 +137,44 @@ public sealed class AutoEntryPolicyTests
         Assert.Equal(TimeSpan.FromMinutes(30), AutoEntryPolicy.CooldownFor(PositionCloseReason.TrailingStop));
     }
 
+    // ---- Scalper timing ------------------------------------------------------------------------
+
+    [Fact]
+    public void Scalper_ConfirmationReadyAfterThirtySeconds()
+    {
+        var candidate = new AutoEntryCandidate(TradeSide.Long, T0);
+
+        var verdict = AutoEntryPolicy.EvaluateConfirmation(
+            Decision(TradeSide.Long, 61m), 60m, candidate, T0.AddSeconds(30), AutoEntryTiming.Scalper);
+
+        Assert.Equal(AutoEntryConfirmationAction.Ready, verdict.Action);
+    }
+
+    [Fact]
+    public void Scalper_IntradayDelayWouldStillBeWaiting()
+    {
+        var candidate = new AutoEntryCandidate(TradeSide.Long, T0);
+
+        var verdict = AutoEntryPolicy.EvaluateConfirmation(
+            Decision(TradeSide.Long, 61m), 60m, candidate, T0.AddSeconds(30), AutoEntryTiming.Intraday);
+
+        Assert.Equal(AutoEntryConfirmationAction.Wait, verdict.Action);
+    }
+
+    [Fact]
+    public void Scalper_CooldownsAreCompressedButPresent()
+    {
+        Assert.Equal(TimeSpan.FromMinutes(20), AutoEntryPolicy.CooldownFor(PositionCloseReason.StopLoss, AutoEntryTiming.Scalper));
+        Assert.Equal(TimeSpan.FromMinutes(10), AutoEntryPolicy.CooldownFor(PositionCloseReason.TakeProfit, AutoEntryTiming.Scalper));
+    }
+
+    [Fact]
+    public void Scalper_TimingResolvesFromStyle()
+    {
+        Assert.Same(AutoEntryTiming.Scalper, AutoEntryTiming.For(TradingStyle.Scalper));
+        Assert.Same(AutoEntryTiming.Intraday, AutoEntryTiming.For(TradingStyle.Intraday));
+    }
+
     private static AdvancedDecision Decision(
         TradeSide side,
         decimal confidence,

@@ -46,6 +46,15 @@ public enum DecisionAction
 
 // Why a closed position closed — the signal that lets SL/TP geometry learn from real exits.
 // Unknown stays 0 so pre-existing rows and unclassifiable closes never teach the wrong lesson.
+// How the autonomous system trades. Persisted as int in TradingSettings — append only.
+// Intraday (default): the original behavior — 1h geometry, targets 1-2%, holds hours.
+// Scalper: 15m geometry, targets ~0.4-0.8%, faster confirmation and cooldowns.
+public enum TradingStyle
+{
+    Intraday = 0,
+    Scalper = 1
+}
+
 public enum PositionCloseReason
 {
     Unknown = 0,

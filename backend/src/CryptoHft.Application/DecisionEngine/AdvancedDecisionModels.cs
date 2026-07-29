@@ -158,5 +158,6 @@ public interface IAdvancedDecisionEngine
         Risk.RiskProfile profile,
         decimal equity,
         IReadOnlyDictionary<string, FactorAdjustment>? factorAdjustments = null,
-        ExecutionTuning? tuning = null);
+        ExecutionTuning? tuning = null,
+        TradingStyleProfile? styleProfile = null);
 }

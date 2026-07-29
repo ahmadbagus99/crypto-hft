@@ -453,6 +453,7 @@ export type TradingSettings = {
   trailingStopDistanceR: number;
   hasLunarCrushKey: boolean;
   lunarCrushKeyPreview: string;
+  tradingStyle: number;
 };
 
 export type AiUsageSummary = {

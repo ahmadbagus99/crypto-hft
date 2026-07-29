@@ -82,8 +82,11 @@ public sealed class AutoTradingWorker(
         trailingStopActivity.Clear(Symbol);
 
         var now = DateTimeOffset.UtcNow;
+        // Entry timings follow the configured trading style (read per tick, so a settings
+        // change applies on the next scan). Scalper compresses confirmation and cooldowns.
+        var timing = AutoEntryTiming.For((TradingStyle)settings.TradingStyle);
         if (!_entryCooldownInitialized || positionJustClosed)
-            await RefreshEntryCooldownAsync(positionJustClosed, now, cancellationToken);
+            await RefreshEntryCooldownAsync(positionJustClosed, timing, now, cancellationToken);
 
         // Manual mode keeps the existing dashboard analysis behavior. Auto mode starts with a
         // rule-only scan so Claude is called only after the signal persists long enough.
@@ -113,7 +116,8 @@ public sealed class AutoTradingWorker(
             scanDecision,
             settings.ConfidenceThreshold,
             _entryCandidate,
-            now);
+            now,
+            timing);
         _entryCandidate = confirmation.Candidate;
         if (confirmation.Action != AutoEntryConfirmationAction.Ready || confirmation.Side is null)
         {
@@ -225,6 +229,7 @@ public sealed class AutoTradingWorker(
 
     private async Task RefreshEntryCooldownAsync(
         bool positionJustClosed,
+        AutoEntryTiming timing,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -232,11 +237,11 @@ public sealed class AutoTradingWorker(
 
         // ObserveAsync persists the close before this method runs. Keep a conservative fallback
         // if that write or its close-reason classification fails, so a database problem cannot
-        // cause an immediate re-entry. Unknown exits use the same 60-minute window as stop losses.
+        // cause an immediate re-entry. Unknown exits use the same stop-loss window.
         if (positionJustClosed)
         {
             _entryCandidate = null;
-            _entryCooldownUntil = now.Add(AutoEntryPolicy.StopLossCooldown);
+            _entryCooldownUntil = now.Add(timing.StopLossCooldown);
         }
 
         var latest = await positionHistoryService.GetLatestClosedAsync(Symbol, cancellationToken);
@@ -256,7 +261,7 @@ public sealed class AutoTradingWorker(
             return;
 
         _lastCooldownSourceClosedAt = latest.ClosedAt;
-        _entryCooldownUntil = latest.ClosedAt.Add(AutoEntryPolicy.CooldownFor(latest.CloseReason));
+        _entryCooldownUntil = latest.ClosedAt.Add(AutoEntryPolicy.CooldownFor(latest.CloseReason, timing));
         _entryCandidate = null;
         logger.LogInformation(
             "Entry cooldown updated from {CloseReason} close at {ClosedAt:u}; entries resume at {ResumeAt:u}",

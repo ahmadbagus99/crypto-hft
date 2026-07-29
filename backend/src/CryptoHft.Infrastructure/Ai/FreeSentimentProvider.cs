@@ -21,10 +21,16 @@ public sealed class FreeSentimentProvider(
     ILogger<FreeSentimentProvider> logger)
     : ISentimentProvider
 {
+    // Fetched in parallel; any subset may fail silently (per-feed try/catch), so adding
+    // sources only ever widens coverage. More independent outlets = better evidence
+    // volume/agreement in the score and less single-editorial bias.
     private static readonly string[] RssFeeds =
     [
         "https://www.coindesk.com/arc/outboundfeeds/rss/",
-        "https://cointelegraph.com/rss"
+        "https://cointelegraph.com/rss",
+        "https://decrypt.co/feed",
+        "https://bitcoinmagazine.com/feed",
+        "https://cryptoslate.com/feed/"
     ];
 
     private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(5);
@@ -133,33 +139,36 @@ public sealed class FreeSentimentProvider(
         }
     }
 
+    // All feeds are fetched concurrently so total latency is one slow feed, not the sum
+    // of five. A failing feed contributes an empty list and never blocks the others.
     private async Task<List<Headline>> FetchHeadlinesAsync(CancellationToken cancellationToken)
     {
-        var headlines = new List<Headline>();
         var client = httpClientFactory.CreateClient();
         client.Timeout = TimeSpan.FromSeconds(8);
         client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (compatible; CryptoHFT/1.0)");
 
-        foreach (var feed in RssFeeds)
+        var results = await Task.WhenAll(RssFeeds.Select(async feed =>
         {
             try
             {
                 var xml = await client.GetStringAsync(feed, cancellationToken);
                 var doc = XDocument.Parse(xml);
-                var items = doc.Descendants("item")
+                return doc.Descendants("item")
                     .Select(i => new Headline(
                         i.Element("title")?.Value.Trim() ?? "",
                         DateTimeOffset.TryParse(i.Element("pubDate")?.Value, out var dt) ? dt : null))
                     .Where(h => h.Title.Length > 0)
-                    .Take(20);
-                headlines.AddRange(items);
+                    .Take(20)
+                    .ToList();
             }
             catch (Exception ex)
             {
                 logger.LogDebug(ex, "RSS feed {Feed} unavailable", feed);
+                return new List<Headline>();
             }
-        }
-        return headlines;
+        }));
+
+        return results.SelectMany(r => r).ToList();
     }
 
     // Aggregates per-headline scores into (score 0-100, label, confidence 0-100, reasons).

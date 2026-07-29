@@ -1,6 +1,12 @@
 # Context — Penggunaan & Biaya API (Anthropic + LunarCrush)
 
-> Update terakhir (2026-07-22): **Entry quality gate (Bagian 17)** — sinyal
+> Update terakhir (2026-07-29): **Batch responsiveness v1.3 (Bagian 18)** — gate
+> dilonggarkan atas keputusan owner (konfirmasi 2 menit, strong signal threshold+4,
+> hesitant hurdle dihapus; cooldown pasca-close TETAP), analisis level klasik baru
+> (Fibonacci retracement, chart patterns triangle/rectangle + breakout, horizontal
+> S/R clustering + TP snap), news 5 feed paralel. Latar: production sengaja jalan di
+> branch v1 karena gate batch 17 hampir tidak pernah membuka posisi.
+> Sebelumnya (2026-07-22): **Entry quality gate (Bagian 17)** — sinyal
 > marginal harus terkonfirmasi dua kali dengan jarak 5 menit, sinyal kuat boleh
 > langsung lanjut, risk pause dicek sebelum Claude, verdict hesitant menaikkan
 > hurdle 2 poin, multiplier Claude menjadi defensive cap untuk target sizing,
@@ -726,3 +732,63 @@ Margin × Leverage.
   token Claude, dan trailing stop tetap dievaluasi tiap tick saat posisi terbuka.
 
 Testing: 182/182 unit test pass via Docker .NET 9; production image build sukses.
+
+---
+
+## 18. Batch responsiveness v1.3 — gate longgar + analisis level klasik (2026-07-29)
+
+Latar: audit 43 closed positions (WR 48.8%, PF 1.18, kolaps 68%→33% setelah 17 Jul)
+menemukan production berjalan di branch `v1` TANPA batch 17 — dan itu SENGAJA:
+konfirmasi 5-menit + hesitant hurdle (+2) membuat sistem hampir tidak pernah open
+posisi. Keputusan owner: sistem harus tetap aktif membuka posisi; kualitas entry
+dinaikkan lewat analisis yang lebih kaya, bukan gate yang makin ketat.
+
+### a) Entry gate dilonggarkan (`AutoEntryPolicy`)
+- `ConfirmationDelay` 5 → **2 menit** (persistence check ringan, bukan penghalang).
+- `StrongSignalOffset` 7 → **4** (sinyal cukup kuat langsung jalan).
+- `HesitantSignalOffset` 2 → **0**: Claude ragu TIDAK menaikkan bar entry — dia
+  tetap mengecilkan size via multiplier (bounded 0.1–1.0×). Data 34 decision: Claude
+  hesitant di 32/34 → hurdle +2 de-facto memblok hampir semua entry.
+- **Cooldown pasca-close TETAP 30/60 menit** — data mendukung keras: 9 re-entry
+  cepat pasca-close (23–27 Jul) mayoritas loss (revenge chop).
+
+### b) Analisis level klasik baru (kategori `structure`)
+File baru: `FibonacciAnalysis.cs`, `ChartPatternDetector.cs`,
+`SupportResistanceLevels.cs` (semua pure & unit-tested, TF primer 1h).
+- **Fibonacci retracement**: impulse terakhir dari dealing range 60 candle (syarat
+  range ≥ 3×ATR); pullback ke zona 0.382/0.5/golden pocket 0.618-0.65/0.786 = vote
+  searah impulse (golden pocket terbesar +12); retrace ≥ 0.9 = impulse gagal (vote
+  balik). Ekstensi 1.272/1.618 tampil sebagai konteks target di summary.
+- **Chart patterns**: trendline fit 3 swing high + 3 swing low (fractal swing SMC);
+  klasifikasi ascending/descending/symmetrical triangle & rectangle. Di dalam
+  pattern: bias textbook (asc +6 / desc −6). **Breakout close melewati proyeksi
+  boundary ± 0.1×ATR = vote ±12, +5 bila volume > 1.3× SMA20**. Measured-move
+  target (tinggi pattern) tampil sebagai konteks TP.
+- **Horizontal S/R**: pivot swing di-cluster (toleransi 0.35×ATR, min 2 sentuhan).
+  Harga bertahan ≤ 0.5×ATR di atas support teruji = +8 (+4 rejection wick);
+  menekan resistance = mirror negatif; close menembus level teruji ± 0.2×ATR = ±10.
+- Bobot dalam `structure` (bobot kategori 17% tidak berubah, learning key stabil):
+  SmartMoney 30%, PriceAction 25%, Pattern 20%, Fibonacci 12.5%, S/R 12.5%.
+- **TP snap ke S/R** setelah snap volume-profile: TP yang melewati wall teruji
+  ditarik ke depan wall (buffer 0.25×ATR) bila reward tersisa ≥ 60%; kalau tidak,
+  jadi caution "target may be optimistic". Caution baru: entry menabrak wall < 1×ATR.
+- **Elliott Wave sengaja TIDAK diimplementasi**: subjektif/tidak testable; bagian
+  actionable-nya (struktur impulse/koreksi) sudah tercakup BOS/CHoCH + swing fractal.
+
+### c) News lebih responsif
+- RSS 2 → **5 feed** (CoinDesk, Cointelegraph, + Decrypt, Bitcoin Magazine,
+  CryptoSlate) — fetch **paralel** (latency = feed terlambat, bukan penjumlahan;
+  feed gagal = subset kosong, tidak pernah memblok yang lain). Scoring (event
+  patterns, recency 12h half-life, speculation guard) tidak berubah.
+
+### Testing
+- **206/206 unit test pass** via Docker .NET 9 (24 baru: fib zones/direction/
+  invalidation, pattern forming/breakout/trending-null/bias matrix, S/R clustering/
+  bounce/TP-snap guardrail, wiring komponen engine, gate 2-menit & hesitant-pass).
+- Full solution build 0 warning 0 error.
+
+### Deploy & evaluasi
+- Branch **v1.3**. Deploy Jenkins `DEPLOY_BRANCH=v1.3` (user yang deploy).
+- Ukur lewat meteran yang sudah ada: `/api/ai/performance` (kategori structure),
+  `/api/ai/confidence-calibration`, ExecutionStats TP-hit-rate, dan bandingkan WR
+  pra/pasca deploy. Threshold tetap setting-driven (server: 60).

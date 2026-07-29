@@ -21,16 +21,21 @@ public sealed record AutoEntryConfirmationVerdict(
 public sealed record AutoEntryLlmVerdict(bool Allowed, string Reason);
 
 // Pure entry rules. Direction remains owned by the deterministic engine; this policy only
-// requires persistence before spending an LLM call and adds a bounded hurdle when Claude is
-// hesitant. It never lets Claude reverse a signal or increase risk.
+// requires persistence before spending an LLM call. It never lets Claude reverse a signal
+// or increase risk. Tuned for responsiveness (owner call, 2026-07-29): the original
+// 5-minute double confirmation plus the hesitant +2 hurdle blocked nearly every entry in
+// production, so confirmation is now a 2-minute persistence check, a moderately strong
+// signal skips it, and a hesitant Claude verdict downsizes (via its size multiplier)
+// instead of raising the entry bar. The post-close cooldown stays: re-entries minutes
+// after a stop-out were the single worst-performing pattern in Position History.
 public static class AutoEntryPolicy
 {
-    public static readonly TimeSpan ConfirmationDelay = TimeSpan.FromMinutes(5);
+    public static readonly TimeSpan ConfirmationDelay = TimeSpan.FromMinutes(2);
     public static readonly TimeSpan CandidateLifetime = TimeSpan.FromMinutes(15);
     public static readonly TimeSpan StandardCooldown = TimeSpan.FromMinutes(30);
     public static readonly TimeSpan StopLossCooldown = TimeSpan.FromMinutes(60);
-    public const decimal StrongSignalOffset = 7m;
-    public const decimal HesitantSignalOffset = 2m;
+    public const decimal StrongSignalOffset = 4m;
+    public const decimal HesitantSignalOffset = 0m;
 
     public static AutoEntryConfirmationVerdict EvaluateConfirmation(
         AdvancedDecision decision,

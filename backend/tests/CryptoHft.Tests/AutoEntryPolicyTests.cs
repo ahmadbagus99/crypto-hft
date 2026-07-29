@@ -19,15 +19,26 @@ public sealed class AutoEntryPolicyTests
     }
 
     [Fact]
-    public void Confirmation_SameDirectionAfterFiveMinutesIsReady()
+    public void Confirmation_SameDirectionAfterTwoMinutesIsReady()
     {
         var candidate = new AutoEntryCandidate(TradeSide.Long, T0);
 
         var verdict = AutoEntryPolicy.EvaluateConfirmation(
-            Decision(TradeSide.Long, 61m), 60m, candidate, T0.AddMinutes(5));
+            Decision(TradeSide.Long, 61m), 60m, candidate, T0.AddMinutes(2));
 
         Assert.Equal(AutoEntryConfirmationAction.Ready, verdict.Action);
         Assert.Equal(TradeSide.Long, verdict.Side);
+    }
+
+    [Fact]
+    public void Confirmation_SameDirectionBeforeTwoMinutesWaits()
+    {
+        var candidate = new AutoEntryCandidate(TradeSide.Long, T0);
+
+        var verdict = AutoEntryPolicy.EvaluateConfirmation(
+            Decision(TradeSide.Long, 61m), 60m, candidate, T0.AddSeconds(90));
+
+        Assert.Equal(AutoEntryConfirmationAction.Wait, verdict.Action);
     }
 
     [Fact]
@@ -46,7 +57,7 @@ public sealed class AutoEntryPolicyTests
     [Fact]
     public void Confirmation_StrongSignalIsReadyImmediately()
     {
-        var verdict = AutoEntryPolicy.EvaluateConfirmation(Decision(TradeSide.Short, 67m), 60m, null, T0);
+        var verdict = AutoEntryPolicy.EvaluateConfirmation(Decision(TradeSide.Short, 64m), 60m, null, T0);
 
         Assert.Equal(AutoEntryConfirmationAction.Ready, verdict.Action);
         Assert.Equal(TradeSide.Short, verdict.Side);
@@ -64,24 +75,27 @@ public sealed class AutoEntryPolicyTests
         Assert.Equal(T0.AddMinutes(16), verdict.Candidate?.FirstSeenAt);
     }
 
+    // A hesitant Claude no longer raises the entry bar (HesitantSignalOffset = 0): it
+    // still downsizes the trade through its size multiplier, but any signal that clears
+    // the normal threshold may proceed.
     [Fact]
-    public void Llm_HesitantSignalBelowDefensiveThresholdIsBlocked()
+    public void Llm_HesitantSignalAtNormalThresholdIsAllowed()
     {
-        var decision = Decision(TradeSide.Long, 61.9m, llmUsed: true, llmConfirmed: false);
-
-        var verdict = AutoEntryPolicy.EvaluateLlm(decision, TradeSide.Long, 60m);
-
-        Assert.False(verdict.Allowed);
-    }
-
-    [Fact]
-    public void Llm_HesitantSignalAtDefensiveThresholdIsAllowed()
-    {
-        var decision = Decision(TradeSide.Long, 62m, llmUsed: true, llmConfirmed: false);
+        var decision = Decision(TradeSide.Long, 60m, llmUsed: true, llmConfirmed: false);
 
         var verdict = AutoEntryPolicy.EvaluateLlm(decision, TradeSide.Long, 60m);
 
         Assert.True(verdict.Allowed);
+    }
+
+    [Fact]
+    public void Llm_SignalBelowThresholdIsBlockedEvenWhenConfirmed()
+    {
+        var decision = Decision(TradeSide.Long, 59m, llmUsed: true, llmConfirmed: true);
+
+        var verdict = AutoEntryPolicy.EvaluateLlm(decision, TradeSide.Long, 60m);
+
+        Assert.False(verdict.Allowed);
     }
 
     [Fact]

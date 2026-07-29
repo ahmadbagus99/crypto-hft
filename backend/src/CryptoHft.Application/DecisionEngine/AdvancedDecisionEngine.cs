@@ -57,6 +57,17 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         // entry — a single noisy timeframe can no longer flip the technical read.
         var votes = CollectTimeframeVotes(input);
 
+        // Primary-timeframe ATR anchors all level/geometry analysis below.
+        var atr = TechnicalIndicators.Atr(candles)[^1];
+        if (atr <= 0) atr = input.LastPrice * 0.003m;
+
+        // Level-based analyses on the primary timeframe. Their full signal records are
+        // kept (not just the scores) because S/R levels and pattern targets also refine
+        // the TP geometry after the directional read is settled.
+        var fib = FibonacciAnalysis.Analyze(candles, atr);
+        var pattern = ChartPatternDetector.Detect(candles, atr);
+        var srLevels = SupportResistanceLevels.Analyze(candles, atr);
+
         // Internal factor components (kept for transparency + adaptive learning detail)
         var components = new List<ScoreComponent>
         {
@@ -65,6 +76,9 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
             ScoreVolume(candles),
             ScorePriceAction(votes, candles, regime),
             ScoreSmartMoney(smcTf.Candles),
+            new ScoreComponent("Fibonacci", fib.Score, 0, fib.Summary),
+            new ScoreComponent("Pattern", pattern.Score, 0, pattern.Summary),
+            new ScoreComponent("SupportResistance", srLevels.Score, 0, srLevels.Summary),
             ScoreOrderFlow(input.Derivatives, flowTf.Candles),
             ScoreDerivatives(input.Derivatives, PriceChangePercent(flowTf.Candles, lookback: 1)),
             ScoreNews(input.Sentiment),
@@ -79,7 +93,12 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         var scores = new Dictionary<string, decimal>
         {
             ["technical"] = Avg(c["Trend"], c["Momentum"], c["Volume"]),
-            ["structure"] = Avg(c["SmartMoney"], c["PriceAction"]),
+            // Structure blends SMC + market structure with the classical level analyses.
+            // SMC and price action stay the anchors; patterns speak loudest at breakouts,
+            // fib and horizontal S/R add pullback/level confluence.
+            ["structure"] = c["SmartMoney"] * 0.30m + c["PriceAction"] * 0.25m
+                          + c["Pattern"] * 0.20m + c["Fibonacci"] * 0.125m
+                          + c["SupportResistance"] * 0.125m,
             ["orderbook"] = c["OrderFlow"],
             ["derivatives"] = c["Derivatives"],
             ["onchain"] = input.Onchain.Available ? input.Onchain.Score : 50m,
@@ -115,8 +134,6 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
 
         // Condition dampener: extreme volatility, dead tape, or a wide spread reduce the
         // conviction of BOTH sides symmetrically instead of casting a fake directional vote.
-        var atr = TechnicalIndicators.Atr(candles)[^1];
-        if (atr <= 0) atr = input.LastPrice * 0.003m;
         var atrPct = input.LastPrice == 0 ? 0m : atr / input.LastPrice * 100m;
         var spreadFraction = input.LastPrice == 0 ? 0m : input.Derivatives.BidAskSpread / input.LastPrice;
         var dampener = ConditionDampener(atrPct, spreadFraction);
@@ -180,6 +197,12 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
             if (VolumeProfile.ConfluenceNote(volumeLevels, !isSell, entry, atr) is string confluence)
                 profileNotes.Add(confluence);
         }
+
+        // Horizontal S/R refinement after the volume-profile pass: a TP parked beyond a
+        // multiply-tested wall is pulled to the near side of it (same 60% reward guardrail).
+        var (srTp, srTpNote) = SupportResistanceLevels.SnapTakeProfit(srLevels, !isSell, entry, takeProfit, atr);
+        if (srTp is decimal srSnapped) takeProfit = srSnapped;
+        if (srTpNote is not null) { profileNotes.Add(srTpNote); if (srTp is null) profileCautions.Add(srTpNote); }
         var volumeProfileNote = volumeLevels is null
             ? ""
             : profileNotes.Count == 0 ? volumeLevels.Summary : $"{volumeLevels.Summary}; {string.Join("; ", profileNotes)}";
@@ -224,6 +247,12 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         if (chase < 1m) cautionReasons.Add($"Late entry — price already moved {Math.Abs(recentMoveAtr):F1}x ATR with the signal over the last {ChaseLookbackCandles} candles; conviction dampened to {chase:P0}");
         if (input.ActiveEventWindow is string eventLabel)
             cautionReasons.Add(eventLabel);
+        // Entering straight into a tested wall leaves little room before supply/demand
+        // pushes back — advisory only, the validator downsizes on it.
+        if (isBuy && srLevels.NearestResistance is { } wallAbove && wallAbove.Price - entry < atr)
+            cautionReasons.Add($"Resistance {wallAbove.Price:F0} ({wallAbove.Touches} touches) less than 1 ATR overhead");
+        if (isSell && srLevels.NearestSupport is { } wallBelow && entry - wallBelow.Price < atr)
+            cautionReasons.Add($"Support {wallBelow.Price:F0} ({wallBelow.Touches} touches) less than 1 ATR below");
         cautionReasons.AddRange(profileCautions);
 
         var shouldTrade = noTradeReasons.Count == 0;

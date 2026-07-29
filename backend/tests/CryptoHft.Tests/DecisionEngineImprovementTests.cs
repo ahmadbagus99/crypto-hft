@@ -233,4 +233,18 @@ public sealed class DecisionEngineImprovementTests
         Assert.True(decision.Scores.ContainsKey("volatility"));
         Assert.True(decision.Scores.ContainsKey("liquidity"));
     }
+
+    [Fact]
+    public void Engine_IncludesLevelAnalysisComponents()
+    {
+        var engine = new AdvancedDecisionEngine();
+        var decision = engine.Evaluate(SyntheticInput(), Profile, 10_000m);
+
+        // The level analyses vote inside the structure category and must always be
+        // present (neutral 50 when they have nothing to say), so the dashboard and the
+        // LLM payload can explain what each one saw.
+        Assert.Contains(decision.Components, c => c.Name == "Fibonacci");
+        Assert.Contains(decision.Components, c => c.Name == "Pattern");
+        Assert.Contains(decision.Components, c => c.Name == "SupportResistance");
+    }
 }

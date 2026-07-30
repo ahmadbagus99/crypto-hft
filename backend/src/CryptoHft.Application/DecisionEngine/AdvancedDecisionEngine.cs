@@ -31,6 +31,16 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
     // under-stating fees is what made tight geometry look profitable when it was not.
     internal const decimal RoundTripFeeFraction = 0.001m;
 
+    // Points the OBV direction is worth at ordinary participation; scaled by how much
+    // volume is behind the move (see VolumeConfirmation).
+    internal const decimal ObvWeight = 15m;
+
+    // How far volume expansion may strengthen or weaken the OBV read. A move on 1.5x
+    // average volume is more believable than the same move on half of it, but volume can
+    // never flip the sign — only OBV decides which way the flow points.
+    internal static decimal VolumeConfirmation(decimal volumeExpansion)
+        => Math.Clamp(0.7m + (volumeExpansion - 0.5m) * 0.6m, 0.7m, 1.3m);
+
     // Resting points and spans for the graded crowding reads. Each pair says "this is the
     // value the series sits at when nothing is happening, and this is how far it travels
     // before the crowd is genuinely stretched" — measured on BTCUSDT rather than assumed.
@@ -607,11 +617,18 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         var obvRising = obvNow > obvPrev;
         var volExpansion = volSma == 0 ? 1m : lastVol / volSma;
 
-        var score = 50m;
-        if (volExpansion > 1.5m) score += 20; else if (volExpansion < 0.6m) score -= 15;
-        score += obvRising ? 15 : -15;
-        score = Math.Clamp(score, 0, 100);
-        return new ScoreComponent("Volume", score, 0, $"Vol {volExpansion:F2}x avg, OBV {(obvRising ? "rising" : "falling")}");
+        // OBV owns the direction; volume expansion only says how much to trust it.
+        // Previously expansion voted on its own — a quiet tape subtracted 15 points and a
+        // surge added 20, in both cases without looking at which way price was moving. That
+        // made a high-volume selloff read BULLISH, and it put a standing bearish push on
+        // every quiet market (LowVolatility covered 54% of trades after 17 July, and volume
+        // is structurally thin there). It is the same defect batch 9 removed from volatility
+        // and liquidity — participation is a condition, not a direction — and volume
+        // expansion was simply missed in that pass.
+        var score = 50m + (obvRising ? 1m : -1m) * ObvWeight * VolumeConfirmation(volExpansion);
+        return new ScoreComponent("Volume", score, 0,
+            $"OBV {(obvRising ? "rising" : "falling")} on {volExpansion:F2}x avg volume "
+            + $"({VolumeConfirmation(volExpansion):P0} conviction)");
     }
 
     // Market structure consensus across timeframes; the Bollinger mean-reversion nudge

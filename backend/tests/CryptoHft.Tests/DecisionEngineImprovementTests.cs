@@ -292,6 +292,26 @@ public sealed class DecisionEngineImprovementTests
         Assert.Contains(decision.Reasons, r => r.Contains("style intraday: primary TF 1h"));
     }
 
+    // ---- Volume confirms direction, it does not choose one -------------------------------------
+
+    [Theory]
+    [InlineData(0.30, 0.7)]   // dead tape: OBV read is weakened, never inverted
+    [InlineData(0.50, 0.7)]
+    [InlineData(1.00, 1.0)]   // ordinary participation: unchanged
+    [InlineData(1.50, 1.3)]   // surge: the OBV read is strengthened
+    [InlineData(5.00, 1.3)]   // clamped, no runaway
+    public void VolumeConfirmation_ScalesWithinBounds(double expansion, decimal expected)
+        => Assert.Equal(expected, AdvancedDecisionEngine.VolumeConfirmation((decimal)expansion));
+
+    // The defect: expansion used to add +20 or subtract 15 on its own, so a selloff on
+    // heavy volume scored BULLISH and every quiet tape carried a standing bearish push.
+    [Fact]
+    public void VolumeConfirmation_NeverFlipsTheSign()
+    {
+        foreach (var expansion in new[] { 0.1m, 0.5m, 1m, 2m, 10m })
+            Assert.True(AdvancedDecisionEngine.VolumeConfirmation(expansion) > 0m);
+    }
+
     // ---- Graded crowding reads -----------------------------------------------------------------
 
     // The endpoints must reproduce the hard thresholds they replaced, so extreme markets

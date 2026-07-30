@@ -1172,3 +1172,56 @@ sistem tidak akan membuka posisi. Rekomendasi **55–57**; keputusan owner.
 ### Testing
 - **227/227 unit test pass** (6 baru: endpoint funding = ambang lama, L/S bisa bullish
   di ujung terukur, span nol aman). Build bersih.
+
+---
+
+## 25. Monitoring threshold-70 (mode observasi) — Volume ikut voting arah (2026-07-30, malam)
+
+Owner menaikkan threshold ke 70 dengan sengaja agar tidak ada entry sementara engine
+disisir. Deploy 21c73e6 terverifikasi.
+
+### a) Fix derivatives TERBUKTI
+`Derivatives 60.4 — Funding 0.004%, L/S 1.25 (crowd least long — contrarian bullish)`.
+Dari mati di 50.0 persis → hidup dan memberi suara. Fibonacci juga aktif
+(`retrace 0.38 (0.382 zone)`). Order book tenang (`imbalance -0.16`).
+Pattern 50 & SupportResistance 50 = netral JUJUR (tidak ada pola; harga di
+tengah-tengah S 64593 / R 64945), bukan mati.
+
+### b) CACAT KEEMPAT: volume expansion memberi suara ARAH
+`Volume 20.0 — Vol 0.43x avg, OBV falling`. Kodenya:
+`if (volExpansion > 1.5) score += 20; else if (volExpansion < 0.6) score -= 15;`
+
+**Volume expansion buta arah.** Konsekuensinya dua-duanya salah:
+- Pasar sepi → −15 → **dorongan bearish permanen** di setiap tape tenang
+  (LowVolatility = 54% trade pasca-17-Jul, dan volume memang tipis di sana).
+- **Crash bervolume besar → +20 BULLISH.** Vol 2.0x + OBV falling dulu = skor 55
+  (bullish) padahal harga sedang jatuh keras.
+
+Ini persis defect yang Bagian 9a hapus dari volatility & liquidity ("partisipasi itu
+kondisi, bukan arah") — volume expansion terlewat di pass itu.
+
+**Fix:** OBV memegang arah, expansion hanya menskalakan keyakinan padanya:
+`score = 50 ± ObvWeight(15) × VolumeConfirmation(expansion)`, dengan
+`VolumeConfirmation = clamp(0.7 + (exp − 0.5) × 0.6, 0.7, 1.3)`.
+Volume **tidak pernah bisa membalik tanda** — hanya menguatkan/melemahkan.
+
+| kondisi | lama | baru |
+|---|---|---|
+| Vol 0.43x + OBV falling (live) | 20.0 | **39.5** |
+| Vol 2.0x + OBV falling (crash) | **55.0 (bullish!)** | **30.5** (bearish, benar) |
+| Vol 1.0x + OBV rising | 65.0 | 65.0 (tak berubah) |
+
+Dampak pada kondisi live: technical 48.3 → 54.8, D bergeser **+1.50 ke bullish** —
+lagi-lagi melawan bias short struktural.
+
+### c) Akumulasi bias short yang sudah dihapus (3 sumber)
+1. L/S ratio hanya bisa vote bearish (Bagian 24) — ±8
+2. Volume rendah = bearish (di atas) — hingga −15 pada 1/3 bobot technical
+3. (masih ada, belum disentuh) onchain median 34, sentiment F&G 28, news 37.6 —
+   ketiganya bertahan di bawah 50 dan menarik D turun ~3 poin secara permanen.
+   Ini indikator LEVEL yang dipakai sebagai vote ARAH; kandidat perbaikan berikutnya,
+   tetapi butuh keputusan desain (centering pada baseline sendiri) — belum dikerjakan.
+
+### Testing
+- **233/233 unit test pass** (6 baru: VolumeConfirmation berbatas & tak pernah
+  membalik tanda). Build bersih.

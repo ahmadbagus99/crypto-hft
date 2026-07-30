@@ -292,6 +292,43 @@ public sealed class DecisionEngineImprovementTests
         Assert.Contains(decision.Reasons, r => r.Contains("style intraday: primary TF 1h"));
     }
 
+    // ---- Graded crowding reads -----------------------------------------------------------------
+
+    // The endpoints must reproduce the hard thresholds they replaced, so extreme markets
+    // score exactly as before and only the previously dead middle changes.
+    [Theory]
+    [InlineData(0.0005, -12)]   // crowded longs paying: was -12
+    [InlineData(-0.0003, +12)]  // shorts paying: was +12
+    [InlineData(0.0001, 0)]     // resting rate: no opinion
+    [InlineData(0.0100, -12)]   // far past the span: clamped, never runaway
+    public void Contrarian_FundingEndpointsMatchTheOldThresholds(double funding, decimal expected)
+        => Assert.Equal(expected, AdvancedDecisionEngine.Contrarian(
+            (decimal)funding,
+            AdvancedDecisionEngine.FundingRestingRate,
+            AdvancedDecisionEngine.FundingCrowdedSpan,
+            12m));
+
+    // The defect this replaces: BTC retail sits at a long/short ratio of 1.25-1.55, so the
+    // old "< 0.7 means crowded short" branch never fired and the factor could only ever vote
+    // bearish. Measured against its own resting point, both sides are now reachable.
+    [Fact]
+    public void Contrarian_LongShortCanVoteBullish_WhenCrowdIsLeastLong()
+    {
+        var atMeasuredLow = AdvancedDecisionEngine.Contrarian(
+            1.25m, AdvancedDecisionEngine.LongShortRestingRatio, AdvancedDecisionEngine.LongShortSpan, 8m);
+        var atMeasuredHigh = AdvancedDecisionEngine.Contrarian(
+            1.55m, AdvancedDecisionEngine.LongShortRestingRatio, AdvancedDecisionEngine.LongShortSpan, 8m);
+
+        Assert.True(atMeasuredLow > 0m, "the least-long reading in the sample must read bullish");
+        Assert.True(atMeasuredHigh < 0m, "the most-long reading in the sample must read bearish");
+        Assert.Equal(8m, atMeasuredLow);
+        Assert.Equal(-8m, atMeasuredHigh);
+    }
+
+    [Fact]
+    public void Contrarian_ZeroSpanIsSafe()
+        => Assert.Equal(0m, AdvancedDecisionEngine.Contrarian(1.5m, 1.4m, 0m, 8m));
+
     // ---- OI thresholds sit inside the range the series actually visits -------------------------
 
     // Regression for a threshold that could never fire: hourly BTCUSDT open interest moves

@@ -1117,3 +1117,58 @@ Funding dibiarkan: ambangnya wajar untuk pasar crowded, memang sedang tidak crow
 ### Testing
 - **221/221 unit test pass** (1 baru: ambang OI harus berada dalam rentang yang
   benar-benar dikunjungi seriesnya). Build bersih.
+
+---
+
+## 24. Monitoring pasca-deploy + derivatives dibuat hidup (2026-07-30, sore)
+
+Deploy v1.3 (6800629) terverifikasi jalan. Setting live: threshold 61, guard OFF,
+style Scalper, sizing Margin×Leverage 6×20, maxExposure 99%.
+
+### a) Yang TERBUKTI bekerja (dari decision live)
+- `style scalper: primary TF 15m, SL 1.5x / TP 4.5x ATR` aktif.
+- **R:R net = 2.01** — geometri fee-aware persis seperti dirancang.
+- **Order book tenang**: `Book imbalance -0.18` (rentang dalam ±0.2). Dulu 20-level
+  memberi ±0.6–0.97. Fix depth 500 terkonfirmasi di produksi.
+  (Skor OrderFlow masih bergerak 32–58, tetapi itu dari taker-ratio & CVD — sinyal
+  sah, bukan noise buku.)
+
+### b) Yang MASIH mati: derivatives = 50.0 di SEMUA sampel
+Reason string: `Funding 0.004%, L/S 1.25` — tidak satu pun cabang menyala.
+Penyebab ketiga, satu keluarga dengan dua sebelumnya: **ambang absolut pada seri yang
+asimetris.** Long/short ratio BTC diukur 200 sampel (~17 jam): min 1.249, p10 1.262,
+median 1.396, p90 1.534, max 1.552.
+
+| ambang lama | aktif |
+|---|---|
+| `L/S > 1.5` → −8 | 69/200 (34%) |
+| `L/S < 0.7` → **+8** | **0/200 — tidak pernah** |
+
+Retail BTC **secara struktural selalu net-long**, jadi faktor ini hanya pernah bisa
+memberi suara BEARISH. Itu bias short permanen — cocok dengan temuan pasca-17-Jul:
+52% trade SHORT dengan win rate 21%.
+
+### c) Fix: ambang absolut → respons BERGRADASI relatif titik istirahat seri
+Helper murni `Contrarian(value, resting, span, magnitude)`:
+`-clamp((value − resting)/span, −1, 1) × magnitude`
+
+| seri | resting | span | endpoint |
+|---|---|---|---|
+| funding | 0.0001 (equilibrium venue 0.01%/8j) | 0.0004 | +0.0005→−12, −0.0003→+12 |
+| cumulative funding 24j | 0.0003 | 0.0007 | +0.0010→−8, −0.0004→+8 |
+| **long/short** | **1.40** (median terukur) | **0.14** | 1.55→−8, **1.25→+8** |
+
+Endpoint sengaja mereproduksi ambang lama PERSIS — pasar ekstrem dinilai sama seperti
+sebelumnya, yang berubah hanya zona mati di tengah. Nilai live saat fix dibuat
+(funding 0.00004, cum 0.00018, L/S 1.25) menghasilkan **derivatives 50.0 → 61.2**
+(+1.56 poin ke D). Matriks OI×harga & likuidasi dibiarkan biner — keduanya bercerita
+tentang kejadian diskret, bukan derajat.
+
+### d) Catatan operasional: threshold 61 terlalu tinggi
+Conviction live terukur (10 sampel, 19:00–19:06): **54.7 – 58.5**. Dengan threshold 61
+sistem tidak akan membuka posisi. Rekomendasi **55–57**; keputusan owner.
+(Angka "conf 90" di log adalah ConfidenceHold saat aksi NoTrade, bukan conviction.)
+
+### Testing
+- **227/227 unit test pass** (6 baru: endpoint funding = ambang lama, L/S bisa bullish
+  di ujung terukur, span nol aman). Build bersih.

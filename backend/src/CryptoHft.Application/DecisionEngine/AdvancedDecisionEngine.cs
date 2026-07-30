@@ -31,6 +31,30 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
     // under-stating fees is what made tight geometry look profitable when it was not.
     internal const decimal RoundTripFeeFraction = 0.001m;
 
+    // Resting points and spans for the graded crowding reads. Each pair says "this is the
+    // value the series sits at when nothing is happening, and this is how far it travels
+    // before the crowd is genuinely stretched" — measured on BTCUSDT rather than assumed.
+    // The spans are chosen so the endpoints reproduce the previous hard thresholds exactly,
+    // which keeps extreme markets scored as before while ending the dead zone in between.
+    internal const decimal FundingRestingRate = 0.0001m;            // the venue's own 0.01%/8h equilibrium
+    internal const decimal FundingCrowdedSpan = 0.0004m;            // +0.0005 / -0.0003 land on ±12
+    internal const decimal CumulativeFundingRestingRate = 0.0003m;  // three periods at the resting rate
+    internal const decimal CumulativeFundingSpan = 0.0007m;         // +0.0010 / -0.0004 land on ±8
+    // Long/short over 200 samples: min 1.249, p10 1.262, median 1.396, p90 1.534, max 1.552.
+    // Retail is permanently net long, so "crowded" only means crowded RELATIVE to that.
+    internal const decimal LongShortRestingRatio = 1.40m;
+    internal const decimal LongShortSpan = 0.14m;
+
+    // Contrarian read of a crowding series: how far past its resting point it sits, scaled
+    // to ±magnitude at one full span. Positive output = bullish, so the sign is inverted —
+    // a crowd stretched long is a bearish signal.
+    internal static decimal Contrarian(decimal value, decimal resting, decimal span, decimal magnitude)
+    {
+        if (span <= 0) return 0m;
+        var stretch = Math.Clamp((value - resting) / span, -1m, 1m);
+        return -stretch * magnitude;
+    }
+
     // Open-interest thresholds, taken from the measured hourly distribution of BTCUSDT OI
     // (median 0.209%, p75 0.403%, p90 0.606%) rather than from intuition. A threshold has
     // to sit inside the range the series actually visits, or the signal never fires.
@@ -669,12 +693,16 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         var score = 50m;
         var notes = new List<string> { $"Funding {d.FundingRate * 100:F3}%" };
 
-        // Negative funding supports longs; extreme positive funding warns of crowded longs
-        if (d.FundingRate < -0.0003m) score += 12; else if (d.FundingRate > 0.0005m) score -= 12;
-
-        // Cumulative funding over ~24h separates a persistent crowd from a single print.
-        if (d.CumulativeFunding24h >= 0.0010m) { score -= 8; notes.Add($"24h funding {d.CumulativeFunding24h * 100:F3}% (longs crowded)"); }
-        else if (d.CumulativeFunding24h <= -0.0003m) { score += 8; notes.Add($"24h funding {d.CumulativeFunding24h * 100:F3}% (shorts paying)"); }
+        // Funding and crowding are read as GRADED distances from each series' own resting
+        // point, not as hard thresholds. Live measurement showed why: funding ran between
+        // -0.000003 and +0.0001 while the old code waited for ±0.0003/0.0005, and the
+        // long/short ratio lived in 1.249-1.552 while the old code waited for >1.5 or <0.7.
+        // The <0.7 branch never fired once in 200 samples — retail on BTC is structurally
+        // net long — so that factor could only ever vote bearish. Grading keeps the original
+        // extremes (the endpoints below reproduce the old ±12 / ±8) but lets ordinary
+        // readings say something proportional instead of leaving the whole category at 50.
+        score += Contrarian(d.FundingRate, FundingRestingRate, FundingCrowdedSpan, 12m);
+        score += Contrarian(d.CumulativeFunding24h, CumulativeFundingRestingRate, CumulativeFundingSpan, 8m);
 
         // OI x price matrix — the direction of OPEN INTEREST only means something together
         // with the price move that accompanied it. Both sides are measured over the SAME
@@ -692,8 +720,12 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         else if (d.OpenInterestChangePercent > OiStrongChangePercent) { score += 4; notes.Add($"OIΔ +{d.OpenInterestChangePercent:F2}% (price flat)"); }
         else if (d.OpenInterestChangePercent < -OiStrongChangePercent) { score -= 3; notes.Add($"OIΔ {d.OpenInterestChangePercent:F2}% (price flat)"); }
 
-        if (d.LongShortRatio > 1.5m) score -= 8; else if (d.LongShortRatio < 0.7m) score += 8; // contrarian
-        notes.Add($"L/S {d.LongShortRatio:F2}");
+        var lsNudge = Contrarian(d.LongShortRatio, LongShortRestingRatio, LongShortSpan, 8m);
+        score += lsNudge;
+        notes.Add($"L/S {d.LongShortRatio:F2}"
+            + (lsNudge >= 1m ? " (crowd least long — contrarian bullish)"
+             : lsNudge <= -1m ? " (crowd stretched long — contrarian bearish)"
+             : ""));
 
         // Liquidation pressure: a one-sided forced flush marks capitulation of that side —
         // fade it. Only significant notional counts; a quiet feed contributes nothing.

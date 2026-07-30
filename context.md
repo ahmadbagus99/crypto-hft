@@ -1271,3 +1271,60 @@ tampil di dashboard dan yang dikirim ke Claude menyebut timeframe yang salah.
 sebagai vote ARAH, bertahan di bawah 50 dan menarik D turun ~3 poin permanen.
 Perbaikannya = centering pada baseline masing-masing seri (butuh state rolling),
 bukan tweak ambang. Belum dikerjakan.
+
+---
+
+## 27. Cacat ketujuh: user data stream tak pernah jalan + koreksi hipotesis (2026-07-30)
+
+### a) CACAT: WS user data mati padahal API key ada
+Log startup: `Binance user data stream disabled because API key is empty.` — padahal
+`/api/settings/trading` melaporkan `hasApiKey=true`. Sebabnya
+`BinanceFuturesUserDataStream` membaca `IOptions<BinanceOptions>.ApiKey`
+(environment/appsettings), sedangkan key yang dipakai akun tersimpan di baris
+`TradingSettings` yang ditulis dashboard. Executor & risk gate sudah membaca dari
+runtime settings; **stream ini satu-satunya yang tertinggal**.
+
+Dampak nyata: tidak ada notifikasi fill/posisi real-time — semuanya jatuh ke polling
+REST 30 detik. Itu pula yang membuat mark price yang dibaca `PositionCloseClassifier`
+bisa basi ~30 detik (kelemahan yang sudah dicatat di Bagian 8c, ternyata akibat
+cacat ini, bukan keterbatasan desain).
+
+**Fix:** `ApiKey()` mengutamakan runtime settings, fallback ke options. Pengecekan
+dipindah ke DALAM loop (bukan sekali di startup) karena settings baru dihidrasi dari
+DB setelah host start, dan key bisa diisi kapan saja — stream idle 60 detik lalu
+mencoba lagi, tidak mati permanen.
+
+### b) KOREKSI hipotesis "level indicator bias" — ternyata BUKAN cacat
+Bagian 26 melaporkan dugaan bahwa onchain/sentiment/news menekan D karena bertahan
+di bawah 50. Diverifikasi terhadap FactorStats produksi (akurasi realized, agregat
+lintas regime):
+
+| faktor | akurasi | sampel |
+|---|---|---|
+| **onchain** | **0.536** | 61.9 |
+| **sentiment** | **0.527** | 74.3 |
+| news | 0.488 | 69.0 |
+| macro | 0.462 | 70.4 |
+| orderbook | 0.460 | 71.7 |
+| **technical** | **0.452** | 52.5 |
+
+**onchain dan sentiment justru DUA FAKTOR TERBAIK**, sedangkan `technical` — bobot
+terbesar (22%) — paling buruk. Skor mereka yang bertahan di bawah 50 mencerminkan
+kondisi pasar yang memang bearish/fearful sepanjang periode, bukan cacat skala.
+Rentang terukur juga membantah "tidak bisa bullish": macro 26.2-74.6, onchain
+27.1-55.0, news 0-87.5 — semuanya pernah melewati 50; sentiment tertahan 25-33
+semata karena F&G memang berada di zona Fear sepanjang sampel.
+
+**Keputusan: TIDAK diubah.** Menyetel ulang faktor yang secara empiris paling
+prediktif berdasarkan dugaan struktural akan merusak yang sudah bekerja. Ketimpangan
+bobot-vs-akurasi memang ada, tetapi itu justru tugas adaptive multiplier (klem
+0.5-1.5×) yang terbukti aktif: bobot live technical 23.1%, structure 15.0%,
+orderbook 15.5%, macro 13.3% — sudah bergeser dari basisnya.
+
+### c) Yang diverifikasi SEHAT (bukan cacat)
+- Feed likuidasi: WS `btcusdt@forceOrder` tersambung normal.
+- EMA200: provider menarik 251 candle, jadi cabang trend terkuat (82/18) terjangkau.
+- `Pattern 50` / `SupportResistance 50` saat harga di tengah range = netral jujur.
+
+### Testing
+- **238/238 unit test pass**, build solution 0 warning 0 error.

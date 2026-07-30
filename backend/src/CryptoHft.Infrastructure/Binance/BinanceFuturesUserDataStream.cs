@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using CryptoHft.Application.Abstractions;
 using CryptoHft.Application.MarketData;
+using CryptoHft.Application.Trading;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -11,22 +12,39 @@ namespace CryptoHft.Infrastructure.Binance;
 
 public sealed class BinanceFuturesUserDataStream(
     IOptions<BinanceOptions> options,
+    IRuntimeTradingSettingsService settingsService,
     IHttpClientFactory httpClientFactory,
     IRealtimePublisher publisher,
     ILogger<BinanceFuturesUserDataStream> logger) : IUserDataStream
 {
     private readonly BinanceOptions _options = options.Value;
 
+    // The key the account actually trades with lives in the settings row the dashboard
+    // writes, not in the environment. Reading only IOptions here meant a fully configured
+    // account still logged "user data stream disabled because API key is empty" and fell
+    // back to 30-second REST polling for fills — which is also what dated the mark price
+    // the close classifier reads. The executor and the risk gate already resolve the key
+    // this way; this stream was the odd one out.
+    private string? ApiKey()
+    {
+        var runtime = settingsService.GetRuntimeSettings().ApiKey;
+        return string.IsNullOrWhiteSpace(runtime) ? _options.ApiKey : runtime;
+    }
+
     public async Task RunAsync(CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(_options.ApiKey))
-        {
-            logger.LogInformation("Binance user data stream disabled because API key is empty.");
-            return;
-        }
-
         while (!cancellationToken.IsCancellationRequested)
         {
+            // Re-checked every pass, not once at startup: settings are hydrated from the
+            // database after the host starts, and the key can be entered at any time.
+            if (string.IsNullOrWhiteSpace(ApiKey()))
+            {
+                logger.LogInformation(
+                    "Binance user data stream idle: no API key configured yet. Rechecking in 60 seconds.");
+                await Task.Delay(TimeSpan.FromSeconds(60), cancellationToken);
+                continue;
+            }
+
             try
             {
                 var listenKey = await CreateListenKeyAsync(cancellationToken);
@@ -103,7 +121,7 @@ public sealed class BinanceFuturesUserDataStream(
     private async Task<string> CreateListenKeyAsync(CancellationToken cancellationToken)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, $"{_options.RestBaseUrl.TrimEnd('/')}/fapi/v1/listenKey");
-        request.Headers.Add("X-MBX-APIKEY", _options.ApiKey);
+        request.Headers.Add("X-MBX-APIKEY", ApiKey());
 
         using var response = await httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -140,7 +158,7 @@ public sealed class BinanceFuturesUserDataStream(
             method = "userDataStream.ping",
             @params = new
             {
-                apiKey = _options.ApiKey
+                apiKey = ApiKey()
             }
         });
 

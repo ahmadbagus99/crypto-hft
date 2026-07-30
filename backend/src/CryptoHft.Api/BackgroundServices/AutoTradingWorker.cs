@@ -23,6 +23,9 @@ public sealed class AutoTradingWorker(
     ILogger<AutoTradingWorker> logger) : BackgroundService
 {
     private const string Symbol = "BTCUSDT";
+    // BTCUSDT futures LOT_SIZE/MARKET_LOT_SIZE step. Used to snap target-margin sizing to
+    // the nearest tradable quantity; the exchange rule validator remains the final authority.
+    private const decimal QuantityStep = 0.001m;
     private static readonly TimeSpan Interval = TimeSpan.FromSeconds(30);
     private DateTimeOffset _nextOpenPositionRevalidationAt = DateTimeOffset.MinValue;
     private int _openPositionWarningCount;
@@ -35,6 +38,12 @@ public sealed class AutoTradingWorker(
     private bool _entryCooldownInitialized;
     private bool _observedOpenPosition;
 
+    // Watchdog budget per tick: generous next to the 30s cadence, but finite. A tick that
+    // exceeds it is cancelled and the loop continues — one hung await (a socket without a
+    // timeout, a stalled provider) must never freeze the trading loop permanently, and a
+    // stall that only shows up as silence is the hardest kind to notice.
+    private static readonly TimeSpan TickBudget = TimeSpan.FromMinutes(2);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation("Auto-trading worker started (interval {Interval}s)", Interval.TotalSeconds);
@@ -44,7 +53,15 @@ public sealed class AutoTradingWorker(
         {
             try
             {
-                await TickAsync(stoppingToken);
+                using var tickCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                tickCts.CancelAfter(TickBudget);
+                await TickAsync(tickCts.Token);
+            }
+            catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+            {
+                logger.LogError(
+                    "Auto-trading tick exceeded its {Budget}-minute watchdog budget and was cancelled; " +
+                    "the loop continues with the next tick", TickBudget.TotalMinutes);
             }
             catch (Exception ex)
             {
@@ -163,7 +180,7 @@ public sealed class AutoTradingWorker(
             decision.EntryPrice,
             settings.TargetMarginUsdt,
             settings.TargetLeverage,
-            decision.Llm.Used ? decision.Llm.SizeMultiplier : null);
+            QuantityStep);
 
         if (sizing.Quantity <= 0)
         {

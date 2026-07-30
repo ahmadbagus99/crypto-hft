@@ -49,6 +49,13 @@ public sealed class BinanceAutoTradeRiskGate(
         if (status.Status == "paper")
             return new AutoTradeRiskVerdict(true, status.Reason);
 
+        // Guard off: the owner has explicitly disabled the account-level guard, so the
+        // exposure clamp is skipped along with the loss pauses. The equity fail-safe
+        // above still applies — trading blind on unknown equity is a data problem,
+        // not a risk-appetite choice.
+        if (!settings.AccountRiskGuardEnabled)
+            return new AutoTradeRiskVerdict(true, "account risk guard disabled — exposure clamp skipped");
+
         var equity = status.Equity!.Value;
 
         // Exposure: the trade still opens (confidence is the only signal gate) — only its
@@ -188,6 +195,22 @@ public sealed class BinanceAutoTradeRiskGate(
         var dailyLoss = DailyLoss(todaysPnl);
         var dailyLossLimit = equity * settings.MaxDailyLossPercent;
         var consecutiveLosses = CountTrailingLosses(todaysPnl, SameTradeGap);
+
+        // Owner switch: guard off = the loss pauses never block, but the stats are still
+        // computed and reported so the dashboard keeps showing what the guard WOULD do.
+        if (!settings.AccountRiskGuardEnabled)
+        {
+            return Status(
+                true,
+                "guard-off",
+                "account risk guard disabled — daily-loss and consecutive-loss pauses bypassed",
+                checkedAt,
+                equity,
+                dailyLoss,
+                dailyLossLimit,
+                settings.MaxDailyLossPercent,
+                consecutiveLosses);
+        }
 
         if (dailyLossLimit > 0 && dailyLoss >= dailyLossLimit)
         {

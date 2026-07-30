@@ -12,7 +12,9 @@ public sealed class AutoTradeRiskGateTests
     private static RealizedPnlEntry E(int minutesAfterT0, decimal pnl)
         => new(T0.AddMinutes(minutesAfterT0), pnl);
 
-    private static RuntimeTradingSettings Settings(decimal maxDailyLossPercent = 0.10m)
+    private static RuntimeTradingSettings Settings(
+        decimal maxDailyLossPercent = 0.10m,
+        bool accountRiskGuardEnabled = true)
         => new(
             PaperTradingOnly: false,
             AutoTradingEnabled: true,
@@ -30,7 +32,8 @@ public sealed class AutoTradeRiskGateTests
             PositionCheckIntervalMinutes: 10,
             TrailingStopDistanceR: 0.5m,
             LunarCrushApiKey: null,
-            TargetMarginUsdt: 7m);
+            TargetMarginUsdt: 7m,
+            AccountRiskGuardEnabled: accountRiskGuardEnabled);
 
     [Fact]
     public void DailyLoss_IsZero_WhenNetPositive()
@@ -165,5 +168,37 @@ public sealed class AutoTradeRiskGateTests
         Assert.True(status.TradingAllowed);
         Assert.Equal("active", status.Status);
         Assert.Null(status.ResetsAt);
+    }
+
+    // Owner switch: with the guard disabled, tripped limits report but never block.
+    [Fact]
+    public void ResolveAccountStatus_GuardOff_AllowsTradingPastDailyLossLimit()
+    {
+        var status = BinanceAutoTradeRiskGate.ResolveAccountStatus(
+            Settings(accountRiskGuardEnabled: false),
+            equity: 10m,
+            todaysPnl: new[] { E(0, -1.25m) },
+            checkedAt: T0);
+
+        Assert.True(status.TradingAllowed);
+        Assert.Equal("guard-off", status.Status);
+        // Stats still surface so the dashboard shows what the guard WOULD do.
+        Assert.Equal(1.25m, status.DailyLoss);
+    }
+
+    [Fact]
+    public void ResolveAccountStatus_GuardOff_AllowsTradingPastConsecutiveLosses()
+    {
+        var entries = new[] { E(0, 5m), E(10, -1m), E(20, -1m), E(30, -1m) };
+
+        var status = BinanceAutoTradeRiskGate.ResolveAccountStatus(
+            Settings(maxDailyLossPercent: 0.50m, accountRiskGuardEnabled: false),
+            equity: 10m,
+            todaysPnl: entries,
+            checkedAt: T0);
+
+        Assert.True(status.TradingAllowed);
+        Assert.Equal("guard-off", status.Status);
+        Assert.Equal(3, status.ConsecutiveLosses);
     }
 }

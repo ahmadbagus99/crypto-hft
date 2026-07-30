@@ -454,6 +454,7 @@ export type TradingSettings = {
   hasLunarCrushKey: boolean;
   lunarCrushKeyPreview: string;
   tradingStyle: number;
+  accountRiskGuardEnabled: boolean;
 };
 
 export type AiUsageSummary = {

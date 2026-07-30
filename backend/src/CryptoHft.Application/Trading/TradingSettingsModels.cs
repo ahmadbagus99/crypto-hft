@@ -21,7 +21,8 @@ public sealed record TradingSettingsDto(
     decimal TrailingStopDistanceR,
     bool HasLunarCrushKey,
     string LunarCrushKeyPreview,
-    int TradingStyle);
+    int TradingStyle,
+    bool AccountRiskGuardEnabled);
 
 public sealed record UpdateTradingSettingsRequest(
     bool PaperTradingOnly,
@@ -41,7 +42,8 @@ public sealed record UpdateTradingSettingsRequest(
     decimal? TrailingStopDistanceR,
     string? LunarCrushApiKey,
     decimal? TargetMarginUsdt = null,
-    int? TradingStyle = null);
+    int? TradingStyle = null,
+    bool? AccountRiskGuardEnabled = null);
 
 public sealed record ConnectionTestResult(bool Connected, string Message, string? Detail = null);
 
@@ -83,4 +85,7 @@ public sealed record RuntimeTradingSettings(
     decimal TargetMarginUsdt = 3m,
     // 0 = Intraday (perilaku asli, geometri 1h), 1 = Scalper (geometri 15m, target
     // lebih dekat, konfirmasi & cooldown lebih cepat).
-    int TradingStyle = 0);
+    int TradingStyle = 0,
+    // Guard akun (pause daily-loss, pause consecutive-loss, exposure clamp).
+    // True = aktif memblok/memotong; false = dilewati (trading tetap jalan).
+    bool AccountRiskGuardEnabled = true);

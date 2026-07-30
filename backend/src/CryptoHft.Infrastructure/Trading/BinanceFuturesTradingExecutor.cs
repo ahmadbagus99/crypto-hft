@@ -218,6 +218,9 @@ public sealed class BinanceFuturesTradingExecutor(
 
     private async Task<string?> CheckRiskLimitsAsync(TradeOrderRequest request, RuntimeTradingSettings settings, CancellationToken cancellationToken)
     {
+        // Owner switch: the account-level guard (loss/exposure blocks) can be disabled.
+        if (!settings.AccountRiskGuardEnabled) return null;
+
         try
         {
             var wallets = await accountClient.GetWalletBalancesAsync(cancellationToken);

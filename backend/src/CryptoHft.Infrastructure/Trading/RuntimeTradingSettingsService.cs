@@ -91,7 +91,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                     TrailingStopDistanceR: NormalizeTrailingStopDistance(row.TrailingStopDistanceR, 1.0m),
                     LunarCrushApiKey: row.LunarCrushApiKey,
                     TargetMarginUsdt: row.TargetMarginUsdt > 0 ? row.TargetMarginUsdt : 3m,
-                    TradingStyle: NormalizeTradingStyle(row.TradingStyle));
+                    TradingStyle: NormalizeTradingStyle(row.TradingStyle),
+                    AccountRiskGuardEnabled: row.AccountRiskGuardEnabled);
             }
         }
         catch (Exception ex)
@@ -124,7 +125,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                 TrailingStopDistanceR = request.TrailingStopDistanceR is > 0 ? NormalizeTrailingStopDistance(request.TrailingStopDistanceR.Value, _settings.TrailingStopDistanceR) : _settings.TrailingStopDistanceR,
                 LunarCrushApiKey = string.IsNullOrWhiteSpace(request.LunarCrushApiKey) ? _settings.LunarCrushApiKey : request.LunarCrushApiKey.Trim(),
                 TargetMarginUsdt = request.TargetMarginUsdt is > 0 ? Math.Clamp(request.TargetMarginUsdt.Value, 1m, 1000m) : _settings.TargetMarginUsdt,
-                TradingStyle = request.TradingStyle is not null ? NormalizeTradingStyle(request.TradingStyle.Value) : _settings.TradingStyle
+                TradingStyle = request.TradingStyle is not null ? NormalizeTradingStyle(request.TradingStyle.Value) : _settings.TradingStyle,
+                AccountRiskGuardEnabled = request.AccountRiskGuardEnabled ?? _settings.AccountRiskGuardEnabled
             };
             updated = _settings;
         }
@@ -164,6 +166,7 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             row.LunarCrushApiKey = s.LunarCrushApiKey;
             row.TargetMarginUsdt = s.TargetMarginUsdt;
             row.TradingStyle = s.TradingStyle;
+            row.AccountRiskGuardEnabled = s.AccountRiskGuardEnabled;
 
             db.SaveChanges();
         }
@@ -197,7 +200,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             settings.TrailingStopDistanceR,
             !string.IsNullOrWhiteSpace(settings.LunarCrushApiKey),
             Mask(settings.LunarCrushApiKey),
-            settings.TradingStyle);
+            settings.TradingStyle,
+            settings.AccountRiskGuardEnabled);
     }
 
     private static decimal ClampPercent(decimal value, decimal min, decimal max)

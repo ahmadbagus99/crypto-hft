@@ -836,3 +836,67 @@ Keputusan desain penting:
 Testing: **213/213 unit test pass** via Docker .NET 9 (7 baru: scalper timing
 30 detik/cooldown/resolusi style, engine anchor 15m, bypass learned tuning, default
 intraday). Full solution build + frontend `tsc` bersih.
+
+---
+
+## 20. Hardening worker + Account Risk Guard + fix sizing (2026-07-30)
+
+### a) FALSE ALARM yang perlu dicatat: "worker beku 24 jam" TIDAK PERNAH TERJADI
+Saat audit, sempat disimpulkan kedua worker beku 24 jam karena decision terakhir
+bertanggal "30 Jul 17:53" sementara tanggal lokal terbaca 31 Juli. **Salah baca
+timezone**: server berjalan UTC, workstation WIB (UTC+7) — 17:53 UTC itu 16 menit
+sebelumnya, bukan kemarin. Verifikasi: `date -u` di server + hitung decision per
+jam di DB.
+
+Yang tampak seperti "gap 23 jam" di `AiDecisionLogs` (29 Jul 12:00 → 30 Jul 11:00)
+juga **perilaku normal by design**: posisi SHORT terbuka sejak 28 Jul 00:01 dan
+worker mem-PAUSE analisa entry selama posisi terbuka (Bagian 2) — yang tercatat di
+periode itu hanya `Open-position revalidation`, bukan `AI decision`. Begitu posisi
+tertutup ~30 Jul 11:00, decision langsung mengalir lagi (~34 baris/jam).
+
+> **Pelajaran operasional:** selalu bandingkan `date -u` server sebelum menyimpulkan
+> outage dari timestamp log, dan ingat bahwa sepinya `AiDecisionLogs` = posisi
+> terbuka, bukan sistem mati.
+
+### b) Hardening worker (preventif, BUKAN perbaikan insiden)
+Tidak ada insiden yang memicu ini, tetapi dua kelemahan nyata tetap ditutup:
+1. **Console sink asinkron** — `WriteTo.Async(..., blockWhenFull: false)` (paket
+   `Serilog.Sinks.Async`). Sink console sinkron dapat memblok thread penulis saat
+   pembaca stdout melambat; buffer bounded yang men-DROP baris saat penuh membuat
+   backpressure logging tidak pernah bisa menyentuh loop trading. Plus filter
+   `System.Net.Http.HttpClient → Warning` — sebelumnya ~20 baris HTTP per tick
+   membanjiri log dan menyulitkan audit.
+2. **Watchdog per tick** di kedua worker: CTS linked + `CancelAfter` (trading 2
+   menit vs cadence 30 detik, learning 4 menit vs cadence 5 menit). Await yang
+   menggantung (socket tanpa timeout, provider mandek) dibatalkan, tick berikutnya
+   lanjut, dan penyebabnya muncul sebagai error log — bukan diam.
+
+### b) Account Risk Guard — checkbox on/off (permintaan owner)
+Setting baru `AccountRiskGuardEnabled` (default TRUE, kolom idempotent, checkbox
+di Risk Configuration). **TRUE** = perilaku lama: daily-loss pause, consecutive-
+loss pause (3x), dan exposure clamp aktif. **FALSE** = semua rem akun dilepas —
+status gate `guard-off`, statistik tetap dihitung & tampil (dashboard menunjukkan
+apa yang SEHARUSNYA diblok), executor risk block & exposure clamp dilewati.
+Fail-safe equity-unavailable TETAP memblok (itu masalah data, bukan risk appetite).
+⚠️ Didokumentasikan di UI: nonaktif = satu hari buruk bisa menghabiskan saldo.
+
+### c) Fix sizing Margin × Leverage (bug "set 6 kebukanya 3")
+Bukti log production 30 Jul: `qty 0.007084 -> 0.000370 ... Claude defensive cap 20%`.
+Dua penyebab bertumpuk:
+1. **Claude defensive cap (0.20-0.25x hampir konstan) memotong target notional**
+   120 USDT → ~24-30 USDT → di bawah minimum bursa → validator menaikkan balik ke
+   0.001 BTC (margin ~3.2). Target owner diganti diam-diam oleh lantai bursa.
+   → Multiplier Claude TIDAK lagi diterapkan di mode Margin × Leverage (owner
+   sudah menetapkan notional; Claude tetap tak bisa veto; exposure cap tetap
+   jadi safety net saat guard aktif).
+2. **Step rounding FLOOR**: qty 0.00185 (margin 6) di-floor validator ke 0.001
+   (margin 3.2). → `AutoPositionSizingPolicy` kini snap ke step TERDEKAT
+   (0.001 BTC, konst worker): 0.00185 → 0.002 → margin realisasi ~6.5 ≈ target.
+Catatan akun kecil: dengan equity ~$8 dan Max Exposure 50%, cap margin $4 <
+target 6 — kalau guard aktif, exposure clamp masih memotong. Naikkan Max
+Exposure, matikan guard, atau top-up.
+
+### Testing
+- **216/216 unit test pass** (3 baru sizing: nearest-step 2 arah + ignore Claude
+  multiplier; 2 baru risk gate: guard-off melewati daily-loss & consecutive-loss).
+- Full solution build + frontend `tsc` bersih.

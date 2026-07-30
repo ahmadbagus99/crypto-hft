@@ -148,6 +148,9 @@ public sealed class PersistedTradingSettings
     public string? LunarCrushApiKey { get; set; }
     public decimal TargetMarginUsdt { get; set; } = 3m;
     public int TradingStyle { get; set; } // 0 = Intraday (default), 1 = Scalper
+    // Account-level guard (daily-loss pause, consecutive-loss pause, exposure clamp).
+    // True = guard active (blocks/trims trading when tripped); false = bypassed.
+    public bool AccountRiskGuardEnabled { get; set; } = true;
 }
 
 public sealed class NewsItem

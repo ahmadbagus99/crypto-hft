@@ -85,6 +85,7 @@ async function saveTradingSettings(payload: {
   trailingStopDistanceR?: number;
   lunarCrushApiKey?: string;
   tradingStyle?: number;
+  accountRiskGuardEnabled?: boolean;
 }): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", {
     method: "PUT",
@@ -335,6 +336,7 @@ function SettingsPage() {
   const [targetMargin, setTargetMargin] = useState("3");
   const [autoSizingMode, setAutoSizingMode] = useState("0");
   const [tradingStyle, setTradingStyle] = useState("0");
+  const [riskGuard, setRiskGuard] = useState(true);
   const [targetLeverage, setTargetLeverage] = useState("20");
   const [confidenceThreshold, setConfidenceThreshold] = useState("80");
   const [positionCheckInterval, setPositionCheckInterval] = useState("30");
@@ -375,6 +377,7 @@ function SettingsPage() {
       setTargetMargin(String(current.targetMarginUsdt ?? 3));
       setAutoSizingMode(String(current.autoSizingMode ?? 0));
       setTradingStyle(String(current.tradingStyle ?? 0));
+      setRiskGuard(current.accountRiskGuardEnabled ?? true);
       setTargetLeverage(String(current.targetLeverage ?? 20));
       setAiModel(current.aiModel ?? "claude-opus-4-8");
       setConfidenceThreshold(String(current.confidenceThreshold ?? 80));
@@ -399,6 +402,7 @@ function SettingsPage() {
         targetMarginUsdt: Number(targetMargin) || undefined,
         autoSizingMode: Number(autoSizingMode),
         tradingStyle: Number(tradingStyle),
+        accountRiskGuardEnabled: riskGuard,
         targetLeverage: Number(targetLeverage) || undefined,
         apiKey: apiKey || undefined,
         apiSecret: apiSecret || undefined,
@@ -500,6 +504,22 @@ function SettingsPage() {
               max="1000"
               step="0.5"
             />
+            <div className="flex items-start gap-3 rounded-md border border-slate-800 bg-slate-950/60 p-3">
+              <input
+                id="risk-guard"
+                type="checkbox"
+                checked={riskGuard}
+                onChange={e => setRiskGuard(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-emerald-500"
+              />
+              <div>
+                <label htmlFor="risk-guard" className="block text-sm text-slate-200">Account Risk Guard</label>
+                <p className="mt-1 text-xs text-slate-600">
+                  Aktif: daily-loss pause, consecutive-loss pause, dan exposure cap memblok/memotong trading saat terpicu.
+                  Nonaktif: semua rem akun dilepas — trading tetap jalan apapun kondisinya. ⚠️ Nonaktif = satu hari buruk bisa menghabiskan saldo.
+                </p>
+              </div>
+            </div>
             <div>
               <label className="mb-1 block text-xs text-slate-400">Metode Trading</label>
               <select

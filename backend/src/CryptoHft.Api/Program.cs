@@ -21,9 +21,14 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Host.UseSerilog((context, configuration) =>
 {
+    // Console writes go through a bounded async buffer that DROPS entries when full
+    // instead of blocking. A synchronous console sink can stall its writer when the
+    // container's stdout reader slows down, and every thread that logs would queue
+    // behind it — including the trading and learning loops, which log each tick.
+    // Losing log lines under backpressure is acceptable; stalling a loop is not.
     configuration
         .ReadFrom.Configuration(context.Configuration)
-        .WriteTo.Console();
+        .WriteTo.Async(sink => sink.Console(), blockWhenFull: false);
 });
 
 builder.Services.AddCors(options =>
@@ -906,6 +911,7 @@ using (var scope = app.Services.CreateScope())
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "AutoSizingMode" integer NOT NULL DEFAULT 0;
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "TargetLeverage" integer NOT NULL DEFAULT 20;
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "TradingStyle" integer NOT NULL DEFAULT 0;
+        ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "AccountRiskGuardEnabled" boolean NOT NULL DEFAULT TRUE;
         CREATE TABLE IF NOT EXISTS trading."AiUsage" (
             "Id" uuid PRIMARY KEY,
             "Model" text NOT NULL,

@@ -292,6 +292,24 @@ public sealed class DecisionEngineImprovementTests
         Assert.Contains(decision.Reasons, r => r.Contains("style intraday: primary TF 1h"));
     }
 
+    // ---- OI thresholds sit inside the range the series actually visits -------------------------
+
+    // Regression for a threshold that could never fire: hourly BTCUSDT open interest moves
+    // a median of 0.209% and reached 1.049% at most over 500 buckets, so the old 1.5% bar
+    // left the whole derivatives category pinned at neutral.
+    [Fact]
+    public void OiThresholds_AreReachableByTheMeasuredDistribution()
+    {
+        const decimal measuredHourlyMedian = 0.209m;
+        const decimal measuredHourlyP90 = 0.606m;
+
+        Assert.True(AdvancedDecisionEngine.OiSignificantChangePercent > measuredHourlyMedian,
+            "a threshold below the median would fire on more than half of all ticks");
+        Assert.True(AdvancedDecisionEngine.OiSignificantChangePercent <= measuredHourlyP90,
+            "a threshold above the p90 fires too rarely to inform anything");
+        Assert.True(AdvancedDecisionEngine.OiStrongChangePercent > AdvancedDecisionEngine.OiSignificantChangePercent);
+    }
+
     // ---- Fee-aware risk/reward -----------------------------------------------------------------
 
     [Fact]

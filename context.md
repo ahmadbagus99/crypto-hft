@@ -1043,3 +1043,77 @@ sinyal-terhadap-noise, dan noise-nya selalu ada sejak awal.
 - **220/220 unit test pass** (1 baru: batas dead-tape inklusif). Build bersih.
 - Perubahan `DepthLevels` adalah konstanta pada adapter HTTP — diverifikasi lewat
   pengukuran live di atas, bukan unit test.
+
+---
+
+## 23. Kenapa confidence terkunci 60-64 + derivatives mati (2026-07-30)
+
+Pertanyaan owner: kenapa confidence cuma 60-64, apakah engine kurang yakin atau
+kurang paham; apakah depth 1000 level menaikkan confidence & win rate.
+
+### a) Aritmetika: D memang tidak bisa jauh dari 50
+D = rata-rata berbobot 8 skor kategori. "Anggaran gerak" = Σ(bobot × deviasi rata-rata
+kategori dari 50). Diukur dari 36 decision nyata:
+
+| kategori | bobot | dev rata-rata | kontribusi ke D |
+|---|---|---|---|
+| **orderbook** | 17% | **38.6** | **+6.56** ← 44% anggaran, dan ini NOISE (Bagian 22) |
+| technical | 22% | 11.6 | +2.55 |
+| macro | 10% | 14.0 | +1.40 |
+| onchain | 10% | 12.6 | +1.26 |
+| news | 4% | 24.4 | +0.98 |
+| sentiment | 4% | 22.4 | +0.90 |
+| structure | 17% | 4.5 | +0.76 |
+| derivatives | 16% | 3.3 | +0.53 |
+| **TOTAL** | | | **±14.9 dari 50** |
+
+Jadi D secara struktural hidup di 35–65. Confidence 80 menuntut ke-8 kategori
+berteriak searah bersamaan — praktis mustahil. **Ini bukan "kurang yakin" atau
+"kurang paham", ini konsekuensi merata-ratakan 8 indikator terbatas.**
+
+### b) Depth 1000 TIDAK menaikkan confidence — justru menurunkan
+Simulasi mengganti orderbook 20-level dengan hasil ukur 500-level (50 ± 4):
+
+| | lolos th 60 | lolos th 62 | lolos th 70 |
+|---|---|---|---|
+| Sekarang (20 level) | 14/36 (39%) | 6/36 (17%) | 0/36 |
+| Pasca fix (500 level) | **1/36 (3%)** | 1/36 (3%) | 0/36 |
+
+Semakin dalam buku → imbalance makin mendekati nol → skor makin dekat 50 → D makin
+kecil. **44% conviction engine selama ini dipasok noise buku.** 1000 level akan
+memampatkannya lebih jauh lagi.
+
+> ⚠️ **KONSEKUENSI DEPLOY:** dengan threshold 70 (setting live saat ini) sistem tidak
+> akan membuka posisi sama sekali. Bahkan di 60 hanya ~3%. Threshold WAJIB
+> diturunkan ke ~55-57 setelah deploy — dan itu keputusan owner, bukan otomatis.
+
+### c) Confidence tinggi ≠ win rate tinggi (bukti dari data sendiri)
+Bucket 60-62 menang **26%** (19 trade, −6.12 USDT). Rata-rata confidence winner 61.6
+vs loser 61.0 — **selisih 0.6 poin, nol daya pisah.** FactorStats: akurasi semua
+faktor 0.33–0.58 alias lempar koin. Menaikkan angka confidence tanpa membuat faktor
+di bawahnya prediktif = mengubah termometer, bukan menurunkan demam.
+
+### d) CACAT KEDUA: derivatives (16% bobot) tidak pernah aktif
+Skor derivatives di 36 trade: min 42, median 50, **max 50.0 persis**. Penyebabnya
+ambang yang tidak pernah tercapai — diverifikasi terhadap data live:
+
+| sinyal | ambang engine | realita terukur | aktif |
+|---|---|---|---|
+| OI Δ (5 menit) | ±1.5% | median 0.028%, **max 0.386%** (499 sampel) | **0 kali** |
+| OI Δ sekunder | ±2.0% | idem | **0 kali** |
+| funding | <−0.0003 / >0.0005 | −0.000003 … +0.0001 (30 periode) | **0 kali** |
+
+Ambang 1.5% itu skala perubahan **4 jam** (p90 4-jam = 1.473%) tetapi diterapkan ke
+data **5 menit**. Matriks OI×harga — fitur utama Bagian 9b — belum pernah menyala
+sekali pun sejak dibuat.
+
+**Fix:** jendela OI 5 menit → **1 jam** (`OiHistoryBuckets = 13`), ambang dari
+distribusi terukur 1-jam: signifikan **0.4%** (p75 0.403), kuat **0.6%** (p90 0.606).
+Sisi harga disamakan ke jendela 1 jam (`OiPriceLookbackCandles = 12`) dengan ambang
+±0.25% — sebelumnya OI 5 menit dibandingkan harga 5 menit lalu diberi label cerita
+"posisi baru terbentuk", padahal 5 menit terlalu pendek untuk itu.
+Funding dibiarkan: ambangnya wajar untuk pasar crowded, memang sedang tidak crowded.
+
+### Testing
+- **221/221 unit test pass** (1 baru: ambang OI harus berada dalam rentang yang
+  benar-benar dikunjungi seriesnya). Build bersih.

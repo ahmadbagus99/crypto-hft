@@ -31,6 +31,16 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
     // under-stating fees is what made tight geometry look profitable when it was not.
     internal const decimal RoundTripFeeFraction = 0.001m;
 
+    // Open-interest thresholds, taken from the measured hourly distribution of BTCUSDT OI
+    // (median 0.209%, p75 0.403%, p90 0.606%) rather than from intuition. A threshold has
+    // to sit inside the range the series actually visits, or the signal never fires.
+    internal const decimal OiSignificantChangePercent = 0.4m;
+    internal const decimal OiStrongChangePercent = 0.6m;
+
+    // Price move paired with the OI read: both must span the same window, otherwise the
+    // "OI rose while price fell" story is comparing an hour against five minutes.
+    internal const int OiPriceLookbackCandles = 12; // 12 x 5m = 1 hour
+
     // Fees may eat at most this share of the gross target before the trade is flagged.
     // Beyond it the edge is mostly rent paid to the exchange.
     internal const decimal MaxFeeShareOfTarget = 0.25m;
@@ -99,7 +109,7 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
             new ScoreComponent("Pattern", pattern.Score, 0, pattern.Summary),
             new ScoreComponent("SupportResistance", srLevels.Score, 0, srLevels.Summary),
             ScoreOrderFlow(input.Derivatives, flowTf.Candles),
-            ScoreDerivatives(input.Derivatives, PriceChangePercent(flowTf.Candles, lookback: 1)),
+            ScoreDerivatives(input.Derivatives, PriceChangePercent(flowTf.Candles, OiPriceLookbackCandles)),
             ScoreNews(input.Sentiment),
             ScoreSocial(input.Sentiment),
             ScoreVolatility(candles)
@@ -667,17 +677,20 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         else if (d.CumulativeFunding24h <= -0.0003m) { score += 8; notes.Add($"24h funding {d.CumulativeFunding24h * 100:F3}% (shorts paying)"); }
 
         // OI x price matrix — the direction of OPEN INTEREST only means something together
-        // with the price move that accompanied it.
-        var oiUp = d.OpenInterestChangePercent > 1.5m;
-        var oiDown = d.OpenInterestChangePercent < -1.5m;
-        var priceUp = priceChangePct > 0.10m;
-        var priceDown = priceChangePct < -0.10m;
+        // with the price move that accompanied it. Both sides are measured over the SAME
+        // hour, and the thresholds come from the measured distribution of that series
+        // (hourly OI change: median 0.209%, p75 0.403%, p90 0.606%). The previous 1.5%
+        // never fired once in 500 buckets, which left this whole category stuck at 50.
+        var oiUp = d.OpenInterestChangePercent > OiSignificantChangePercent;
+        var oiDown = d.OpenInterestChangePercent < -OiSignificantChangePercent;
+        var priceUp = priceChangePct > 0.25m;
+        var priceDown = priceChangePct < -0.25m;
         if (oiUp && priceUp) { score += 12; notes.Add($"OIΔ +{d.OpenInterestChangePercent:F1}% with price up (new longs)"); }
         else if (oiUp && priceDown) { score -= 12; notes.Add($"OIΔ +{d.OpenInterestChangePercent:F1}% with price down (new shorts)"); }
         else if (oiDown && priceUp) { score -= 5; notes.Add($"OIΔ {d.OpenInterestChangePercent:F1}% with price up (short covering — weak rally)"); }
         else if (oiDown && priceDown) { score += 5; notes.Add($"OIΔ {d.OpenInterestChangePercent:F1}% with price down (long capitulation)"); }
-        else if (d.OpenInterestChangePercent > 2m) { score += 4; notes.Add($"OIΔ +{d.OpenInterestChangePercent:F1}% (price flat)"); }
-        else if (d.OpenInterestChangePercent < -2m) { score -= 3; notes.Add($"OIΔ {d.OpenInterestChangePercent:F1}% (price flat)"); }
+        else if (d.OpenInterestChangePercent > OiStrongChangePercent) { score += 4; notes.Add($"OIΔ +{d.OpenInterestChangePercent:F2}% (price flat)"); }
+        else if (d.OpenInterestChangePercent < -OiStrongChangePercent) { score -= 3; notes.Add($"OIΔ {d.OpenInterestChangePercent:F2}% (price flat)"); }
 
         if (d.LongShortRatio > 1.5m) score -= 8; else if (d.LongShortRatio < 0.7m) score += 8; // contrarian
         notes.Add($"L/S {d.LongShortRatio:F2}");

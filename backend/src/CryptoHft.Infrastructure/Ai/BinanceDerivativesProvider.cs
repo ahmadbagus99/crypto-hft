@@ -24,6 +24,10 @@ public sealed class BinanceDerivativesProvider(
     // accepted limits (5/10/20/50/100/500/1000).
     private const int DepthLevels = 500;
 
+    // 5-minute OI buckets spanning one hour (13 points = 12 intervals). Keep in step with
+    // AdvancedDecisionEngine.OiPriceLookbackCandles, which measures price over the same hour.
+    private const int OiHistoryBuckets = 13;
+
     private readonly BinanceOptions _options = options.Value;
 
     public async Task<DerivativesSnapshot> GetSnapshotAsync(string symbol, CancellationToken cancellationToken)
@@ -60,13 +64,23 @@ public sealed class BinanceDerivativesProvider(
             using var odoc = JsonDocument.Parse(oiJson);
             oi = Parse(odoc.RootElement.GetProperty("openInterest"));
 
-            var oiHist = await client.GetStringAsync($"{baseUrl}/futures/data/openInterestHist?symbol={symbol}&period=5m&limit=2", cancellationToken);
+            // Open interest is compared over an HOUR, not the previous 5-minute bucket.
+            // Measured over 500 buckets: a 5-minute OI change has a median of 0.028% and
+            // never exceeded 0.386%, while the engine asked for 1.5% before calling the
+            // move significant — a threshold on the scale of a 4-hour change. The result
+            // was that the OI x price matrix never once fired and the whole derivatives
+            // category (16% of the directional vote) sat pinned at a neutral 50. Over an
+            // hour the same series has a median of 0.209% and a p75 of 0.403%, which is a
+            // range a threshold can actually discriminate on — and an hour of position
+            // building is the right horizon for a trade held hours.
+            var oiHist = await client.GetStringAsync(
+                $"{baseUrl}/futures/data/openInterestHist?symbol={symbol}&period=5m&limit={OiHistoryBuckets}", cancellationToken);
             using var hdoc = JsonDocument.Parse(oiHist);
             var arr = hdoc.RootElement;
             if (arr.GetArrayLength() >= 2)
             {
                 var prev = Parse(arr[0].GetProperty("sumOpenInterest"));
-                var now = Parse(arr[1].GetProperty("sumOpenInterest"));
+                var now = Parse(arr[arr.GetArrayLength() - 1].GetProperty("sumOpenInterest"));
                 oiChange = prev == 0 ? 0 : (now - prev) / prev * 100m;
             }
         }

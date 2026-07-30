@@ -54,6 +54,10 @@ public sealed class Order
 
 public sealed class Position
 {
+    // Commission + funding charged over this position's lifetime, as reported by the
+    // exchange (negative = cost). RealizedPnl is already NET of this; the column exists
+    // so the fee drag itself stays visible. 0 for paper fills and pre-2026-07-30 rows.
+    public decimal Fees { get; set; }
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Symbol { get; set; } = "BTCUSDT";
     public TradeSide Side { get; set; }

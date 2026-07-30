@@ -92,7 +92,12 @@ public sealed class PositionHistoryService(
             using var scope = scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
             var (takeProfit, stopLoss) = await GetLatestProtectiveLevelsAsync(db, tracked, cancellationToken);
-            var realizedPnl = await ResolveRealizedPnlAsync(tracked, closedAt, cancellationToken);
+            var (grossPnl, fees) = await ResolveRealizedPnlAsync(tracked, closedAt, cancellationToken);
+            // Fees are part of the trade's outcome, not an afterthought: a position that closes
+            // gross-positive but fee-negative is a LOSS, and every downstream consumer (win/loss
+            // learning, ROI, profit factor) must see it that way. Recording only REALIZED_PNL
+            // made 46 trades read +1.34 USDT when commissions put the account at roughly -2.4.
+            var realizedPnl = grossPnl + fees;
             var margin = tracked.Leverage > 0
                 ? Math.Abs(tracked.Quantity) * tracked.EntryPrice / tracked.Leverage
                 : 0m;
@@ -113,6 +118,7 @@ public sealed class PositionHistoryService(
                 MarkPrice = tracked.MarkPrice,
                 UnrealizedPnl = tracked.UnrealizedProfit,
                 RealizedPnl = realizedPnl,
+                Fees = fees,
                 Roi = roi,
                 Leverage = tracked.Leverage,
                 StopLoss = stopLoss,
@@ -185,7 +191,10 @@ public sealed class PositionHistoryService(
         return (takeProfit, stopLoss);
     }
 
-    private async Task<decimal> ResolveRealizedPnlAsync(
+    // Returns the trade's gross realized PnL and its fee total (commission + funding) as
+    // reported by the exchange. Fees come back as negative income from Binance, so callers
+    // add them. Paper mode and credential-less runs report zero fees — nothing was charged.
+    private async Task<(decimal GrossPnl, decimal Fees)> ResolveRealizedPnlAsync(
         TrackedPosition tracked,
         DateTimeOffset closedAt,
         CancellationToken cancellationToken)
@@ -195,35 +204,44 @@ public sealed class PositionHistoryService(
             || string.IsNullOrWhiteSpace(settings.ApiKey)
             || string.IsNullOrWhiteSpace(settings.ApiSecret))
         {
-            return tracked.UnrealizedProfit;
+            return (tracked.UnrealizedProfit, 0m);
         }
 
         try
         {
-            var entries = await FetchRealizedPnlAsync(
-                tracked.Symbol,
-                tracked.OpenedAt.AddMinutes(-2),
-                closedAt.AddMinutes(2),
-                settings,
-                cancellationToken);
-            return entries.Count == 0 ? tracked.UnrealizedProfit : entries.Sum(entry => entry.Pnl);
+            var from = tracked.OpenedAt.AddMinutes(-2);
+            var to = closedAt.AddMinutes(2);
+
+            // COMMISSION covers both fills (entry + exit); FUNDING_FEE accrues while the
+            // position is held and can go either way. Both are fetched over the position's
+            // own lifetime window, same as the PnL rows.
+            var pnlEntries = await FetchIncomeAsync(tracked.Symbol, "REALIZED_PNL", from, to, settings, cancellationToken);
+            var commission = await FetchIncomeAsync(tracked.Symbol, "COMMISSION", from, to, settings, cancellationToken);
+            var funding = await FetchIncomeAsync(tracked.Symbol, "FUNDING_FEE", from, to, settings, cancellationToken);
+
+            var gross = pnlEntries.Count == 0
+                ? tracked.UnrealizedProfit
+                : pnlEntries.Sum(entry => entry.Pnl);
+            var fees = commission.Sum(entry => entry.Pnl) + funding.Sum(entry => entry.Pnl);
+            return (gross, fees);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogWarning(ex, "realized PnL fetch failed; using last unrealized PnL snapshot");
-            return tracked.UnrealizedProfit;
+            return (tracked.UnrealizedProfit, 0m);
         }
     }
 
-    private async Task<IReadOnlyList<RealizedPnlEntry>> FetchRealizedPnlAsync(
+    private async Task<IReadOnlyList<RealizedPnlEntry>> FetchIncomeAsync(
         string symbol,
+        string incomeType,
         DateTimeOffset start,
         DateTimeOffset end,
         RuntimeTradingSettings settings,
         CancellationToken cancellationToken)
     {
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var query = $"symbol={symbol}&incomeType=REALIZED_PNL&startTime={start.ToUnixTimeMilliseconds()}" +
+        var query = $"symbol={symbol}&incomeType={incomeType}&startTime={start.ToUnixTimeMilliseconds()}" +
                     $"&endTime={end.ToUnixTimeMilliseconds()}&limit=1000&timestamp={timestamp}&recvWindow=5000";
 
         using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(settings.ApiSecret!));

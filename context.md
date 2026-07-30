@@ -900,3 +900,59 @@ Exposure, matikan guard, atau top-up.
 - **216/216 unit test pass** (3 baru sizing: nearest-step 2 arah + ignore Claude
   multiplier; 2 baru risk gate: guard-off melewati daily-loss & consecutive-loss).
 - Full solution build + frontend `tsc` bersih.
+
+---
+
+## 21. Fee blindness — meteran diperbaiki + geometri scalper dikoreksi (2026-07-30)
+
+**Temuan terbesar sejauh ini.** `PositionHistoryService` hanya menarik
+`incomeType=REALIZED_PNL` dari Binance. Binance memisahkan `COMMISSION` dan
+`FUNDING_FEE` sebagai income type TERSENDIRI — jadi **fee tidak pernah masuk
+Position History**, dan seluruh win rate / profit factor / expectancy yang pernah
+dilaporkan adalah angka KOTOR.
+
+Audit 46 closed position (taker VIP0 0.05%/sisi, round-trip 0.1%):
+
+| | Kotor (tercatat) | Net (dengan fee) |
+|---|---|---|
+| PnL total | **+1.3445 USDT** | **−2.4387 USDT** |
+| Profit factor | 1.08 | **0.87** |
+| Payoff ratio | 1.29 | 1.03 |
+| Breakeven win rate | 44% | **49%** |
+
+Win rate aktual 45.7% → di atas breakeven kotor, **di bawah breakeven net**. Fee
+rata-rata 0.0822 USDT/trade = 12% dari rata-rata loss. Sistem yang terlihat tipis
+menguntungkan sebenarnya rugi; ini menjelaskan saldo yang menurun meski laporan
+PnL positif.
+
+### a) Meteran: Position History kini NET
+- Kolom baru `Positions.Fees` (numeric, default 0, ALTER idempotent).
+- `ResolveRealizedPnlAsync` menarik **3 income type** paralel: `REALIZED_PNL`,
+  `COMMISSION`, `FUNDING_FEE` (window seumur posisi). `RealizedPnl` disimpan
+  **sudah net**; `Fees` menyimpan drag-nya agar tetap terlihat.
+- Konsekuensi otomatis (sengaja): `Win = RealizedPnl > 0` di learning kini
+  memakai untung BERSIH — trade yang kotor-positif tapi net-negatif diajarkan
+  sebagai LOSS. ROI, profit factor, kalibrasi confidence, dan
+  `ExecutionTuningPolicy` semuanya ikut jadi net tanpa perubahan lain.
+- Baris lama tetap `Fees = 0` (tidak di-backfill): pembanding historis harus
+  memakai estimasi di tabel atas, bukan mengira data lama sudah net.
+
+### b) Engine: R:R dihitung net of fee
+- `AdvancedDecisionEngine.RoundTripFeeFraction = 0.001` (taker masuk + keluar;
+  entry MARKET, exit stop/TP market → keduanya taker).
+- `RiskReward = (reward − fee) / (risk + fee)`. Semua konsumen ikut net: caution
+  RR, payload Claude, dan syarat RR ≥ 2.0 untuk menerima SL/TP usulan Claude.
+- Caution baru saat `fee / target > 25%`: "geometry too tight to pay for itself".
+
+### c) Geometri scalper dikoreksi 3× → 4.5× ATR
+Fee dibebankan UTUH berapapun kecilnya target, jadi ia menggerus target sempit
+jauh lebih dalam. Pada SL 1.5×ATR(15m), target untuk NET 2:1 adalah
+`2×risk + 3×fee` ≈ **4.5×ATR**, bukan 3× yang dirilis pertama (net hanya ~1.2:1,
+butuh WR 45% cuma untuk impas). Bukti live 30 Jul: SHORT TP 0.55% / SL 0.30%
+tampak RR 1.85 kotor, padahal **1.13 net**.
+> Intraday tidak diubah manual — TP/SL-nya LEARNED (`ExecutionTuningPolicy`) dan
+> kini otomatis mengoreksi diri karena sumber belajarnya sudah net.
+
+### Testing
+- **218/218 unit test pass** (2 baru: RR net-of-fee di engine, geometri scalper
+  menjaga net RR ~2). Build solution + frontend `tsc` bersih.

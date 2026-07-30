@@ -260,7 +260,7 @@ public sealed class DecisionEngineImprovementTests
             styleProfile: TradingStyleProfile.Scalper);
 
         Assert.Contains(decision.Reasons, r => r.Contains("style scalper: primary TF 15m"));
-        Assert.Contains(decision.Reasons, r => r.Contains("SL 1.5x / TP 3x ATR"));
+        Assert.Contains(decision.Reasons, r => r.Contains("SL 1.5x / TP 4.5x ATR"));
     }
 
     [Fact]
@@ -274,7 +274,7 @@ public sealed class DecisionEngineImprovementTests
             styleProfile: TradingStyleProfile.Scalper);
 
         Assert.Contains(intraday.Reasons, r => r.Contains("SL 2.6x / TP 3.2x ATR"));
-        Assert.Contains(scalper.Reasons, r => r.Contains("SL 1.5x / TP 3x ATR"));
+        Assert.Contains(scalper.Reasons, r => r.Contains("SL 1.5x / TP 4.5x ATR"));
     }
 
     [Fact]
@@ -284,5 +284,39 @@ public sealed class DecisionEngineImprovementTests
         var decision = engine.Evaluate(SyntheticInput(), Profile, 10_000m);
 
         Assert.Contains(decision.Reasons, r => r.Contains("style intraday: primary TF 1h"));
+    }
+
+    // ---- Fee-aware risk/reward -----------------------------------------------------------------
+
+    [Fact]
+    public void RiskReward_IsNetOfTheRoundTripFee()
+    {
+        var engine = new AdvancedDecisionEngine();
+        var decision = engine.Evaluate(SyntheticInput(), Profile, 10_000m);
+
+        var grossReward = Math.Abs(decision.TakeProfit - decision.EntryPrice);
+        var grossRisk = Math.Abs(decision.EntryPrice - decision.StopLoss);
+        var fee = decision.EntryPrice * AdvancedDecisionEngine.RoundTripFeeFraction;
+        var expected = Math.Round((grossReward - fee) / (grossRisk + fee), 2);
+
+        Assert.Equal(expected, decision.RiskReward);
+        // The fee always costs something, so the reported figure must sit below the gross one.
+        Assert.True(decision.RiskReward < grossReward / grossRisk);
+    }
+
+    // A scalper target must clear the fee by enough that the exchange is not the main
+    // beneficiary: 1.5x/4.5x ATR is the geometry that keeps the NET ratio near 2:1.
+    [Fact]
+    public void ScalperGeometry_KeepsNetRiskRewardNearTwo()
+    {
+        const decimal atr = 128m;      // ~ATR(15m) on BTC around 64.8k
+        const decimal entry = 64_800m;
+        var risk = atr * TradingStyleProfile.Scalper.FallbackSlAtrMultiplier;
+        var reward = atr * TradingStyleProfile.Scalper.FallbackTpAtrMultiplier;
+        var fee = entry * AdvancedDecisionEngine.RoundTripFeeFraction;
+
+        var netRr = (reward - fee) / (risk + fee);
+
+        Assert.InRange(netRr, 1.8m, 2.2m);
     }
 }

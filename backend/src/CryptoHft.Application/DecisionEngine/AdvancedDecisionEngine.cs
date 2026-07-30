@@ -25,6 +25,16 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         ["news"] = 0.04m
     };
 
+    // Taker fee paid on both legs of a round trip (Binance USDT-M futures, VIP 0: 0.05%
+    // per fill). Entries are MARKET and protective exits are stop/TP market fills, so
+    // both legs are taker. A conservative constant beats a stale per-account lookup here:
+    // under-stating fees is what made tight geometry look profitable when it was not.
+    internal const decimal RoundTripFeeFraction = 0.001m;
+
+    // Fees may eat at most this share of the gross target before the trade is flagged.
+    // Beyond it the edge is mostly rent paid to the exchange.
+    internal const decimal MaxFeeShareOfTarget = 0.25m;
+
     // Condition gauges: scored and displayed, but excluded from the directional blend
     // and from directional-accuracy learning (they never take a side).
     public static readonly IReadOnlySet<string> NonDirectionalCategories =
@@ -218,7 +228,18 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
 
         var riskDistance = Math.Abs(entry - stopLoss);
         var rewardDistance = Math.Abs(takeProfit - entry);
-        var riskReward = riskDistance == 0 ? 0 : rewardDistance / riskDistance;
+
+        // Risk/reward is measured on money that actually lands in the account: the taker
+        // fee is paid on entry AND exit, so it shrinks every win and deepens every loss.
+        // Reporting gross R:R flattered tight geometry badly — a scalper target of 0.55%
+        // against a 0.30% stop reads 1.85 gross but only 1.13 after a 0.1% round trip,
+        // which moves the break-even win rate from 35% to 47%. Every consumer downstream
+        // (the RR caution, the LLM payload, the guard on Claude's own SL/TP) now sees the
+        // net figure.
+        var feeCost = entry * RoundTripFeeFraction;
+        var netReward = Math.Max(0m, rewardDistance - feeCost);
+        var netRisk = riskDistance + feeCost;
+        var riskReward = netRisk == 0 ? 0 : netReward / netRisk;
 
         // Position sizing from risk-per-trade budget. Keep 6-dp precision so a small budget is
         // not prematurely rounded to zero — the AI multiplier scales this and the exchange rule
@@ -247,7 +268,11 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         if (!isBuy && !isSell) noTradeReasons.Add("Signal is neutral (Hold)");
         if (confidence < profile.AutoTradeConfidenceThreshold) noTradeReasons.Add($"Confidence {confidence:F0} below threshold {profile.AutoTradeConfidenceThreshold:F0}");
 
-        if (riskReward < profile.MinimumRiskReward) cautionReasons.Add($"Risk/reward {riskReward:F2} below preferred {profile.MinimumRiskReward:F2}");
+        if (riskReward < profile.MinimumRiskReward) cautionReasons.Add($"Risk/reward {riskReward:F2} (net of fees) below preferred {profile.MinimumRiskReward:F2}");
+        if (rewardDistance > 0 && feeCost / rewardDistance > MaxFeeShareOfTarget)
+            cautionReasons.Add(
+                $"Fees eat {feeCost / rewardDistance:P0} of the {rewardDistance / entry:P2} target — " +
+                "geometry too tight to pay for itself");
         if (!trendAligned && (isBuy || isSell))
             cautionReasons.Add($"Higher timeframe trend not aligned [trend votes: {VoteDetail(votes, v => v.Trend)}]");
         if (Math.Abs(input.Derivatives.FundingRate) > 0.0010m) cautionReasons.Add("Funding rate unhealthy (crowded)");

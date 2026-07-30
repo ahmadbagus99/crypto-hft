@@ -939,6 +939,7 @@ using (var scope = app.Services.CreateScope())
             "ClosedAt" timestamptz NULL
         );
         ALTER TABLE trading."Positions" ADD COLUMN IF NOT EXISTS "CloseReason" integer NOT NULL DEFAULT 0;
+        ALTER TABLE trading."Positions" ADD COLUMN IF NOT EXISTS "Fees" numeric NOT NULL DEFAULT 0;
         CREATE INDEX IF NOT EXISTS "IX_Positions_Symbol_OpenedAt"
             ON trading."Positions" ("Symbol", "OpenedAt");
         CREATE INDEX IF NOT EXISTS "IX_Positions_Symbol_ClosedAt"

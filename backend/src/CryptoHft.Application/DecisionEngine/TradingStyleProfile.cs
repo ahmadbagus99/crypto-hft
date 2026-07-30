@@ -8,11 +8,16 @@ namespace CryptoHft.Application.DecisionEngine;
 // weighted, and the SL/TP baseline when the learned intraday tuning does not apply.
 //
 // Intraday (default): the original behavior — 1h anchor, targets 1-2%, holds hours.
-// Scalper: 15m anchor with the vote mass shifted to 5m/15m; SL 1.5x / TP 3x ATR(15m)
-// keeps RR at 2.0 with targets ~0.4-0.8% — comfortably above the ~0.1% round-trip
-// taker fees, which is the floor that makes tighter scalps mathematically unviable.
+// Scalper: 15m anchor with the vote mass shifted to 5m/15m.
 // Scalper bypasses the learned execution tuning: those multipliers were learned from
 // realized 1h-geometry exits and would mis-scale a 15m stop.
+//
+// Scalper geometry is set from fee arithmetic, not from a round number. A round trip
+// costs ~0.1% of notional (taker in, taker out), which is charged whole regardless of
+// how small the target is — so it shrinks a tight target far more than a wide one. At
+// SL 1.5xATR(15m) the target needed for a NET 2:1 is 2*risk + 3*fee, which lands near
+// 4.5xATR — not the 3x first shipped, which only cleared ~1.2:1 after fees and needed
+// a 45% win rate just to break even. Anything tighter is rent paid to the exchange.
 public sealed record TradingStyleProfile(
     string Name,
     string PrimaryInterval,          // anchors ATR, regime, fib/pattern/S&R/volume profile
@@ -33,7 +38,7 @@ public sealed record TradingStyleProfile(
         "scalper", "15m", "5m",
         new[] { ("5m", 0.30m), ("15m", 0.35m), ("1h", 0.25m), ("4h", 0.10m) },
         FallbackSlAtrMultiplier: 1.5m,
-        FallbackTpAtrMultiplier: 3m,
+        FallbackTpAtrMultiplier: 4.5m,
         UseLearnedTuning: false);
 
     public static TradingStyleProfile For(TradingStyle style)

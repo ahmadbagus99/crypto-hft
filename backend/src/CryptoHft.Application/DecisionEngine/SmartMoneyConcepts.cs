@@ -169,7 +169,14 @@ public static class SmartMoneyConcepts
 
     // Fair value gap (imbalance): 3-candle pattern where candle1.high < candle3.low (bullish gap)
     // or candle1.low > candle3.high (bearish gap), with a strong middle candle.
-    private static (bool bull, bool bear) DetectFairValueGap(IReadOnlyList<Candle> candles, decimal atr)
+    //
+    // Only UNFILLED gaps count. A gap is the market skipping a price band; once price trades
+    // back into that band the imbalance has been served and it says nothing more — exactly
+    // the reasoning DetectOrderBlocks already applies through its mitigation check, which
+    // fair value gaps were missing. Without it an eight-candle window regularly reported a
+    // bullish AND a bearish gap at once (both long since filled), which cancelled to zero
+    // and dressed stale noise up as balanced evidence.
+    internal static (bool bull, bool bear) DetectFairValueGap(IReadOnlyList<Candle> candles, decimal atr)
     {
         var n = candles.Count;
         bool bull = false, bear = false;
@@ -177,8 +184,20 @@ public static class SmartMoneyConcepts
         {
             var c1 = candles[i - 2];
             var c3 = candles[i];
-            if (c1.High < c3.Low && c3.Low - c1.High > atr * 0.3m) bull = true;
-            if (c1.Low > c3.High && c1.Low - c3.High > atr * 0.3m) bear = true;
+
+            // Bullish gap spans [c1.High, c3.Low]; filled once a later low re-enters it.
+            if (c1.High < c3.Low && c3.Low - c1.High > atr * 0.3m)
+            {
+                var filled = Enumerable.Range(i + 1, n - i - 1).Any(j => candles[j].Low <= c3.Low);
+                if (!filled) bull = true;
+            }
+
+            // Bearish gap spans [c3.High, c1.Low]; filled once a later high re-enters it.
+            if (c1.Low > c3.High && c1.Low - c3.High > atr * 0.3m)
+            {
+                var filled = Enumerable.Range(i + 1, n - i - 1).Any(j => candles[j].High >= c3.High);
+                if (!filled) bear = true;
+            }
         }
         return (bull, bear);
     }

@@ -292,6 +292,36 @@ public sealed class DecisionEngineImprovementTests
         Assert.Contains(decision.Reasons, r => r.Contains("style intraday: primary TF 1h"));
     }
 
+    // ---- News speaks in proportion to its evidence ----------------------------------------------
+
+    private static SentimentSnapshot News(decimal score, decimal confidence)
+        => new(score, 50m, "Test", 50, "Neutral", Array.Empty<string>(), NewsConfidence: confidence);
+
+    private static decimal NewsScoreOf(SentimentSnapshot s)
+    {
+        var engine = new AdvancedDecisionEngine();
+        var input = SyntheticInput() with { Sentiment = s };
+        return engine.Evaluate(input, Profile, 10_000m).Components.First(c => c.Name == "News").Score;
+    }
+
+    // A bearish reading backed by one clickbait headline used to push the vote exactly as
+    // hard as one backed by six agreeing reports; the provider grades its own evidence and
+    // the engine simply ignored it.
+    [Fact]
+    public void News_ThinEvidenceMovesTheVoteLessThanStrongEvidence()
+    {
+        var strong = NewsScoreOf(News(score: 20m, confidence: 100m));
+        var thin = NewsScoreOf(News(score: 20m, confidence: 25m));
+
+        Assert.Equal(20m, strong);                       // full evidence: taken at face value
+        Assert.Equal(42.5m, thin);                       // 50 + (20-50) * 0.25
+        Assert.True(Math.Abs(thin - 50m) < Math.Abs(strong - 50m));
+    }
+
+    [Fact]
+    public void News_WithoutEvidenceIsNeutral()
+        => Assert.Equal(50m, NewsScoreOf(News(score: 5m, confidence: 0m)));
+
     // ---- Volume confirms direction, it does not choose one -------------------------------------
 
     [Theory]

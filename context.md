@@ -1225,3 +1225,49 @@ lagi-lagi melawan bias short struktural.
 ### Testing
 - **233/233 unit test pass** (6 baru: VolumeConfirmation berbatas & tak pernah
   membalik tanda). Build bersih.
+
+---
+
+## 26. Sisiran lanjutan: news buta bukti, FVG basi, label TF salah (2026-07-30, malam)
+
+Deploy e998a48 terverifikasi. **Fix Volume terbukti**: `Volume 38.4 — OBV falling on
+0.63x avg volume (78 % conviction)` (sebelumnya 20.0). Derivatives tetap hidup (60.4).
+Sisiran komponen menemukan tiga cacat lagi.
+
+### a) News mengabaikan tingkat keyakinannya sendiri
+`FreeSentimentProvider` menghitung `NewsConfidence` (0-100 dari volume bukti +
+kesepakatan headline) justru agar konsumen bisa mendiskon bukti tipis. Tapi
+`ScoreNews` hanya membaca `NewsScore` mentah — `NewsConfidence` **tidak pernah
+dipakai di engine sama sekali** (hanya diteruskan ke prompt Claude). Akibatnya skor
+dari SATU headline clickbait menggerakkan vote sekeras skor dari enam laporan searah.
+
+**Fix:** `score = 50 + (raw − 50) × (NewsConfidence/100)`. Bukti nol → netral 50
+(fail-safe, konsisten dengan filosofi "no data source — neutral").
+
+### b) Fair value gap tidak pernah dicek sudah terisi atau belum
+`Detect` menampilkan `bullish FVG, bearish FVG` BERSAMAAN — keduanya saling
+meniadakan (+8 −8 = 0) dan terlihat seperti "bukti seimbang", padahal keduanya gap
+lama yang sudah terisi. `DetectOrderBlocks` sudah punya cek mitigasi; `DetectFairValueGap`
+tidak punya sama sekali — gap dari 8 candle lalu tetap dihitung meski harga sudah
+menembusnya berkali-kali.
+
+**Fix:** gap hanya dihitung bila **belum terisi** — bullish gap gugur begitu ada low
+berikutnya masuk kembali ke pita [c1.High, c3.Low], bearish gap sebaliknya. Sejalan
+persis dengan logika mitigasi order block.
+
+### c) Label timeframe salah di reasoning Momentum
+`ScoreMomentumConsensus` menulis `1h RSI {rsi}` secara hardcode, padahal RSI/MACD-nya
+dihitung dari timeframe PRIMER — yang di mode Scalper adalah **15m**. Penjelasan yang
+tampil di dashboard dan yang dikirim ke Claude menyebut timeframe yang salah.
+**Fix:** interval primer diteruskan sebagai parameter, bukan ditulis mati.
+
+### Testing
+- **238/238 unit test pass** (5 baru: news bukti tipis bergerak lebih kecil & bukti
+  nol = netral; FVG segar dilaporkan, FVG terisi diabaikan, FVG bearish segar).
+  Build bersih.
+
+### Sisa yang DILAPORKAN tapi belum dikerjakan (butuh keputusan desain owner)
+`onchain` (median 34), `sentiment` (F&G 28), `news` — indikator LEVEL yang dipakai
+sebagai vote ARAH, bertahan di bawah 50 dan menarik D turun ~3 poin permanen.
+Perbaikannya = centering pada baseline masing-masing seri (butuh state rolling),
+bukan tweak ambang. Belum dikerjakan.

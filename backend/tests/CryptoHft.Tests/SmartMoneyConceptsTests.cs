@@ -194,4 +194,43 @@ public sealed class SmartMoneyConceptsTests
         Assert.True(signals.Score > 50m, $"expected bullish score, got {signals.Score}");
         Assert.Contains("bullish BOS", signals.Summary);
     }
+
+    // ---- Fair value gap: only UNFILLED imbalances count -----------------------------------
+
+    // A gap is price skipping a band; once price trades back through it the imbalance has
+    // been served. Order blocks already tracked this; fair value gaps did not.
+    [Fact]
+    public void Fvg_FreshBullishGap_IsReported()
+    {
+        // Sharp up displacement leaves a gap, and price keeps rising away from it.
+        var candles = Flat(10, 100m);
+        candles.AddRange(FromCloses(100, 101, 112, 114, 116, 118));
+
+        var (bull, _) = SmartMoneyConcepts.DetectFairValueGap(candles, atr: 2m);
+
+        Assert.True(bull);
+    }
+
+    [Fact]
+    public void Fvg_GapPriceTradedBackInto_IsIgnored()
+    {
+        // Same displacement, but price returns into the gap band afterwards.
+        var candles = Flat(10, 100m);
+        candles.AddRange(FromCloses(100, 101, 112, 104, 103, 102));
+
+        var (bull, _) = SmartMoneyConcepts.DetectFairValueGap(candles, atr: 2m);
+
+        Assert.False(bull);
+    }
+
+    [Fact]
+    public void Fvg_FreshBearishGap_IsReported()
+    {
+        var candles = Flat(10, 120m);
+        candles.AddRange(FromCloses(120, 119, 108, 106, 104, 102));
+
+        var (_, bear) = SmartMoneyConcepts.DetectFairValueGap(candles, atr: 2m);
+
+        Assert.True(bear);
+    }
 }

@@ -135,7 +135,7 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         var components = new List<ScoreComponent>
         {
             ScoreTrendConsensus(votes),
-            ScoreMomentumConsensus(votes, candles),
+            ScoreMomentumConsensus(votes, candles, primary.Interval),
             ScoreVolume(candles),
             ScorePriceAction(votes, candles, regime),
             ScoreSmartMoney(smcTf.Candles),
@@ -521,13 +521,18 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         => new("Trend", Consensus(votes, v => v.Trend), 0,
             $"MTF trend votes [{VoteDetail(votes, v => v.Trend)}]");
 
-    private static ScoreComponent ScoreMomentumConsensus(List<TimeframeVote> votes, IReadOnlyList<Candle> primaryCandles)
+    // primaryInterval is passed in rather than hardcoded: the RSI/MACD shown here are read
+    // from whichever timeframe the active style anchors on, and labelling those "1h" while
+    // scalper mode computed them on 15m made the explanation say the wrong thing — to the
+    // dashboard and to the LLM payload alike.
+    private static ScoreComponent ScoreMomentumConsensus(
+        List<TimeframeVote> votes, IReadOnlyList<Candle> primaryCandles, string primaryInterval)
     {
         var closes = primaryCandles.Select(c => c.Close).ToList();
         var rsi = TechnicalIndicators.Rsi(closes)[^1];
         var (macd, signal, _) = TechnicalIndicators.Macd(closes);
         return new ScoreComponent("Momentum", Consensus(votes, v => v.Momentum), 0,
-            $"MTF momentum votes [{VoteDetail(votes, v => v.Momentum)}], 1h RSI {rsi:F0}, MACD {(macd[^1] > signal[^1] ? "bullish" : "bearish")}");
+            $"MTF momentum votes [{VoteDetail(votes, v => v.Momentum)}], {primaryInterval} RSI {rsi:F0}, MACD {(macd[^1] > signal[^1] ? "bullish" : "bearish")}");
     }
 
     // EMA-stack alignment gives the base score; EMA20/50 separation and EMA20 slope grade
@@ -773,8 +778,22 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         return 0m;
     }
 
+    // The provider already grades its own evidence (headline volume + how much those
+    // headlines agree) and hands it over as NewsConfidence — but the score was being taken
+    // at face value, so a reading built on a single clickbait title moved the vote exactly
+    // as hard as one built on six agreeing reports. The conviction is scaled by that
+    // confidence: thin evidence now says something small instead of something loud.
     private static ScoreComponent ScoreNews(SentimentSnapshot s)
-        => new("News", Math.Clamp(s.NewsScore, 0, 100), 0, $"News sentiment: {s.SentimentLabel}");
+    {
+        var raw = Math.Clamp(s.NewsScore, 0, 100);
+        var evidence = Math.Clamp(s.NewsConfidence, 0m, 100m) / 100m;
+        var score = 50m + (raw - 50m) * evidence;
+        var note = evidence >= 0.999m
+            ? ""
+            : $" — raw {raw:F0} scaled to {evidence:P0} evidence confidence";
+        return new ScoreComponent("News", Math.Clamp(score, 0, 100), 0,
+            $"News sentiment: {s.SentimentLabel}{note}");
+    }
 
     // Crowd sentiment is momentum in the mid-band but CONTRARIAN at the extremes: euphoric
     // greed marks late positioning, panic fear marks capitulation. The provider blend is

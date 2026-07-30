@@ -50,9 +50,8 @@ public sealed class BinanceAutoTradeRiskGate(
             return new AutoTradeRiskVerdict(true, status.Reason);
 
         // Guard off: the owner has explicitly disabled the account-level guard, so the
-        // exposure clamp is skipped along with the loss pauses. The equity fail-safe
-        // above still applies — trading blind on unknown equity is a data problem,
-        // not a risk-appetite choice.
+        // exposure clamp is skipped along with the loss pauses. Checked before the equity
+        // deref below, which is null whenever the account read failed.
         if (!settings.AccountRiskGuardEnabled)
             return new AutoTradeRiskVerdict(true, "account risk guard disabled — exposure clamp skipped");
 
@@ -101,6 +100,16 @@ public sealed class BinanceAutoTradeRiskGate(
                 checkedAt);
         }
 
+        // Guard off means the owner accepts running without account-level brakes, so
+        // nothing below may block. The reads still happen (the dashboard keeps showing
+        // what the guard WOULD do) but they are best-effort: a failed equity or income
+        // call must not resurrect a pause the owner switched off.
+        if (!settings.AccountRiskGuardEnabled)
+        {
+            var (bestEffortEquity, bestEffortPnl) = await TryReadAccountAsync(settings, checkedAt, cancellationToken);
+            return ResolveAccountStatus(settings, bestEffortEquity, bestEffortPnl, checkedAt);
+        }
+
         decimal equity;
         try
         {
@@ -146,6 +155,38 @@ public sealed class BinanceAutoTradeRiskGate(
         return ResolveAccountStatus(settings, equity, todaysPnl, checkedAt);
     }
 
+    // Reads equity and today's realized PnL without ever throwing. Used only when the guard
+    // is disabled: the numbers are for display, so a dead endpoint costs a stat, not a trade.
+    private async Task<(decimal? Equity, IReadOnlyList<RealizedPnlEntry> TodaysPnl)> TryReadAccountAsync(
+        RuntimeTradingSettings settings,
+        DateTimeOffset checkedAt,
+        CancellationToken cancellationToken)
+    {
+        decimal? equity = null;
+        IReadOnlyList<RealizedPnlEntry> todaysPnl = Array.Empty<RealizedPnlEntry>();
+
+        try
+        {
+            var wallets = await accountClient.GetWalletBalancesAsync(cancellationToken);
+            equity = wallets.UsdEquity();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogDebug(ex, "risk gate (guard off): equity fetch failed — reporting without it");
+        }
+
+        try
+        {
+            todaysPnl = await FetchTodaysRealizedPnlAsync(settings, checkedAt, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogDebug(ex, "risk gate (guard off): realized PnL fetch failed — reporting without it");
+        }
+
+        return (equity, todaysPnl);
+    }
+
     // Sum of today's realized PnL, expressed as a positive loss figure (0 when net positive).
     internal static decimal DailyLoss(IReadOnlyList<RealizedPnlEntry> entries)
         => Math.Max(0m, -entries.Sum(e => e.Pnl));
@@ -186,14 +227,18 @@ public sealed class BinanceAutoTradeRiskGate(
         return entries;
     }
 
+    // equity is nullable because the guard-off path reads it best-effort: when the account
+    // call fails there is no figure to show, and reporting a fabricated 0 would read as a
+    // wiped account on the dashboard. Every blocking rule below needs a real equity, so a
+    // null one can only occur on the guard-off path, which returns before reaching them.
     internal static AutoTradeRiskStatus ResolveAccountStatus(
         RuntimeTradingSettings settings,
-        decimal equity,
+        decimal? equity,
         IReadOnlyList<RealizedPnlEntry> todaysPnl,
         DateTimeOffset checkedAt)
     {
         var dailyLoss = DailyLoss(todaysPnl);
-        var dailyLossLimit = equity * settings.MaxDailyLossPercent;
+        var dailyLossLimit = (equity ?? 0m) * settings.MaxDailyLossPercent;
         var consecutiveLosses = CountTrailingLosses(todaysPnl, SameTradeGap);
 
         // Owner switch: guard off = the loss pauses never block, but the stats are still

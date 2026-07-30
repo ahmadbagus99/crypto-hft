@@ -877,8 +877,23 @@ di Risk Configuration). **TRUE** = perilaku lama: daily-loss pause, consecutive-
 loss pause (3x), dan exposure clamp aktif. **FALSE** = semua rem akun dilepas —
 status gate `guard-off`, statistik tetap dihitung & tampil (dashboard menunjukkan
 apa yang SEHARUSNYA diblok), executor risk block & exposure clamp dilewati.
-Fail-safe equity-unavailable TETAP memblok (itu masalah data, bukan risk appetite).
 ⚠️ Didokumentasikan di UI: nonaktif = satu hari buruk bisa menghabiskan saldo.
+
+**Guard mati = TIDAK PERNAH memblok entry baru** (revisi permintaan owner). Versi
+pertama masih bisa memblok lewat pintu belakang: `GetStatusAsync` tetap menembak
+equity + income Binance lebih dulu, dan kalau salah satu gagal statusnya jadi
+`unavailable` → trading dipause meski guard dimatikan. Sekarang saat guard OFF,
+kedua pembacaan dilakukan **best-effort** (`TryReadAccountAsync`, tidak pernah
+throw); gagal = statistik kosong, bukan pause. `ResolveAccountStatus` menerima
+`decimal? equity` supaya equity yang tak terbaca dilaporkan **null**, bukan 0
+palsu yang terbaca seperti akun ludes di dashboard.
+
+> Sisa penghalang yang TETAP berlaku saat guard mati (sengaja, bukan bagian dari
+> guard akun): cooldown pasca-close, gate confidence, dan fail-safe
+> `AiDecisionService` "equity unavailable — sizing blocked" pada mode Risk Engine
+> (tanpa equity, qty risk-based memang tak terhitung). Di mode Margin × Leverage
+> ukuran posisi tidak bergantung equity — kalau fail-safe ini terbukti menghalangi
+> di produksi, itu kandidat perbaikan terpisah.
 
 ### c) Fix sizing Margin × Leverage (bug "set 6 kebukanya 3")
 Bukti log production 30 Jul: `qty 0.007084 -> 0.000370 ... Claude defensive cap 20%`.

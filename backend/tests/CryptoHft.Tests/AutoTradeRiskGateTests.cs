@@ -186,6 +186,23 @@ public sealed class AutoTradeRiskGateTests
         Assert.Equal(1.25m, status.DailyLoss);
     }
 
+    // With the guard off the account reads are best-effort, so equity can be absent.
+    // That must still not block: an unreadable balance is exactly the situation the
+    // owner disabled the brakes for, and it is reported as null rather than a fake 0.
+    [Fact]
+    public void ResolveAccountStatus_GuardOff_AllowsTradingWhenEquityIsUnknown()
+    {
+        var status = BinanceAutoTradeRiskGate.ResolveAccountStatus(
+            Settings(accountRiskGuardEnabled: false),
+            equity: null,
+            todaysPnl: Array.Empty<RealizedPnlEntry>(),
+            checkedAt: T0);
+
+        Assert.True(status.TradingAllowed);
+        Assert.Equal("guard-off", status.Status);
+        Assert.Null(status.Equity);
+    }
+
     [Fact]
     public void ResolveAccountStatus_GuardOff_AllowsTradingPastConsecutiveLosses()
     {

@@ -20,6 +20,10 @@ public sealed class BinanceDerivativesProvider(
     // without letting an old flush linger into unrelated ticks.
     private static readonly TimeSpan LiquidationWindow = TimeSpan.FromMinutes(5);
 
+    // Order-book levels aggregated for the imbalance read. Must stay one of Binance's
+    // accepted limits (5/10/20/50/100/500/1000).
+    private const int DepthLevels = 500;
+
     private readonly BinanceOptions _options = options.Value;
 
     public async Task<DerivativesSnapshot> GetSnapshotAsync(string symbol, CancellationToken cancellationToken)
@@ -88,13 +92,23 @@ public sealed class BinanceDerivativesProvider(
 
         try
         {
-            var depth = await client.GetStringAsync($"{baseUrl}/fapi/v1/depth?symbol={symbol}&limit=20", cancellationToken);
+            // Depth is read 500 levels deep, not 20. The top of the BTCUSDT book spans a few
+            // dollars and is dominated by quotes that appear and vanish within seconds: sampled
+            // live, the 20-level imbalance swung between scores of 20 and 89 over 20 seconds,
+            // while the 500-level read of the same book stayed inside a 9-point band. The
+            // shallow number is a microstructure tick, and feeding it to a category worth 17%
+            // of a directional vote — for a position held hours — injected more noise than
+            // signal. Deeper levels measure resting liquidity, which is what "which side is
+            // stacked" is supposed to mean. Cost: request weight 2 -> 10, negligible at one
+            // call per 30s.
+            var depth = await client.GetStringAsync($"{baseUrl}/fapi/v1/depth?symbol={symbol}&limit={DepthLevels}", cancellationToken);
             using var ddoc = JsonDocument.Parse(depth);
             decimal bidVol = 0, askVol = 0;
             foreach (var b in ddoc.RootElement.GetProperty("bids").EnumerateArray()) bidVol += Parse(b[1]);
             foreach (var a in ddoc.RootElement.GetProperty("asks").EnumerateArray()) askVol += Parse(a[1]);
             var total = bidVol + askVol;
             imbalance = total == 0 ? 0 : (bidVol - askVol) / total;
+            // Spread still comes from the best bid/ask — that one IS a top-of-book quantity.
             var bestBid = Parse(ddoc.RootElement.GetProperty("bids")[0][0]);
             var bestAsk = Parse(ddoc.RootElement.GetProperty("asks")[0][0]);
             spread = bestAsk - bestBid;

@@ -356,7 +356,10 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         var dampener = 1m;
         if (atrPercent > 5m) dampener *= 0.75m;
         else if (atrPercent > 3m) dampener *= 0.85m;
-        else if (atrPercent < 0.4m) dampener *= 0.92m;
+        // 0.4% is exactly where MarketRegimeDetector starts calling the tape LowVolatility,
+        // so the boundary is inclusive here too — otherwise a tape the engine labels dead
+        // gets no haircut at all at the boundary itself.
+        else if (atrPercent <= 0.4m) dampener *= 0.92m;
         if (spreadFraction > 0.0005m) dampener *= 0.9m;
         return Math.Max(dampener, 0.65m);
     }

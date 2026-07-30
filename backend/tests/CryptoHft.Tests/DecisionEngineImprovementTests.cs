@@ -26,6 +26,12 @@ public sealed class DecisionEngineImprovementTests
     public void ConditionDampener_NeverBelowFloor()
         => Assert.True(AdvancedDecisionEngine.ConditionDampener(99m, 1m) >= 0.65m);
 
+    // 0.4% is the exact boundary at which the regime detector starts calling the tape
+    // LowVolatility, so the dampener must already be engaged there rather than one tick later.
+    [Fact]
+    public void ConditionDampener_DeadTapeBoundaryIsInclusive()
+        => Assert.Equal(0.92m, AdvancedDecisionEngine.ConditionDampener(0.4m, 0.0001m));
+
     // ---- Liquidation pressure -----------------------------------------------------------
 
     [Fact]

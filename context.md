@@ -971,3 +971,75 @@ tampak RR 1.85 kotor, padahal **1.13 net**.
 ### Testing
 - **218/218 unit test pass** (2 baru: RR net-of-fee di engine, geometri scalper
   menjaga net RR ~2). Build solution + frontend `tsc` bersih.
+
+---
+
+## 22. AKAR MASALAH kolaps pasca 17 Juli: orderbook = noise generator (2026-07-30)
+
+Pertanyaan owner: profit puncak +9.70 pada 17 Jul lalu terus turun, "decision selalu
+salah". Diagnosis berbasis 46 closed position + 36 decision ber-ScoresJson.
+
+### a) Gejala
+| | s/d 17 Jul | setelah 17 Jul |
+|---|---|---|
+| Trade | 19 | 27 |
+| Win rate | **68%** | **30%** |
+| PnL (kotor) | +9.70 | −8.35 |
+| SHORT | 69% win | **21% win, −6.47** |
+| Regime LowVolatility | 4 trade | **13 trade (54%), 31% win** |
+| Confidence | 58–66, avg 62.1 | **19 dari 24 mengendap di 60–62** (26% win, −6.12) |
+
+### b) Kategori mana yang membedakan menang vs kalah?
+Skor diorientasikan ke arah trade (SHORT dibalik), rata-rata winner vs loser:
+
+| kategori | bobot | avg win | avg loss | selisih |
+|---|---|---|---|---|
+| technical | 22% | 53.5 | 55.0 | −1.5 |
+| structure | 17% | 53.1 | 52.8 | +0.3 |
+| **orderbook** | **17%** | 65.4 | 66.8 | **−1.5** |
+| derivatives | 16% | 50.5 | 51.6 | −1.1 |
+| macro | 10% | 46.9 | 55.0 | −8.1 |
+| news | 4% | 46.6 | 52.5 | −5.9 |
+
+**72% bobot (technical+structure+orderbook+derivatives) nol daya pisah.** Distribusi
+skor orderbook juga mencurigakan: menumpuk di ekstrem (100, 98, 0, 6, 3).
+
+### c) AKAR MASALAH — order book dibaca 20 level
+`BinanceDerivativesProvider` menarik `/fapi/v1/depth?limit=20`. Top-20 book BTCUSDT
+hanya mencakup rentang beberapa dolar dan didominasi quote yang muncul-hilang dalam
+detik. **Pengukuran live (sampel 4 detik):**
+
+| | rentang skor 20 detik |
+|---|---|
+| `limit=20` (lama) | 75.5 → 19.8 → 88.9 → 21.0 → 78.4 → 83.5 = **rentang 69 poin** |
+| `limit=500` (baru) | 52.5 → 44.6 → 50.0 → 43.4 → 46.5 → 49.2 = **rentang 9 poin** |
+
+Dampak ke skor directional D: `0.17 × 69 ≈ ±11.7 poin` murni dari noise buku —
+padahal entry diputuskan pada D ≈ 60–62 vs threshold 60. **Noise buku itulah yang
+menentukan trade dibuka atau tidak, bahkan arahnya.** Setelah fix: `0.17 × 9 ≈ 1.5`.
+
+**Cerita kausalnya utuh:** sebelum 17 Jul market trending → sinyal riil jauh lebih
+besar dari noise → 68% win. Setelah 17 Jul market sepi (LowVol 54% dari trade) →
+sinyal riil ≈ 0 → **noise buku yang memutuskan** → 30% win. Ini menjelaskan kenapa
+"decision tiba-tiba selalu salah" tanpa ada yang diubah: yang berubah adalah rasio
+sinyal-terhadap-noise, dan noise-nya selalu ada sejak awal.
+
+### d) Fix
+1. **`DepthLevels = 500`** (dari 20). Level dalam mengukur likuiditas yang benar-benar
+   diam — itu makna "sisi mana yang menumpuk". Biaya: request weight 2 → 10, tak
+   berarti pada 1 call/30 detik. Spread tetap dari best bid/ask (itu memang
+   besaran top-of-book).
+2. **Multiplier ×40 TIDAK dinaikkan** meski rentang mengecil. Belum ada bukti
+   imbalance buku-dalam itu prediktif; memperbesarnya = mengarang keyakinan.
+   Biarkan adaptive learning yang menemukan bobotnya dari hasil nyata.
+3. Batas dead-tape dampener disamakan `< 0.4` → **`<= 0.4`** agar konsisten dengan
+   `MarketRegimeDetector` (sebelumnya di titik 0.4 persis tak ada haircut sama sekali).
+
+> Sengaja TIDAK dilakukan: menambah dampener khusus LowVolatility. Sampelnya masih
+> 17 trade, dan memperbaiki SUMBER noise lebih benar daripada menumpuk kompensasi
+> di atas gejalanya. Kalau LowVol tetap buruk setelah fix ini, baru dampeni — dengan data.
+
+### Testing
+- **220/220 unit test pass** (1 baru: batas dead-tape inklusif). Build bersih.
+- Perubahan `DepthLevels` adalah konstanta pada adapter HTTP — diverifikasi lewat
+  pengukuran live di atas, bukan unit test.

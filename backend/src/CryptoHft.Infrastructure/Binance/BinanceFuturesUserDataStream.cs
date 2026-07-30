@@ -70,7 +70,9 @@ public sealed class BinanceFuturesUserDataStream(
 
         using var socket = new ClientWebSocket();
         await socket.ConnectAsync(new Uri(url), cancellationToken);
-        logger.LogInformation("Connected Binance Futures user data stream {Url}", url);
+        // The listenKey is part of the URL and is a bearer token for this account's private
+        // stream until it expires — log the endpoint, never the key itself.
+        logger.LogInformation("Connected Binance Futures user data stream {Endpoint}", streamBaseUrl);
 
         var buffer = new byte[64 * 1024];
         while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)

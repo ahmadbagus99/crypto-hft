@@ -1328,3 +1328,39 @@ orderbook 15.5%, macro 13.3% — sudah bergeser dari basisnya.
 
 ### Testing
 - **238/238 unit test pass**, build solution 0 warning 0 error.
+
+---
+
+## 28. Verifikasi pasca-deploy ad112e5 + redaksi listenKey (2026-07-30)
+
+### a) Semua fix terkonfirmasi hidup di produksi
+- `Connected Binance Futures user data stream` — WS real-time akhirnya jalan (Bagian 27).
+- `Momentum ... 15m RSI 58` — label timeframe benar (dulu hardcode "1h").
+- `News 42.6 — raw 38 scaled to 60 % evidence confidence` — bobot bukti dipakai.
+- `SmartMoney — bullish FVG` saja; FVG basi yang saling meniadakan sudah hilang.
+- `Derivatives 60.4`, `Volume 38.8 (74 % conviction)`, `Book imbalance -0.12`.
+- Nol WRN/ERR dalam 15 menit.
+
+### b) CACAT KECIL: listenKey ditulis polos ke log
+`logger.LogInformation("... {Url}", url)` mencetak URL LENGKAP termasuk listenKey —
+token bearer yang memberi akses baca stream privat akun sampai kedaluwarsa.
+**Fix:** hanya endpoint yang dicatat, key tidak pernah.
+
+### c) FALSE ALARM (dicatat agar tidak terulang): "AiDecisionLogs berhenti"
+`AiDecisionLogs` berhenti bertambah pukul 19:09:48 sementara decision store terus
+segar (95.7 → 99.1). Sempat disimpulkan penulisan DB gagal diam-diam.
+**Salah.** `AdaptiveWeightService.LogDecisionAsync` baris pertama:
+`if (decision.Action == DecisionAction.NoTrade) return;` — dan `NoTrade = 4`,
+persis action yang sedang dihasilkan.
+
+Yang sebenarnya terjadi justru **bukti fix bias bekerja**: sebelum perbaikan, D
+konsisten 41.5–45.4 → WeakSell → dicatat. Setelah fix derivatives (+1.56) dan volume
+(+1.50), D naik ke **49.9** — masuk zona netral 45–55 → NoTrade → sengaja tidak
+dicatat. Engine berhenti condong short di pasar yang memang datar.
+
+> **Aturan diagnosa:** `AiDecisionLogs` sepi punya DUA sebab normal — posisi terbuka
+> (analisa di-pause, Bagian 2) ATAU pasar netral (NoTrade tidak dicatat by design).
+> Cek `action` dan `confidenceBuy` sebelum menyimpulkan kegagalan penulisan.
+
+### Testing
+- **238/238 unit test pass**, build bersih.

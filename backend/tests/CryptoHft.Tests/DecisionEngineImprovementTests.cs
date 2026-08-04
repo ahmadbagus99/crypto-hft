@@ -292,6 +292,59 @@ public sealed class DecisionEngineImprovementTests
         Assert.Contains(decision.Reasons, r => r.Contains("style intraday: primary TF 1h"));
     }
 
+    // ---- Spike dampener: the gap between the last close and the price actually paid -------------
+
+    [Fact]
+    public void EntryExtension_MeasuresLivePriceAgainstTheLastClosedCandle()
+    {
+        var candles = Ramp(30, 100m, 1m);           // last close = 129
+        var atr = 10m;
+
+        Assert.Equal(1.5m, AdvancedDecisionEngine.EntryExtensionInAtr(144m, candles, atr));
+        Assert.Equal(-1.5m, AdvancedDecisionEngine.EntryExtensionInAtr(114m, candles, atr));
+        Assert.Equal(0m, AdvancedDecisionEngine.EntryExtensionInAtr(129m, candles, atr));
+    }
+
+    [Fact]
+    public void EntryExtension_IsSafeWithoutData()
+    {
+        Assert.Equal(0m, AdvancedDecisionEngine.EntryExtensionInAtr(100m, Array.Empty<Candle>(), 10m));
+        Assert.Equal(0m, AdvancedDecisionEngine.EntryExtensionInAtr(100m, Ramp(5, 100m, 1m), 0m));
+    }
+
+    [Theory]
+    [InlineData(0.5, 1.0)]     // inside the candle's normal travel: untouched
+    [InlineData(0.75, 1.0)]    // exactly at the threshold: still untouched
+    [InlineData(1.375, 0.75)]  // halfway to full: halfway to the floor
+    [InlineData(2.0, 0.5)]     // full extension: floor
+    [InlineData(9.0, 0.5)]     // clamped, no runaway
+    public void SpikeDampener_FadesALongBoughtIntoAPop(double extension, decimal expected)
+        => Assert.Equal(expected, AdvancedDecisionEngine.SpikeDampener(65m, (decimal)extension));
+
+    // Buying into a dip (or selling into a pop) is a better fill, not a worse one.
+    [Fact]
+    public void SpikeDampener_LeavesCounterExtensionAlone()
+    {
+        Assert.Equal(1m, AdvancedDecisionEngine.SpikeDampener(65m, -3m));  // long, price dropped
+        Assert.Equal(1m, AdvancedDecisionEngine.SpikeDampener(35m, 3m));   // short, price popped
+        Assert.Equal(1m, AdvancedDecisionEngine.SpikeDampener(50m, 3m));   // no side to chase
+    }
+
+    // The live trade that motivated this: scalper on 15m, ATR 141, last closed candle 63,665,
+    // filled at 63,866. Conviction 58.5 cleared a threshold of 58 and lost; with the gap
+    // measured it no longer clears.
+    [Fact]
+    public void SpikeDampener_WouldHaveHeldBackTheChasedFill()
+    {
+        var extension = AdvancedDecisionEngine.EntryExtensionInAtr(
+            63_866m, new[] { new Candle(DateTimeOffset.UtcNow, 63_600m, 63_700m, 63_600m, 63_665m, 100m) }, 141m);
+
+        var damped = 50m + (58.5m - 50m) * AdvancedDecisionEngine.SpikeDampener(58.5m, extension);
+
+        Assert.InRange(extension, 1.4m, 1.5m);
+        Assert.True(damped < 58m, $"conviction {damped:F1} should no longer clear a threshold of 58");
+    }
+
     // ---- News speaks in proportion to its evidence ----------------------------------------------
 
     private static SentimentSnapshot News(decimal score, decimal confidence)

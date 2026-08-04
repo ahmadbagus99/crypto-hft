@@ -1364,3 +1364,60 @@ dicatat. Engine berhenti condong short di pasar yang memang datar.
 
 ### Testing
 - **238/238 unit test pass**, build bersih.
+
+---
+
+## 29. Titik buta intra-candle: skor dari candle tertutup, eksekusi di harga live (2026-08-04)
+
+Trade 4 Agu 02:38 (LONG, conviction 58.5, rugi) memunculkan cacat struktural yang
+lebih dalam daripada "chasing biasa".
+
+### Akar masalah
+`BinanceMultiTimeframeProvider` sengaja **membuang candle yang masih terbentuk**
+(agar tidak ada look-ahead). Jadi SELURUH skor dihitung dari candle tertutup. Tetapi
+order diisi pada `input.LastPrice` — harga live. Peredam anti-chasing yang sudah ada
+juga berakhir di `candles[^1].Close`, **bukan** di harga entry:
+
+```
+RecentMoveInAtr: (candles[^1].Close − candles[^(n+1)].Close) / atr
+```
+
+Akibatnya lonjakan **di dalam candle berjalan tidak terlihat oleh apa pun**.
+
+Bukti dari trade tersebut (scalper, TF 15m, ATR ~141):
+| ukuran | nilai | terdeteksi? |
+|---|---|---|
+| gerak bersih 6 candle (90 mnt) | +0.59 ATR | di bawah ambang 2.5 → chase TIDAK aktif |
+| candle 02:30 (masih terbentuk) | open→high **+2.09 ATR**, volume 2.4× | **tidak terlihat** |
+| **close terakhir (63.665) → entry (63.866)** | **+1.43 ATR** | **tidak terlihat** |
+
+Entry mendarat di 70% rentang candle lonjakan, lalu langsung mean-revert.
+
+### Fix: SpikeDampener
+`EntryExtensionInAtr(lastPrice, candles, atr) = (lastPrice − candles[^1].Close) / atr`
+lalu diredam seperti ChasingDampener, hanya searah sinyal:
+
+| konstanta | nilai | alasan |
+|---|---|---|
+| `SpikeStartAtr` | 0.75 | di atas ini harga live sudah terlepas dari data yang menghitung skornya |
+| `SpikeFullAtr` | 2.0 | satu candle penuh terlampaui |
+| `SpikeFloor` | 0.5 | lebih lunak dari ChaseFloor (0.4): bukti hanya 1 candle, bukan 6 |
+
+Extension melawan sinyal TIDAK diredam — beli saat harga turun (atau jual saat naik)
+justru fill yang lebih baik.
+
+Verifikasi pada trade nyata: extension 1.43 ATR → peredam 73% → conviction
+**58.5 → 56.2**, di bawah threshold 58 → **entry tidak terjadi**. Pada pasar tenang
+(extension 0.3 ATR) peredam 100% — conviction tidak tersentuh sama sekali.
+
+### Berlaku di KEDUA mode (bukan scalper saja)
+Cacatnya universal — Intraday pun mengeksekusi di harga live sementara skornya dari
+candle 1 jam tertutup. Ukurannya sendiri sudah skala-sadar karena dinyatakan dalam
+ATR timeframe primer, jadi tidak perlu dipisah per style. Dampaknya memang paling
+terasa di Scalper: geometrinya rapat (SL 1.5×ATR), sehingga entry di puncak lonjakan
+langsung berada dekat stop.
+
+### Testing
+- **247/247 unit test pass** (9 baru: pengukuran extension & aman tanpa data, kurva
+  peredam 5 titik, extension berlawanan tidak diredam, dan regresi memakai angka
+  trade nyata 02:38). Build bersih.

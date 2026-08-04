@@ -211,6 +211,19 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         var chase = ChasingDampener(directional, recentMoveAtr);
         directional = 50m + (directional - 50m) * chase;
 
+        // Spike dampener: every score above was computed on CLOSED candles, but the order
+        // fills at the live price. When that price has already run past the last close in
+        // the signal's own direction, the scores describe a market that no longer exists
+        // at the price being paid — the engine would be buying the move it just measured.
+        // The 6-candle chase dampener cannot see this: it ends at candles[^1].Close, so a
+        // burst inside the still-forming candle is invisible to it. Live example that
+        // motivated this (2026-08-04 02:38, scalper/15m): last closed candle 63,665, entry
+        // 63,866 — 1.4 ATR of unmeasured extension, filled near the high of a candle that
+        // had run 2.1 ATR on double volume, and it mean-reverted immediately.
+        var entryExtensionAtr = EntryExtensionInAtr(input.LastPrice, candles, atr);
+        var spike = SpikeDampener(directional, entryExtensionAtr);
+        directional = 50m + (directional - 50m) * spike;
+
         // Symmetric buy/sell/hold confidences derived from the directional score.
         var confidenceBuy = directional;
         var confidenceSell = 100m - directional;
@@ -323,6 +336,10 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         if (input.Derivatives.BidAskSpread > entry * 0.0005m) cautionReasons.Add("Spread too wide / thin liquidity");
         if (dampener < 1m) cautionReasons.Add($"Trading conditions degraded — conviction dampened to {dampener:P0} (ATR {atrPct:F2}%, spread {spreadFraction:P3})");
         if (chase < 1m) cautionReasons.Add($"Late entry — price already moved {Math.Abs(recentMoveAtr):F1}x ATR with the signal over the last {ChaseLookbackCandles} candles; conviction dampened to {chase:P0}");
+        if (spike < 1m) cautionReasons.Add(
+            $"Chasing a spike — live price sits {Math.Abs(entryExtensionAtr):F1}x ATR beyond the last closed candle " +
+            $"({candles[^1].Close:F0} -> {input.LastPrice:F0}); the scores were computed before this move, " +
+            $"conviction dampened to {spike:P0}");
         if (input.ActiveEventWindow is string eventLabel)
             cautionReasons.Add(eventLabel);
         // Entering straight into a tested wall leaves little room before supply/demand
@@ -416,6 +433,39 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
     internal const decimal ChaseStartAtr = 2.5m;
     internal const decimal ChaseFullAtr = 5.0m;
     internal const decimal ChaseFloor = 0.4m;
+
+    // Spike thresholds, deliberately much tighter than the chase ones: this measures a gap
+    // that opened inside a SINGLE forming candle, not a multi-candle run. Beyond ~0.75 ATR
+    // the live price is far enough from the last close that the factor scores no longer
+    // describe the price being paid. The floor is gentler than the chase floor because the
+    // evidence is thinner — one candle, not six — and it should shade conviction, not erase it.
+    internal const decimal SpikeStartAtr = 0.75m;
+    internal const decimal SpikeFullAtr = 2.0m;
+    internal const decimal SpikeFloor = 0.5m;
+
+    // Signed distance from the last CLOSED candle to the live price, in ATR multiples.
+    // This is the blind spot every other measure shares: the engine reasons about closed
+    // candles and then transacts at a price none of them has seen.
+    internal static decimal EntryExtensionInAtr(decimal lastPrice, IReadOnlyList<Candle> candles, decimal atr)
+    {
+        if (atr <= 0 || candles.Count == 0 || lastPrice <= 0) return 0m;
+        return (lastPrice - candles[^1].Close) / atr;
+    }
+
+    // Mirror of ChasingDampener for the intra-candle gap. Only an extension pointing the
+    // SAME way as the signal is faded — buying into a drop, or selling into a pop, is
+    // getting a better price, not a worse one.
+    internal static decimal SpikeDampener(decimal directional, decimal entryExtensionAtr)
+    {
+        var aligned = (directional > 50m && entryExtensionAtr > 0m)
+                      || (directional < 50m && entryExtensionAtr < 0m);
+        if (!aligned) return 1m;
+
+        var extension = Math.Abs(entryExtensionAtr);
+        if (extension <= SpikeStartAtr) return 1m;
+        var t = Math.Min((extension - SpikeStartAtr) / (SpikeFullAtr - SpikeStartAtr), 1m);
+        return 1m - (1m - SpikeFloor) * t;
+    }
 
     // How far price travelled over the chase lookback, in ATR multiples (signed).
     internal static decimal RecentMoveInAtr(IReadOnlyList<Candle> candles, decimal atr)

@@ -1083,7 +1083,7 @@ function DashboardPage() {
         {/* Chart and the open position each get their own row: both are things you
             stare at while a trade is live, and neither reads well squeezed into a
             quarter of the width. Their companions sit beside them. */}
-        <section className="grid items-start gap-4 xl:grid-cols-[2.2fr_1fr]">
+        <section className="grid gap-4 xl:grid-cols-[1.4fr_0.8fr]">
           <Panel title="Realtime Chart">
             <RealtimeChartPanel
               candles={klines}
@@ -1098,7 +1098,7 @@ function DashboardPage() {
           </Panel>
         </section>
 
-        <section className="grid items-start gap-4 xl:grid-cols-[2.2fr_1fr]">
+        <section className="grid gap-4 xl:grid-cols-[1.4fr_0.8fr]">
           <Panel title="Open Position">
             <OpenPositions positions={displayedPositions} journal={journal} />
           </Panel>

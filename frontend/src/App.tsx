@@ -1477,6 +1477,15 @@ function LevelTag({ color, label, value }: { color: string; label: string; value
 // Price levels of the open position, drawn on the chart. Null when flat.
 type ChartLevels = { entry: number | null; stopLoss: number | null; takeProfit: number | null };
 
+// Blank space kept to the right of the newest candle. Shared between the chart options
+// and the follow check below, because at rest scrollPosition() equals exactly this —
+// comparing against 0 instead would let a pan of ten bars still count as "at the edge".
+const ChartRightOffset = 8;
+
+// Slack around that resting position. Two bars absorbs the jitter a newly closed candle
+// introduces, while a deliberate drag of three or more bars is respected as intent.
+const LiveEdgeToleranceBars = 2;
+
 function BinanceStyleChart({
   candles,
   interval,
@@ -1517,7 +1526,7 @@ function BinanceStyleChart({
         borderColor: "#1e293b",
         timeVisible: interval !== "1d",
         secondsVisible: false,
-        rightOffset: 8,
+        rightOffset: ChartRightOffset,
         barSpacing: 8
       },
       handleScale: true,
@@ -1553,9 +1562,29 @@ function BinanceStyleChart({
   useEffect(() => {
     if (!candleSeriesRef.current || !chartRef.current) return;
     const data = toChartCandles(candles);
+    if (data.length === 0) {
+      candleSeriesRef.current.setData(data);
+      return;
+    }
+
+    // Follow the live edge only while the viewer is already there. This used to call
+    // scrollToRealTime() on every tick, which meant panning back to read history was
+    // undone within seconds — the chart yanked itself to the latest candle as soon as
+    // the next one arrived. Now a viewer who has scrolled away keeps their exact view,
+    // and one sitting at the edge still gets the live follow they expect.
+    const timeScale = chartRef.current.timeScale();
+    const scrollPosition = timeScale.scrollPosition() ?? 0;
+    const followingLiveEdge = scrollPosition >= ChartRightOffset - LiveEdgeToleranceBars;
+    const heldRange = followingLiveEdge ? null : timeScale.getVisibleLogicalRange();
+
     candleSeriesRef.current.setData(data);
-    if (data.length > 0) {
-      chartRef.current.timeScale().scrollToRealTime();
+
+    if (followingLiveEdge) {
+      timeScale.scrollToRealTime();
+    } else if (heldRange) {
+      // New bars shift the logical index, so the saved range is reapplied to keep the
+      // viewport pinned to the same candles rather than drifting with each update.
+      timeScale.setVisibleLogicalRange(heldRange);
     }
   }, [candles]);
 

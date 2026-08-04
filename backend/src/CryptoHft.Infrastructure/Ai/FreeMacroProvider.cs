@@ -59,9 +59,28 @@ public sealed class FreeMacroProvider(
         }
     }
 
+    // Contribution budgets and coefficients, calibrated against two years of actual
+    // 5-day moves rather than picked by feel. Measured distributions:
+    //   SPX  median 1.20%  p90 3.43%      NDX  median 1.75%  p90 4.83%
+    //   DXY  median 0.59%  p90 1.49%      Gold median 1.96%  p90 5.02%
+    // The previous coefficients (equity x8, DXY x10) put a p90 reading at 33 and 15
+    // points respectively, so an ordinary risk-on week pushed the raw score past 105
+    // and the clamp flattened it to exactly 100 — the category stopped saying anything
+    // once conditions were merely strong, which is the same saturation defect the order
+    // book had. Each input now carries its own budget, so no single series can pin the
+    // score, and a p90 move lands near (not past) its cap.
+    internal const decimal EquityCoefficient = 4.5m;   // p90 ~4.1% -> ~18 of 22
+    internal const decimal EquityBudget = 22m;
+    internal const decimal DollarCoefficient = 7m;     // p90 1.49% -> ~10 of 12
+    internal const decimal DollarBudget = 12m;
+    internal const decimal GoldCoefficient = 1m;       // p90 5.02% -> ~5 of 6
+    internal const decimal GoldBudget = 6m;
+
+    internal static decimal Contribution(decimal changePercent, decimal coefficient, decimal budget)
+        => Math.Clamp(changePercent * coefficient, -budget, budget);
+
     // Risk-on score: rising equities are bullish for BTC, a rising dollar is bearish,
-    // and rising gold is a mild debasement-hedge tailwind. Scaling constants are
-    // heuristic — a ~2% equity move shifts the score by ~16 points.
+    // and rising gold is a mild debasement-hedge tailwind.
     private MacroSnapshot Score(decimal? sp500, decimal? nasdaq, decimal? dxy, decimal? gold)
     {
         var available = sp500.HasValue || nasdaq.HasValue || dxy.HasValue;
@@ -70,9 +89,9 @@ public sealed class FreeMacroProvider(
 
         var equity = Average(sp500, nasdaq);
         var score = 50m;
-        if (equity.HasValue) score += equity.Value * 8m;
-        if (dxy.HasValue) score -= dxy.Value * 10m;
-        if (gold.HasValue) score += gold.Value * 2m;
+        if (equity.HasValue) score += Contribution(equity.Value, EquityCoefficient, EquityBudget);
+        if (dxy.HasValue) score -= Contribution(dxy.Value, DollarCoefficient, DollarBudget);
+        if (gold.HasValue) score += Contribution(gold.Value, GoldCoefficient, GoldBudget);
         score = Math.Clamp(score, 0m, 100m);
 
         var parts = new List<string>();

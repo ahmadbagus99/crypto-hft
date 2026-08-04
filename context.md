@@ -1421,3 +1421,47 @@ langsung berada dekat stop.
 - **247/247 unit test pass** (9 baru: pengukuran extension & aman tanpa data, kurva
   peredam 5 titik, extension berlawanan tidak diredam, dan regresi memakai angka
   trade nyata 02:38). Build bersih.
+
+---
+
+## 30. Macro mentok 100 — cacat kalibrasi keempat (2026-08-04)
+
+Owner melaporkan skor `macro` selalu 100. Bukan bug: **saturasi**, satu keluarga
+dengan orderbook (Bagian 22), ambang OI (23), dan L/S ratio (24) — koefisien tidak
+pernah dicocokkan ke sebaran nyata inputnya.
+
+Formula lama: `50 + equity%×8 − DXY%×10 + gold%×2`, komentarnya sendiri menyebut
+konstanta itu "heuristic". Pada bacaan live (SPX +3.1%, NDX +5.5%, DXY −1.5%,
+Gold +2.8%) skor mentahnya **105** → di-clamp jadi 100. Begitu kondisi sekadar kuat,
+kategori berhenti menyampaikan informasi.
+
+Sebaran nyata 5-hari, diukur 2 tahun (~500 sesi):
+
+| seri | median | p75 | p90 | p99 |
+|---|---|---|---|---|
+| SPX | 1.20% | 2.19% | 3.43% | 7.18% |
+| NDX | 1.75% | 2.92% | 4.83% | 9.42% |
+| DXY | 0.59% | 0.97% | 1.49% | 2.97% |
+| Gold | 1.96% | 3.29% | 5.02% | 9.72% |
+
+Dengan koefisien lama, gerakan p90 saja menyumbang 33 poin (equity) dan 15 poin
+(DXY) — mentok sebelum ketiganya digabung. Gerakan 3-5% dalam 5 hari itu **biasa**,
+bukan ekstrem.
+
+**Fix:** tiap input diberi **budget sendiri** (`Contribution` = clamp per-seri),
+sehingga tidak ada satu seri pun yang bisa memaku skor:
+
+| input | koefisien | budget | p90 → |
+|---|---|---|---|
+| equity (SPX+NDX)/2 | 4.5 | 22 | ~18 |
+| DXY | 7 | 12 | ~10 |
+| gold | 1 | 6 | ~5 |
+
+Total budget 40 → rentang skor **10–90**; saturasi hanya bila ketiganya mentok
+bersamaan. Bacaan live yang tadi 100 sekarang **82.6** — tetap risk-on kuat, tapi
+masih menyisakan ruang untuk kondisi yang benar-benar ekstrem.
+
+### Testing
+- **252/252 unit test pass** (5 baru: p90 mendekati budget tanpa saturasi, bacaan
+  produksi yang dulu memaku skor kini < 95, input ekstrem terbatas, minggu tenang
+  tetap netral). Build bersih.

@@ -13,7 +13,7 @@ import {
 import type { ChartData, ChartOptions } from "chart.js";
 import { CandlestickSeries, ColorType, createChart } from "lightweight-charts";
 import type { CandlestickData, IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
-import { Activity, Bot, CheckCircle2, Clock3, Radio, Settings, ShieldAlert, ShieldCheck, Wallet } from "lucide-react";
+import { Activity, Bot, CheckCircle2, Clock3, Maximize2, Minimize2, Radio, Settings, ShieldAlert, ShieldCheck, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Line } from "react-chartjs-2";
@@ -917,6 +917,16 @@ function DashboardPage() {
   const displayedPositions = realtimePositions.length ? realtimePositions : positions ?? [];
   const isManualMode = tradingSettings?.autoTradingEnabled !== true;
 
+  // Levels of the live position, lifted here so the chart can draw the same numbers
+  // the position panel reports. Null when flat, which clears the lines.
+  const openPosition = displayedPositions.find((p) => Math.abs(Number(p.positionAmount)) > 0);
+  const chartLevels: ChartLevels | null = openPosition
+    ? {
+        entry: Number(openPosition.entryPrice) || null,
+        ...getActiveProtectiveLevels(openPosition, journal),
+      }
+    : null;
+
   useEffect(() => {
     const connection = createTradingConnection();
     const subscribe = () => connection.invoke("SubscribeSymbol", symbol);
@@ -1070,19 +1080,25 @@ function DashboardPage() {
           </Panel>
         </section>
 
-        <section className="grid items-start gap-4 xl:grid-cols-[1.45fr_0.75fr_0.75fr_0.75fr]">
+        {/* Chart and the open position each get their own row: both are things you
+            stare at while a trade is live, and neither reads well squeezed into a
+            quarter of the width. Their companions sit beside them. */}
+        <section className="grid items-start gap-4 xl:grid-cols-[2.2fr_1fr]">
           <Panel title="Realtime Chart">
             <RealtimeChartPanel
               candles={klines}
               interval={chartInterval}
               onIntervalChange={setChartInterval}
+              levels={chartLevels}
             />
           </Panel>
 
           <Panel title="Position Checks">
             <PositionRevalidationPanel snapshot={positionChecks} />
           </Panel>
+        </section>
 
+        <section className="grid items-start gap-4 xl:grid-cols-[2.2fr_1fr]">
           <Panel title="Open Position">
             <OpenPositions positions={displayedPositions} journal={journal} />
           </Panel>
@@ -1359,44 +1375,117 @@ function formatRiskValue(value: number | null, suffix: string) {
 function RealtimeChartPanel({
   candles,
   interval,
-  onIntervalChange
+  onIntervalChange,
+  levels,
 }: {
   candles: KlineTick[];
   interval: ChartInterval;
   onIntervalChange: (interval: ChartInterval) => void;
+  levels?: ChartLevels | null;
 }) {
-  return (
-    <div className="grid gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="text-sm font-semibold text-slate-100">BTCUSDT Perp</div>
-          <div className="text-xs text-slate-500">{interval}</div>
-        </div>
-        <div className="flex rounded-md border border-hairline bg-void p-1">
-          {chartIntervals.map((item) => (
-            <button
-              key={item}
-              type="button"
-              onClick={() => onIntervalChange(item)}
-              className={`h-8 min-w-10 rounded px-2 text-xs font-semibold transition-colors ${
-                interval === item
-                  ? "bg-slate-700 text-slate-100"
-                  : "text-slate-500 hover:text-slate-200"
-              }`}
-            >
-              {item}
-            </button>
-          ))}
-        </div>
+  const [fullscreen, setFullscreen] = useState(false);
+
+  // Escape leaves fullscreen — the shortcut people try first.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+
+  const legend = levels && (levels.entry || levels.stopLoss || levels.takeProfit) ? (
+    <div className="flex flex-wrap items-center gap-3">
+      {levels.entry ? <LevelTag color="bg-slate-400" label="Entry" value={levels.entry} /> : null}
+      {levels.stopLoss ? <LevelTag color="bg-exchangeRed" label="SL" value={levels.stopLoss} /> : null}
+      {levels.takeProfit ? <LevelTag color="bg-exchangeGreen" label="TP" value={levels.takeProfit} /> : null}
+    </div>
+  ) : null;
+
+  const controls = (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex rounded-md border border-hairline bg-void p-1">
+        {chartIntervals.map((item) => (
+          <button
+            key={item}
+            type="button"
+            onClick={() => onIntervalChange(item)}
+            className={`h-8 min-w-10 rounded px-2 text-xs font-semibold transition-all ${
+              interval === item
+                ? "bg-cyan/15 text-cyan shadow-[inset_0_0_0_1px_rgba(34,211,238,0.35)]"
+                : "text-slate-500 hover:text-slate-200"
+            }`}
+          >
+            {item}
+          </button>
+        ))}
       </div>
-      <div className="h-[360px] overflow-hidden rounded-md border border-hairline bg-void">
-        <BinanceStyleChart candles={candles} interval={interval} />
+      <button
+        type="button"
+        onClick={() => setFullscreen((v) => !v)}
+        title={fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"}
+        className="grid h-8 w-8 place-items-center rounded-md border border-hairline text-slate-500 transition-colors hover:border-cyan/40 hover:text-cyan"
+      >
+        {fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+      </button>
+    </div>
+  );
+
+  const body = (
+    <div className={`grid gap-3 ${fullscreen ? "h-full grid-rows-[auto_1fr]" : ""}`}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-baseline gap-3">
+          <div>
+            <div className="text-sm font-semibold text-slate-100">BTCUSDT Perp</div>
+            <div className="label-micro mt-0.5">{interval}</div>
+          </div>
+          {legend}
+        </div>
+        {controls}
+      </div>
+      <div className={`overflow-hidden rounded-md border border-hairline bg-void ${fullscreen ? "h-full" : "h-[360px]"}`}>
+        <BinanceStyleChart candles={candles} interval={interval} levels={levels} />
       </div>
     </div>
   );
+
+  if (!fullscreen) return body;
+
+  // Fullscreen is an overlay rather than the Fullscreen API: it keeps the app's own
+  // chrome and escape handling, and works the same inside an iframe or a kiosk tab.
+  return (
+    <>
+      <div className="h-[360px] grid place-items-center rounded-md border border-dashed border-hairline text-xs text-slate-600">
+        Chart is in fullscreen — press Esc to return
+      </div>
+      <div className="fixed inset-0 z-50 bg-void/95 p-4 backdrop-blur-sm">
+        <div className="hud hud-corners h-full p-4">{body}</div>
+      </div>
+    </>
+  );
 }
 
-function BinanceStyleChart({ candles, interval }: { candles: KlineTick[]; interval: ChartInterval }) {
+function LevelTag({ color, label, value }: { color: string; label: string; value: number }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className={`h-[2px] w-4 ${color}`} />
+      <span className="label-micro">{label}</span>
+      <span className="tabular text-xs text-slate-300">{formatNumber(value)}</span>
+    </span>
+  );
+}
+
+// Price levels of the open position, drawn on the chart. Null when flat.
+type ChartLevels = { entry: number | null; stopLoss: number | null; takeProfit: number | null };
+
+function BinanceStyleChart({
+  candles,
+  interval,
+  levels,
+}: {
+  candles: KlineTick[];
+  interval: ChartInterval;
+  levels?: ChartLevels | null;
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -1469,6 +1558,38 @@ function BinanceStyleChart({ candles, interval }: { candles: KlineTick[]; interv
       chartRef.current.timeScale().scrollToRealTime();
     }
   }, [candles]);
+
+  // Entry / SL / TP drawn straight onto the price scale. Seeing how far price sits
+  // from each level is the question you actually ask while a position is open, and
+  // reading it off three numbers in another panel is slower than seeing three lines.
+  // Redrawn whenever the levels change; removed with the position.
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series) return;
+
+    const lines = [
+      levels?.entry ? { price: levels.entry, color: "#94a3b8", title: "ENTRY" } : null,
+      levels?.stopLoss ? { price: levels.stopLoss, color: "#ff4d6a", title: "SL" } : null,
+      levels?.takeProfit ? { price: levels.takeProfit, color: "#00e29a", title: "TP" } : null,
+    ]
+      .filter((l): l is { price: number; color: string; title: string } => l !== null)
+      .map((l) =>
+        series.createPriceLine({
+          price: l.price,
+          color: l.color,
+          lineWidth: 1,
+          lineStyle: 2, // dashed
+          axisLabelVisible: true,
+          title: l.title,
+        })
+      );
+
+    return () => {
+      for (const line of lines) {
+        try { series.removePriceLine(line); } catch { /* series already disposed */ }
+      }
+    };
+  }, [levels?.entry, levels?.stopLoss, levels?.takeProfit, interval]);
 
   return (
     <div className="relative h-full w-full">
@@ -2107,10 +2228,31 @@ function OpenPositions({ positions, journal }: { positions: FuturesPositionInfo[
                 <div className="font-semibold text-slate-100">{position.symbol}</div>
                 <div className="text-xs uppercase text-slate-500">{position.positionSide} / {position.marginType}</div>
               </div>
-              <span className={`rounded px-2 py-1 text-xs font-semibold ${pnl >= 0 ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"}`}>
+              <span className={`rounded px-2 py-1 text-xs font-semibold ${pnl >= 0 ? "bg-exchangeGreen/15 text-exchangeGreen" : "bg-exchangeRed/15 text-exchangeRed"}`}>
                 {formatNumber(pnl)}
               </span>
             </div>
+
+            {/* Net of fees, plus where the two protective levels would land you.
+                Gross PnL alone hides a round trip that costs 0.1% of notional. */}
+            {(() => {
+              const est = estimatePnl(position, protective.takeProfit, protective.stopLoss);
+              return (
+                <div className="mb-3 rounded-md border border-hairline bg-panel/60 p-2.5">
+                  <div className="mb-2 flex items-baseline justify-between">
+                    <span className="label-micro">Net now (after fees)</span>
+                    <span className={`tabular val-lg ${est.netNow >= 0 ? "text-up" : "text-down"}`}>
+                      {formatSignedNumber(est.netNow, 3)}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <EstimateCell label="if SL" value={est.atStopLoss} tone="down" />
+                    <EstimateCell label="fees" value={-est.fees} tone="muted" />
+                    <EstimateCell label="if TP" value={est.atTakeProfit} tone="up" />
+                  </div>
+                </div>
+              );
+            })()}
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-slate-400">
               <PositionStat label="Size" value={formatNumber(position.positionAmount, 4)} />
               <PositionStat label="Leverage" value={`${formatNumber(position.leverage, 0)}x`} />
@@ -2137,6 +2279,32 @@ function OpenPositions({ positions, journal }: { positions: FuturesPositionInfo[
       {message && <div className="rounded-md border border-hairline bg-void px-3 py-2 text-xs text-slate-300">{message}</div>}
     </div>
   );
+}
+
+// Binance USDT-M taker fee per fill (VIP 0). Entry is a market order and the protective
+// exits are stop/TP market fills, so both legs pay it — a round trip costs twice this.
+const TAKER_FEE = 0.0005;
+
+// What the position is actually worth after the exchange takes its cut, and what it
+// would be worth if it ran to either protective level. Position History records fees
+// separately, so a screen that shows only gross PnL flatters every open trade.
+function estimatePnl(position: FuturesPositionInfo, takeProfit: number | null, stopLoss: number | null) {
+  const qty = Math.abs(Number(position.positionAmount));
+  const entry = Number(position.entryPrice);
+  const mark = Number(position.markPrice);
+  const isLong = Number(position.positionAmount) > 0;
+
+  const entryFee = qty * entry * TAKER_FEE;
+  const exitFeeAt = (price: number) => qty * price * TAKER_FEE;
+  const grossAt = (price: number) => (isLong ? price - entry : entry - price) * qty;
+
+  const netNow = Number(position.unrealizedProfit) - entryFee - exitFeeAt(mark);
+  return {
+    fees: entryFee + exitFeeAt(mark),
+    netNow,
+    atTakeProfit: takeProfit ? grossAt(takeProfit) - entryFee - exitFeeAt(takeProfit) : null,
+    atStopLoss: stopLoss ? grossAt(stopLoss) - entryFee - exitFeeAt(stopLoss) : null,
+  };
 }
 
 function getActiveProtectiveLevels(position: FuturesPositionInfo, journal?: JournalResponse) {
@@ -2223,6 +2391,18 @@ function revalidationActionClass(action: number) {
   if (action === 3) return "text-red-300";
   if (action === 2) return "text-amber-300";
   return "text-emerald-300";
+}
+
+function EstimateCell({ label, value, tone }: { label: string; value: number | null; tone: "up" | "down" | "muted" }) {
+  const color = value === null ? "text-slate-600" : tone === "up" ? "text-up" : tone === "down" ? "text-down" : "text-slate-400";
+  return (
+    <div className="rounded bg-void/60 px-1.5 py-1">
+      <div className={`tabular text-xs font-semibold ${color}`}>
+        {value === null ? "—" : formatSignedNumber(value, 3)}
+      </div>
+      <div className="label-micro mt-0.5">{label}</div>
+    </div>
+  );
 }
 
 function PositionStat({ label, value }: { label: string; value: string }) {

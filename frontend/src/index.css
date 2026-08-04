@@ -2,12 +2,166 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+   Design tokens. Everything below reads from these, so the surface can be
+   retuned from one place instead of hunting hex codes through 2000 lines of JSX.
+--------------------------------------------------------------------------- */
+:root {
+  --void: #05070d;
+  --panel: #0d1320;
+  --hairline: #1e2941;
+  --cyan: #22d3ee;
+  --up: #00e29a;
+  --down: #ff4d6a;
+  --grid: rgba(34, 211, 238, 0.045);
+}
+
 html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
-  background: #0b101a;
-  color: #e5e7eb;
+  background: var(--void);
+  color: #dbe4f3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* Faint grid plus corner glows give the page depth without downloading a
+     texture. Fixed attachment makes panels feel like they float above a machine. */
+  background-image:
+    radial-gradient(900px 500px at 12% -10%, rgba(34, 211, 238, 0.09), transparent 60%),
+    radial-gradient(800px 460px at 105% 0%, rgba(0, 226, 154, 0.055), transparent 62%),
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 44px 44px, 44px 44px;
+  background-attachment: fixed;
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* Numbers must never reflow as they tick — every digit gets the same advance. */
+.tabular,
+input[type="number"],
+table {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Default scrollbars punch bright holes in a dark console. */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #22304d;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #32456d;
+  background-clip: content-box;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #22304d transparent;
+}
+
+/* ---------------------------------------------------------------------------
+   Component layer: the shapes repeated across every panel. Defining them once
+   keeps the JSX readable and stops each panel inventing its own look.
+--------------------------------------------------------------------------- */
+@layer components {
+  /* Glass slab used by every panel and card. */
+  .hud {
+    position: relative;
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    background: linear-gradient(180deg, rgba(24, 33, 54, 0.72) 0%, rgba(13, 19, 32, 0.86) 100%);
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 0.03) inset,
+      0 18px 40px -26px rgba(0, 0, 0, 0.95);
+  }
+
+  /* HUD corner brackets, drawn with borders so they need no extra markup. */
+  .hud-corners::before,
+  .hud-corners::after {
+    content: "";
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    pointer-events: none;
+    opacity: 0.7;
+  }
+  .hud-corners::before {
+    top: -1px;
+    left: -1px;
+    border-top: 1px solid var(--cyan);
+    border-left: 1px solid var(--cyan);
+    border-top-left-radius: 10px;
+  }
+  .hud-corners::after {
+    bottom: -1px;
+    right: -1px;
+    border-bottom: 1px solid var(--cyan);
+    border-right: 1px solid var(--cyan);
+    border-bottom-right-radius: 10px;
+  }
+
+  /* The small uppercase caption that sits above every value on the surface. */
+  .label-micro {
+    font-size: 10px;
+    line-height: 1.15;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #6b7fa3;
+  }
+
+  /* Thin animated line under panel headers — reads as "this is live". */
+  .scan-line {
+    position: relative;
+    overflow: hidden;
+  }
+  .scan-line::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.5), transparent);
+    animation: hudSweep 2.6s ease-in-out infinite;
+  }
+
+  @keyframes hudSweep {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+
+  /* Shared type scale, so panels don't each invent their own emphasis levels. */
+  .val-xl { font-size: 1.5rem; line-height: 1.15; font-weight: 600; letter-spacing: -0.01em; }
+  .val-lg { font-size: 1.05rem; line-height: 1.2; font-weight: 600; }
+
+  .text-up { color: var(--up); }
+  .text-down { color: var(--down); }
+
+  /* One accessible focus ring for every control, rather than five variants. */
+  .ring-hud:focus {
+    outline: none;
+    border-color: rgba(34, 211, 238, 0.55);
+    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+  }
+}
+
+/* Anyone who asked the OS to calm animations down gets a still interface. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }

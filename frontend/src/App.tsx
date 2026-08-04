@@ -289,30 +289,45 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[#0b101a]">
-      <div className="w-full max-w-sm rounded-xl border border-slate-800 bg-[#0e1522] p-8">
-        <div className="mb-6 flex items-center gap-3">
-          <Bot className="h-7 w-7 text-exchangeGreen" />
-          <h1 className="text-lg font-semibold text-slate-100">BTCUSDT HFT Dashboard</h1>
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <div className="hud hud-corners w-full max-w-sm animate-riseIn p-8">
+        <div className="mb-7 flex items-center gap-3">
+          <div className="grid h-11 w-11 place-items-center rounded-md border border-cyan/30 bg-cyan/10 shadow-glowSoft">
+            <Bot className="h-6 w-6 text-cyan" />
+          </div>
+          <div className="leading-tight">
+            <h1 className="text-sm font-semibold tracking-[0.16em] text-slate-100">BTCUSDT PERPETUAL</h1>
+            <p className="label-micro mt-1">Autonomous Trading Engine</p>
+          </div>
         </div>
+
+        <div className="mb-6 flex items-center gap-2 rounded-md border border-hairline bg-void/50 px-3 py-2">
+          <span className="h-1.5 w-1.5 rounded-full bg-cyan animate-pulseDot" />
+          <span className="label-micro">Authentication required</span>
+        </div>
+
         <form onSubmit={submit} className="grid gap-4">
           <div>
-            <label className="mb-1 block text-xs text-slate-400">Password</label>
+            <label className="label-micro mb-2 block">Access key</label>
             <input
               type="password"
               autoFocus
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-              placeholder="Masukkan password"
+              className="ring-hud w-full rounded-md border border-hairline bg-void px-3 py-2.5 text-sm tracking-[0.2em] text-slate-100 placeholder:tracking-normal placeholder:text-slate-600"
+              placeholder="••••••••"
             />
           </div>
-          {error && <div className="text-sm text-red-400">{error}</div>}
+          {error && (
+            <div className="rounded-md border border-exchangeRed/40 bg-exchangeRed/10 px-3 py-2 text-xs text-exchangeRed">
+              {error}
+            </div>
+          )}
           <button
             type="submit"
-            className="rounded-md bg-emerald-600 px-4 py-2 font-semibold text-white hover:bg-emerald-500"
+            className="rounded-md border border-cyan/40 bg-cyan/15 px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-cyan transition-all hover:bg-cyan/25 hover:shadow-glow"
           >
-            Login
+            Authenticate
           </button>
         </form>
       </div>
@@ -428,12 +443,12 @@ function SettingsPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-8">
-      <h2 className="mb-6 text-lg font-semibold text-slate-100">Settings</h2>
+      <div className="mb-6 flex items-center gap-3"><span className="h-4 w-[2px] bg-cyan shadow-glowSoft" /><h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-100">Settings</h2></div>
       <form onSubmit={save} className="grid gap-6">
 
         {/* Trading Mode */}
-        <section className="rounded-lg border border-slate-800 bg-panel p-5">
-          <h3 className="mb-4 text-sm font-semibold text-slate-300">Trading Mode</h3>
+        <section className="hud hud-corners p-5">
+          <h3 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan/80">Trading Mode</h3>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs text-slate-400">Execution Mode</label>
@@ -459,8 +474,8 @@ function SettingsPage() {
         </section>
 
         {/* Risk Config */}
-        <section className="rounded-lg border border-slate-800 bg-panel p-5">
-          <h3 className="mb-4 text-sm font-semibold text-slate-300">Risk Configuration</h3>
+        <section className="hud hud-corners p-5">
+          <h3 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan/80">Risk Configuration</h3>
           <div className="grid gap-4 sm:grid-cols-2">
             <SettingInput
               label="Max Daily Loss (%)"
@@ -504,7 +519,7 @@ function SettingsPage() {
               max="1000"
               step="0.5"
             />
-            <div className="flex items-start gap-3 rounded-md border border-slate-800 bg-slate-950/60 p-3">
+            <div className="flex items-start gap-3 rounded-md border border-hairline bg-void/60 p-3">
               <input
                 id="risk-guard"
                 type="checkbox"
@@ -525,7 +540,7 @@ function SettingsPage() {
               <select
                 value={tradingStyle}
                 onChange={e => setTradingStyle(e.target.value)}
-                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                className="w-full rounded-md border border-hairline bg-void px-3 py-2 text-slate-100 ring-hud"
               >
                 <option value="0">Intraday — geometri 1h, target 1–2%, hold beberapa jam</option>
                 <option value="1">Scalper — geometri 15m, target 0.4–0.8%, in-out cepat</option>
@@ -537,7 +552,7 @@ function SettingsPage() {
               <select
                 value={autoSizingMode}
                 onChange={e => setAutoSizingMode(e.target.value)}
-                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                className="w-full rounded-md border border-hairline bg-void px-3 py-2 text-slate-100 ring-hud"
               >
                 <option value="0">Risk Engine — size dari risk per trade</option>
                 <option value="1">Margin × Leverage — pakai notional target</option>
@@ -549,7 +564,7 @@ function SettingsPage() {
               <select
                 value={targetLeverage}
                 onChange={e => setTargetLeverage(e.target.value)}
-                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                className="w-full rounded-md border border-hairline bg-void px-3 py-2 text-slate-100 ring-hud"
               >
                 <option value="5">5x</option>
                 <option value="10">10x</option>
@@ -582,7 +597,7 @@ function SettingsPage() {
               <select
                 value={trailingStopDistance}
                 onChange={e => setTrailingStopDistance(e.target.value)}
-                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                className="w-full rounded-md border border-hairline bg-void px-3 py-2 text-slate-100 ring-hud"
               >
                 <option value="0.50">Agresif — 0.50R</option>
                 <option value="0.75">Seimbang — 0.75R</option>
@@ -595,8 +610,8 @@ function SettingsPage() {
         </section>
 
         {/* Binance API */}
-        <section className="rounded-lg border border-slate-800 bg-panel p-5">
-          <h3 className="mb-4 text-sm font-semibold text-slate-300">Binance API</h3>
+        <section className="hud hud-corners p-5">
+          <h3 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan/80">Binance API</h3>
           {current && (
             <div className="mb-4 grid gap-2 text-sm">
               <div className="flex items-center gap-2">
@@ -632,7 +647,7 @@ function SettingsPage() {
               type="button"
               onClick={() => runTest("binance")}
               disabled={testing === "binance"}
-              className="rounded-md border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+              className="rounded-md border border-hairline px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
             >
               {testing === "binance" ? "Testing..." : "Test Connection"}
             </button>
@@ -642,8 +657,8 @@ function SettingsPage() {
         </section>
 
         {/* Anthropic / Claude AI */}
-        <section className="rounded-lg border border-slate-800 bg-panel p-5">
-          <h3 className="mb-4 text-sm font-semibold text-slate-300">Claude AI (Anthropic)</h3>
+        <section className="hud hud-corners p-5">
+          <h3 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan/80">Claude AI (Anthropic)</h3>
           {current && (
             <div className="mb-4 flex items-center gap-2 text-sm">
               <span className={`h-2 w-2 rounded-full ${current.hasAnthropicKey ? "bg-emerald-400" : "bg-slate-600"}`} />
@@ -663,7 +678,7 @@ function SettingsPage() {
             <select
               value={aiModel}
               onChange={e => setAiModel(e.target.value)}
-              className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              className="w-full rounded-md border border-hairline bg-slate-900 px-3 py-2 text-sm text-slate-100 ring-hud"
             >
               <option value="claude-opus-4-8">claude-opus-4-8 — Terbaik, ~$0.013/call</option>
               <option value="claude-sonnet-4-6">claude-sonnet-4-6 — Seimbang, lebih murah</option>
@@ -676,7 +691,7 @@ function SettingsPage() {
               type="button"
               onClick={() => runTest("anthropic")}
               disabled={testing === "anthropic"}
-              className="rounded-md border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+              className="rounded-md border border-hairline px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
             >
               {testing === "anthropic" ? "Testing..." : "Test Connection"}
             </button>
@@ -686,8 +701,8 @@ function SettingsPage() {
         </section>
 
         {/* LunarCrush Social Sentiment */}
-        <section className="rounded-lg border border-slate-800 bg-panel p-5">
-          <h3 className="mb-4 text-sm font-semibold text-slate-300">LunarCrush (Social Sentiment)</h3>
+        <section className="hud hud-corners p-5">
+          <h3 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan/80">LunarCrush (Social Sentiment)</h3>
           {current && (
             <div className="mb-4 flex items-center gap-2 text-sm">
               <span className={`h-2 w-2 rounded-full ${current.hasLunarCrushKey ? "bg-emerald-400" : "bg-slate-600"}`} />
@@ -734,12 +749,12 @@ function ModeButton({ active, onClick, label, danger = false }: { active: boolea
     <button
       type="button"
       onClick={onClick}
-      className={`flex-1 rounded-md border px-3 py-2 text-sm font-semibold transition-colors ${
+      className={`flex-1 rounded-md border px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] transition-all ${
         active
           ? danger
-            ? "border-red-500/60 bg-red-500/15 text-red-300"
-            : "border-emerald-500/60 bg-emerald-500/15 text-emerald-300"
-          : "border-slate-700 bg-transparent text-slate-400"
+            ? "border-exchangeRed/50 bg-exchangeRed/12 text-exchangeRed shadow-down"
+            : "border-cyan/50 bg-cyan/12 text-cyan shadow-glowSoft"
+          : "border-hairline bg-transparent text-slate-500 hover:text-slate-300"
       }`}
     >
       {label}
@@ -768,7 +783,7 @@ function SettingInput({
 }) {
   return (
     <div>
-      <label className="mb-1 block text-xs text-slate-400">{label}</label>
+      <label className="label-micro mb-1.5 block">{label}</label>
       <input
         type={type}
         value={value}
@@ -776,9 +791,9 @@ function SettingInput({
         min={min}
         max={max}
         step={step}
-        className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+        className="ring-hud tabular w-full rounded-md border border-hairline bg-void px-3 py-2 text-sm text-slate-100"
       />
-      {hint && <p className="mt-1 text-xs text-slate-600">{hint}</p>}
+      {hint && <p className="mt-1.5 text-[11px] leading-relaxed text-slate-600">{hint}</p>}
     </div>
   );
 }
@@ -792,7 +807,7 @@ export function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0b101a] text-slate-100">
+    <div className="min-h-screen text-slate-100">
       <AppHeader page={page} onPageChange={setPage} onLogout={() => { sessionStorage.removeItem("hft_auth"); setIsLoggedIn(false); }} />
       {page === "settings" ? <SettingsPage /> : <DashboardPage />}
     </div>
@@ -801,26 +816,33 @@ export function App() {
 
 function AppHeader({ page, onPageChange, onLogout }: { page: string; onPageChange: (p: "dashboard" | "settings") => void; onLogout: () => void }) {
   return (
-    <header className="border-b border-slate-800 bg-[#0e1522]">
-      <div className="flex w-full max-w-none flex-col gap-4 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+    <header className="sticky top-0 z-30 border-b border-hairline bg-void/85 backdrop-blur-md">
+      <div className="flex w-full max-w-none flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-center gap-3">
-          <Bot className="h-7 w-7 text-exchangeGreen" />
-          <h1 className="text-xl font-semibold">BTCUSDT Perpetual Auto Trading</h1>
+          <div className="relative grid h-9 w-9 place-items-center rounded-md border border-cyan/30 bg-cyan/10 shadow-glowSoft">
+            <Bot className="h-5 w-5 text-cyan" />
+          </div>
+          <div className="leading-tight">
+            <h1 className="text-sm font-semibold tracking-[0.14em] text-slate-100">BTCUSDT PERPETUAL</h1>
+            <p className="label-micro mt-0.5">Autonomous Trading Engine</p>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <nav className="flex gap-1">
-            <NavTab active={page === "dashboard"} onClick={() => onPageChange("dashboard")} label="Dashboard" />
+          <nav className="flex gap-1 rounded-lg border border-hairline bg-panel/70 p-1">
+            <NavTab active={page === "dashboard"} onClick={() => onPageChange("dashboard")} label="Dashboard" icon={<Activity className="h-3.5 w-3.5" />} />
             <NavTab active={page === "settings"} onClick={() => onPageChange("settings")} label="Settings" icon={<Settings className="h-3.5 w-3.5" />} />
           </nav>
           <button
             type="button"
             onClick={onLogout}
-            className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-400 hover:text-slate-200"
+            className="rounded-md border border-hairline px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:border-exchangeRed/40 hover:text-exchangeRed"
           >
             Logout
           </button>
         </div>
       </div>
+      {/* Hairline of system color: the seam between chrome and workspace. */}
+      <div className="h-px w-full bg-gradient-to-r from-transparent via-cyan/35 to-transparent" />
     </header>
   );
 }
@@ -830,8 +852,10 @@ function NavTab({ active, onClick, label, icon }: { active: boolean; onClick: ()
     <button
       type="button"
       onClick={onClick}
-      className={`flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-        active ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"
+      className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] transition-all ${
+        active
+          ? "bg-cyan/12 text-cyan shadow-[inset_0_0_0_1px_rgba(34,211,238,0.35)]"
+          : "text-slate-500 hover:text-slate-200"
       }`}
     >
       {icon}
@@ -985,21 +1009,27 @@ function DashboardPage() {
 
   return (
     <main className="grid w-full max-w-none gap-4 px-4 py-4">
-      <div className="flex flex-wrap items-center gap-2 pt-2">
+      {/* System strip: the four facts that change how every number below should be
+          read — is the feed live, is this real money, who is driving, how selective. */}
+      <div className="hud flex flex-wrap items-center gap-2 px-3 py-2">
         <StatusPill label={connectionState} />
         {tradingSettings && (
-          <span className={`rounded-md border px-3 py-2 text-sm font-semibold ${tradingSettings.paperTradingOnly ? "border-sky-700 bg-sky-500/10 text-sky-300" : "border-red-700 bg-red-500/10 text-red-300"}`}>
-            {tradingSettings.paperTradingOnly ? "📝 PAPER TRADING" : "🔴 LIVE TRADING"}
-          </span>
+          <Chip
+            tone={tradingSettings.paperTradingOnly ? "info" : "danger"}
+            label={tradingSettings.paperTradingOnly ? "Paper" : "Live"}
+            value={tradingSettings.paperTradingOnly ? "simulated" : "real funds"}
+          />
         )}
         {tradingSettings && (
-          <span className={`rounded-md border px-3 py-2 text-sm font-semibold ${tradingSettings.autoTradingEnabled ? "border-amber-700 bg-amber-500/10 text-amber-300" : "border-slate-700 text-slate-300"}`}>
-            {tradingSettings.autoTradingEnabled ? "🤖 AUTO" : "✋ MANUAL"}
-          </span>
+          <Chip
+            tone={tradingSettings.autoTradingEnabled ? "accent" : "muted"}
+            label={tradingSettings.autoTradingEnabled ? "Auto" : "Manual"}
+            value={tradingSettings.autoTradingEnabled ? "engine driving" : "operator"}
+          />
         )}
-        <span className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300">Symbol: {symbol}</span>
+        <Chip tone="muted" label="Symbol" value={symbol} />
         {tradingSettings && (
-          <span className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300">Min Confidence: {tradingSettings.confidenceThreshold}%</span>
+          <Chip tone="muted" label="Min conf" value={`${tradingSettings.confidenceThreshold}%`} />
         )}
       </div>
         {marginCall && <MarginCallAlert event={marginCall} onDismiss={() => setMarginCall(null)} />}
@@ -1110,8 +1140,32 @@ function DashboardPage() {
 function StatusPill({ label }: { label: string }) {
   const isLive = label === "live";
   return (
-    <span className={`rounded-md px-3 py-2 text-sm font-semibold ${isLive ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300"}`}>
-      {label.toUpperCase()}
+    <span
+      className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] ${
+        isLive
+          ? "border-exchangeGreen/40 bg-exchangeGreen/10 text-exchangeGreen"
+          : "border-warn/40 bg-warn/10 text-warn"
+      }`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${isLive ? "bg-exchangeGreen animate-pulseDot" : "bg-warn"}`} />
+      {label}
+    </span>
+  );
+}
+
+// Label/value pair used across the system strip. Tone carries the meaning, so the
+// caller states intent ("this is real money") rather than picking colors each time.
+function Chip({ tone, label, value }: { tone: "accent" | "info" | "danger" | "muted"; label: string; value: string }) {
+  const tones: Record<string, string> = {
+    accent: "border-cyan/35 bg-cyan/10 text-cyan",
+    info: "border-sky-500/35 bg-sky-500/10 text-sky-300",
+    danger: "border-exchangeRed/40 bg-exchangeRed/10 text-exchangeRed",
+    muted: "border-hairline bg-void/40 text-slate-400",
+  };
+  return (
+    <span className={`inline-flex items-baseline gap-2 rounded-md border px-3 py-1.5 ${tones[tone]}`}>
+      <span className="text-[10px] font-semibold uppercase tracking-[0.14em] opacity-80">{label}</span>
+      <span className="tabular text-xs font-semibold">{value}</span>
     </span>
   );
 }
@@ -1188,27 +1242,40 @@ function Metric({
   danger?: boolean;
   positive?: boolean;
 }) {
-  const valueClass = danger ? "text-exchangeRed" : positive ? "text-exchangeGreen" : "text-slate-50";
+  const valueClass = danger ? "text-down" : positive ? "text-up" : "text-slate-50";
+  // The accent bar carries the state, so the number itself stays legible instead of
+  // being tinted for every neutral reading.
+  const accent = danger ? "bg-exchangeRed" : positive ? "bg-exchangeGreen" : "bg-cyan/60";
 
   return (
-    <div className="rounded-lg border border-slate-800 bg-panel p-4">
-      <div className="flex items-center justify-between text-sm text-slate-400">
-        <span>{title}</span>
-        <span className="text-slate-500">{icon}</span>
+    <div className="hud group relative overflow-hidden p-4 transition-colors duration-200 hover:border-cyan/30">
+      <span className={`absolute inset-y-0 left-0 w-[2px] ${accent}`} />
+      <div className="flex items-center justify-between">
+        <span className="label-micro">{title}</span>
+        <span className="text-slate-600 transition-colors group-hover:text-cyan/70">{icon}</span>
       </div>
-      <div className={`mt-3 text-2xl font-semibold ${valueClass}`}>
+      <div className={`tabular val-xl mt-3 ${valueClass}`}>
         {Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 })}
-        {suffix}
+        <span className="ml-0.5 text-base text-slate-500">{suffix}</span>
       </div>
     </div>
   );
 }
 
-function Panel({ title, children }: { title: string; children: ReactNode }) {
+function Panel({ title, children, accent }: { title: string; children: ReactNode; accent?: ReactNode }) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-panel">
-      <div className="border-b border-slate-800 px-4 py-3 text-sm font-semibold text-slate-200">{title}</div>
-      <div className="p-4">{children}</div>
+    <div className="hud hud-corners flex min-w-0 flex-col">
+      <div className="flex items-center justify-between gap-3 border-b border-hairline px-4 py-2.5">
+        <div className="flex items-center gap-2">
+          <span className="h-1 w-1 rounded-full bg-cyan shadow-glowSoft" />
+          <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-300">{title}</span>
+        </div>
+        {accent}
+      </div>
+      {/* A one-pixel sweep under the header is the only motion in a resting panel —
+          enough to say the surface is live, quiet enough to ignore while reading. */}
+      <div className="scan-line h-px w-full opacity-40" />
+      <div className="min-w-0 p-4">{children}</div>
     </div>
   );
 }
@@ -1305,7 +1372,7 @@ function RealtimeChartPanel({
           <div className="text-sm font-semibold text-slate-100">BTCUSDT Perp</div>
           <div className="text-xs text-slate-500">{interval}</div>
         </div>
-        <div className="flex rounded-md border border-slate-800 bg-slate-950 p-1">
+        <div className="flex rounded-md border border-hairline bg-void p-1">
           {chartIntervals.map((item) => (
             <button
               key={item}
@@ -1322,7 +1389,7 @@ function RealtimeChartPanel({
           ))}
         </div>
       </div>
-      <div className="h-[360px] overflow-hidden rounded-md border border-slate-800 bg-slate-950">
+      <div className="h-[360px] overflow-hidden rounded-md border border-hairline bg-void">
         <BinanceStyleChart candles={candles} interval={interval} />
       </div>
     </div>
@@ -1469,7 +1536,7 @@ function TradeTape({ trades }: { trades: AggTradeTick[] }) {
   return (
     <div className="max-h-[310px] overflow-y-auto text-sm">
       {trades.map((trade, index) => (
-        <div key={`${trade.time}-${index}`} className="grid grid-cols-3 border-b border-slate-800 py-2">
+        <div key={`${trade.time}-${index}`} className="grid grid-cols-3 border-b border-hairline py-2">
           <span className={trade.buyerIsMaker ? "text-exchangeRed" : "text-exchangeGreen"}>{Number(trade.price).toFixed(2)}</span>
           <span className="text-right text-slate-300">{Number(trade.quantity).toFixed(4)}</span>
           <span className="text-right text-slate-500">{new Date(trade.time).toLocaleTimeString()}</span>
@@ -1512,7 +1579,7 @@ function TrailingStopPanel({ snapshot }: { snapshot?: TrailingStopSnapshot }) {
 
       <div className="max-h-[270px] overflow-y-auto">
         {snapshot.events.map((event) => (
-          <div key={event.ratchetedAt} className="border-t border-slate-800 py-3 first:border-t-0 first:pt-0">
+          <div key={event.ratchetedAt} className="border-t border-hairline py-3 first:border-t-0 first:pt-0">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-xs font-semibold text-emerald-300">
@@ -1531,7 +1598,7 @@ function TrailingStopPanel({ snapshot }: { snapshot?: TrailingStopSnapshot }) {
           </div>
         ))}
         {!snapshot.events.length && (
-          <div className="rounded-md border border-dashed border-slate-800 p-4 text-center text-xs text-slate-500">
+          <div className="rounded-md border border-dashed border-hairline p-4 text-center text-xs text-slate-500">
             Belum ada ratchet. SL mulai digeser otomatis saat profit mencapai +1R.
           </div>
         )}
@@ -1595,11 +1662,11 @@ function KillSwitchPanel({ state, onChanged }: { state?: KillSwitchState; onChan
         <button type="button" disabled={isSubmitting} onClick={() => submit(true)} className="rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2 font-semibold text-red-200 disabled:opacity-50">
           Enable
         </button>
-        <button type="button" disabled={isSubmitting} onClick={() => submit(false)} className="rounded-md border border-slate-700 px-3 py-2 font-semibold text-slate-200 disabled:opacity-50">
+        <button type="button" disabled={isSubmitting} onClick={() => submit(false)} className="rounded-md border border-hairline px-3 py-2 font-semibold text-slate-200 disabled:opacity-50">
           Disable
         </button>
       </div>
-      {(message || state?.message) && <div className="rounded-md border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">{message || state?.message}</div>}
+      {(message || state?.message) && <div className="rounded-md border border-hairline bg-void px-3 py-2 text-xs text-slate-300">{message || state?.message}</div>}
     </div>
   );
 }
@@ -1618,7 +1685,7 @@ function TradeJournal({ journal }: { journal?: JournalResponse }) {
       </div>
       <div className="max-h-[300px] overflow-y-auto">
         {journal.orders.map((order) => (
-          <div key={order.id} className="border-b border-slate-800 py-3 last:border-b-0">
+          <div key={order.id} className="border-b border-hairline py-3 last:border-b-0">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="font-semibold text-slate-100">{order.side} {order.kind}</div>
@@ -1672,7 +1739,7 @@ function PositionHistoryPanel({
         <div className="text-xs text-slate-500">
           Closed positions: {activePeriodLabel.toLowerCase()}
         </div>
-        <div className="flex flex-wrap rounded-md border border-slate-800 bg-slate-950 p-1">
+        <div className="flex flex-wrap rounded-md border border-hairline bg-void p-1">
           {positionHistoryPeriods.map((item) => (
             <button
               key={item.value}
@@ -1698,10 +1765,10 @@ function PositionHistoryPanel({
 
       <PnlPerformanceChart title={`${activePeriodLabel} PnL`} positions={history.positions} />
 
-      <div className="max-h-[320px] overflow-auto rounded-md border border-slate-800">
+      <div className="max-h-[320px] overflow-auto rounded-md border border-hairline">
         {history.positions.length > 0 && (
           <table className="min-w-[1080px] w-full border-collapse text-left text-xs">
-            <thead className="sticky top-0 bg-slate-950 text-slate-500">
+            <thead className="sticky top-0 bg-void text-slate-500">
               <tr>
                 <th className="px-3 py-2 font-semibold">Closed</th>
                 <th className="px-3 py-2 font-semibold">Side</th>
@@ -1721,7 +1788,7 @@ function PositionHistoryPanel({
                 const isLong = position.side === "Long";
                 const isProfit = position.realizedPnl >= 0;
                 return (
-                  <tr key={position.id} className="border-t border-slate-800 text-slate-300">
+                  <tr key={position.id} className="border-t border-hairline text-slate-300">
                     <td className="px-3 py-3 align-top">
                       <div className="font-medium text-slate-200">{new Date(position.closedAt).toLocaleString()}</div>
                       <div className="mt-1 text-[10px] text-slate-600">Open {new Date(position.openedAt).toLocaleString()}</div>
@@ -1761,18 +1828,18 @@ function PositionHistoryPanel({
               type="button"
               disabled={currentPage <= 1}
               onClick={() => setPage((value) => Math.max(1, value - 1))}
-              className="rounded-md border border-slate-800 px-3 py-1.5 font-semibold text-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-md border border-hairline px-3 py-1.5 font-semibold text-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Prev
             </button>
-            <span className="rounded-md border border-slate-800 bg-slate-950 px-3 py-1.5 text-slate-300">
+            <span className="rounded-md border border-hairline bg-void px-3 py-1.5 text-slate-300">
               {currentPage} / {totalPages}
             </span>
             <button
               type="button"
               disabled={currentPage >= totalPages}
               onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
-              className="rounded-md border border-slate-800 px-3 py-1.5 font-semibold text-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-md border border-hairline px-3 py-1.5 font-semibold text-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Next
             </button>
@@ -1794,7 +1861,7 @@ function PnlPerformanceChart({ title, positions }: { title: string; positions: P
   const chartOptions = useMemo(() => pnlLineChartOptions(), []);
 
   return (
-    <div className="rounded-md border border-slate-800 bg-slate-950 p-3">
+    <div className="rounded-md border border-hairline bg-void p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="font-semibold text-slate-200">{title}</div>
@@ -1949,7 +2016,7 @@ function PositionRiskPanel({ risk }: { risk?: RiskDetailResponse }) {
       </div>
       <div className="max-h-[190px] overflow-y-auto">
         {risk.positions.map((position) => (
-          <div key={`${position.symbol}-${position.positionSide}`} className="border-t border-slate-800 py-3">
+          <div key={`${position.symbol}-${position.positionSide}`} className="border-t border-hairline py-3">
             <div className="flex justify-between">
               <span className="font-semibold text-slate-200">{position.positionSide} / {position.marginType}</span>
               <span className={position.riskLevel === "normal" ? "text-emerald-300" : position.riskLevel === "warning" ? "text-amber-300" : "text-red-300"}>{position.riskLevel}</span>
@@ -1981,12 +2048,12 @@ function BacktestPanel({ result }: { result?: BacktestResult }) {
         <PositionStat label="Trades" value={formatNumber(result.totalTrades, 0)} />
         <PositionStat label="Profit Factor" value={formatNumber(result.profitFactor, 2)} />
       </div>
-      <div className="rounded-md border border-slate-800 bg-slate-950 p-3 text-xs text-slate-400">
+      <div className="rounded-md border border-hairline bg-void p-3 text-xs text-slate-400">
         {result.indicators.join(" / ")}
       </div>
       <div className="max-h-[165px] overflow-y-auto">
         {result.trades.slice(0, 6).map((trade, index) => (
-          <div key={`${trade.entryTime}-${index}`} className="grid grid-cols-4 border-b border-slate-800 py-2 text-xs last:border-b-0">
+          <div key={`${trade.entryTime}-${index}`} className="grid grid-cols-4 border-b border-hairline py-2 text-xs last:border-b-0">
             <span className={trade.side === "LONG" ? "text-exchangeGreen" : "text-exchangeRed"}>{trade.side}</span>
             <span className="text-slate-300">{formatSignedNumber(trade.pnl)}</span>
             <span className="text-slate-500">{trade.exitReason}</span>
@@ -2034,7 +2101,7 @@ function OpenPositions({ positions, journal }: { positions: FuturesPositionInfo[
         const key = `${position.symbol}-${position.positionSide}`;
         const protective = getActiveProtectiveLevels(position, journal);
         return (
-          <div key={key} className="rounded-md border border-slate-800 bg-slate-950 p-3">
+          <div key={key} className="rounded-md border border-hairline bg-void p-3">
             <div className="mb-3 flex items-center justify-between">
               <div>
                 <div className="font-semibold text-slate-100">{position.symbol}</div>
@@ -2060,14 +2127,14 @@ function OpenPositions({ positions, journal }: { positions: FuturesPositionInfo[
               type="button"
               disabled={closingKey === key}
               onClick={() => closePosition(position)}
-              className="mt-3 w-full rounded-md border border-slate-700 px-3 py-2 font-semibold text-slate-200 disabled:opacity-50"
+              className="mt-3 w-full rounded-md border border-hairline px-3 py-2 font-semibold text-slate-200 disabled:opacity-50"
             >
               Close Position
             </button>
           </div>
         );
       })}
-      {message && <div className="rounded-md border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">{message}</div>}
+      {message && <div className="rounded-md border border-hairline bg-void px-3 py-2 text-xs text-slate-300">{message}</div>}
     </div>
   );
 }
@@ -2114,7 +2181,7 @@ function PositionRevalidationPanel({ snapshot }: { snapshot?: OpenPositionRevali
 
       <div className="max-h-[270px] overflow-y-auto">
         {recentRecords.map((record) => (
-          <div key={`${record.checkedAt}-${record.action}`} className="border-t border-slate-800 py-3 first:border-t-0 first:pt-0">
+          <div key={`${record.checkedAt}-${record.action}`} className="border-t border-hairline py-3 first:border-t-0 first:pt-0">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className={`text-xs font-semibold ${revalidationActionClass(record.action)}`}>
@@ -2137,7 +2204,7 @@ function PositionRevalidationPanel({ snapshot }: { snapshot?: OpenPositionRevali
           </div>
         ))}
         {!recentRecords.length && (
-          <div className="rounded-md border border-dashed border-slate-800 p-4 text-center text-xs text-slate-500">
+          <div className="rounded-md border border-dashed border-hairline p-4 text-center text-xs text-slate-500">
             First check has not run yet.
           </div>
         )}
@@ -2180,7 +2247,7 @@ function AiUsagePanel({ usage }: { usage?: AiUsageSummary }) {
         <PositionStat label="Calls Hari Ini" value={String(usage.callsToday)} />
         <PositionStat label="Calls Total" value={String(usage.callsTotal)} />
       </div>
-      <div className="rounded-md border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+      <div className="rounded-md border border-hairline bg-slate-900/50 p-3 text-xs text-slate-400">
         <div>≈ {rupiah(usage.costTodayUsd)} hari ini · {rupiah(usage.costTotalUsd)} total</div>
         <div className="mt-1">
           Token: {usage.inputTokensTotal.toLocaleString()} in / {usage.outputTokensTotal.toLocaleString()} out
@@ -2242,15 +2309,15 @@ function ManualOrder() {
         <button type="button" disabled={isSubmitting} onClick={() => submit(1)} className="rounded-md bg-exchangeGreen px-3 py-2 font-semibold text-slate-950 disabled:opacity-50">Open Long</button>
         <button type="button" disabled={isSubmitting} onClick={() => submit(2)} className="rounded-md bg-exchangeRed px-3 py-2 font-semibold text-white disabled:opacity-50">Open Short</button>
       </div>
-      <input className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Lot / quantity" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
-      <input className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Leverage" value={leverage} onChange={(event) => setLeverage(event.target.value)} />
-      <input className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Take profit" value={takeProfit} onChange={(event) => setTakeProfit(event.target.value)} />
-      <input className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2" placeholder="Stop loss" value={stopLoss} onChange={(event) => setStopLoss(event.target.value)} />
+      <input className="rounded-md border border-hairline bg-void px-3 py-2" placeholder="Lot / quantity" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
+      <input className="rounded-md border border-hairline bg-void px-3 py-2" placeholder="Leverage" value={leverage} onChange={(event) => setLeverage(event.target.value)} />
+      <input className="rounded-md border border-hairline bg-void px-3 py-2" placeholder="Take profit" value={takeProfit} onChange={(event) => setTakeProfit(event.target.value)} />
+      <input className="rounded-md border border-hairline bg-void px-3 py-2" placeholder="Stop loss" value={stopLoss} onChange={(event) => setStopLoss(event.target.value)} />
       <div className="grid grid-cols-2 gap-2">
-        <button type="button" disabled={isSubmitting} onClick={() => close(1)} className="rounded-md border border-slate-700 px-3 py-2 font-semibold text-slate-200 disabled:opacity-50">Close Long</button>
-        <button type="button" disabled={isSubmitting} onClick={() => close(2)} className="rounded-md border border-slate-700 px-3 py-2 font-semibold text-slate-200 disabled:opacity-50">Close Short</button>
+        <button type="button" disabled={isSubmitting} onClick={() => close(1)} className="rounded-md border border-hairline px-3 py-2 font-semibold text-slate-200 disabled:opacity-50">Close Long</button>
+        <button type="button" disabled={isSubmitting} onClick={() => close(2)} className="rounded-md border border-hairline px-3 py-2 font-semibold text-slate-200 disabled:opacity-50">Close Short</button>
       </div>
-      {message && <div className="rounded-md border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">{message}</div>}
+      {message && <div className="rounded-md border border-hairline bg-void px-3 py-2 text-xs text-slate-300">{message}</div>}
     </form>
   );
 }
@@ -2271,38 +2338,56 @@ function AiDecisionPanel({ decision }: { decision?: AiDecision | null }) {
   const action = ACTION_LABELS[decision.action] ?? "UNKNOWN";
   const isBuy = decision.action >= 5;
   const isSell = decision.action <= 3;
-  const actionColor = isBuy ? "text-emerald-300" : isSell ? "text-red-300" : "text-slate-300";
+  const actionColor = isBuy ? "text-up" : isSell ? "text-down" : "text-slate-300";
+  const actionRing = isBuy ? "border-exchangeGreen/40 bg-exchangeGreen/10" : isSell ? "border-exchangeRed/40 bg-exchangeRed/10" : "border-hairline bg-void/40";
 
   return (
     <div className="grid gap-3 text-sm">
-      <div className="flex items-start justify-between gap-3">
+      <div className={`flex items-center justify-between gap-3 rounded-lg border px-4 py-3 ${actionRing}`}>
         <div>
-          <div className={`text-lg font-bold ${actionColor}`}>{action}</div>
-          <div className="mt-1 text-xs text-slate-500">{REGIME_LABELS[decision.regime] ?? "?"} regime</div>
+          <div className={`text-xl font-bold tracking-[0.08em] ${actionColor}`}>{action}</div>
+          <div className="label-micro mt-1">{REGIME_LABELS[decision.regime] ?? "?"} regime</div>
         </div>
         <div className="text-right">
-          <div className="text-2xl font-semibold text-slate-100">{formatNumber(decision.confidence, 0)}</div>
-          <div className="text-xs text-slate-500">confidence</div>
+          <div className="tabular val-xl text-slate-50">{formatNumber(decision.confidence, 1)}</div>
+          <div className="label-micro mt-0.5">conviction</div>
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 text-center">
-        <div className="rounded-md bg-emerald-500/10 px-2 py-1">
-          <div className="text-sm font-semibold text-emerald-300">{formatNumber(decision.confidenceBuy, 0)}</div>
-          <div className="text-[10px] uppercase tracking-wide text-slate-500">Buy</div>
+      {/* One bar instead of three tiles: buy and sell are two ends of the same
+          number, and seeing where the needle sits reads faster than comparing digits. */}
+      <div>
+        <div className="mb-1.5 flex items-center justify-between">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-down">
+            Sell {formatNumber(decision.confidenceSell, 0)}
+          </span>
+          <span className="label-micro">Hold {formatNumber(decision.confidenceHold, 0)}</span>
+          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-up">
+            Buy {formatNumber(decision.confidenceBuy, 0)}
+          </span>
         </div>
-        <div className="rounded-md bg-slate-700/40 px-2 py-1">
-          <div className="text-sm font-semibold text-slate-200">{formatNumber(decision.confidenceHold, 0)}</div>
-          <div className="text-[10px] uppercase tracking-wide text-slate-500">Hold</div>
-        </div>
-        <div className="rounded-md bg-red-500/10 px-2 py-1">
-          <div className="text-sm font-semibold text-red-300">{formatNumber(decision.confidenceSell, 0)}</div>
-          <div className="text-[10px] uppercase tracking-wide text-slate-500">Sell</div>
+        <div className="relative h-2 overflow-hidden rounded-full bg-void">
+          <div className="absolute inset-y-0 left-0 w-1/2 bg-exchangeRed/20" />
+          <div className="absolute inset-y-0 right-0 w-1/2 bg-exchangeGreen/20" />
+          <span className="absolute inset-y-0 left-1/2 w-px bg-slate-600" />
+          <span
+            className={`absolute top-1/2 h-3.5 w-1 -translate-y-1/2 rounded-full ${isBuy ? "bg-exchangeGreen shadow-up" : isSell ? "bg-exchangeRed shadow-down" : "bg-slate-400"}`}
+            style={{ left: `calc(${Math.max(2, Math.min(98, decision.confidenceBuy))}% - 2px)` }}
+          />
         </div>
       </div>
 
-      <div className={`rounded-md px-3 py-2 text-xs font-semibold ${decision.shouldTrade ? "bg-emerald-500/15 text-emerald-300" : "bg-slate-700/50 text-slate-300"}`}>
-        {decision.shouldTrade ? "✓ TRADE SIGNAL ACTIVE" : `NO TRADE — ${decision.noTradeReason || "conditions not met"}`}
+      <div
+        className={`flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-semibold ${
+          decision.shouldTrade
+            ? "border-exchangeGreen/40 bg-exchangeGreen/10 text-exchangeGreen"
+            : "border-hairline bg-void/50 text-slate-400"
+        }`}
+      >
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${decision.shouldTrade ? "bg-exchangeGreen animate-pulseDot" : "bg-slate-600"}`} />
+        <span className="min-w-0 truncate">
+          {decision.shouldTrade ? "TRADE SIGNAL ACTIVE" : decision.noTradeReason || "conditions not met"}
+        </span>
       </div>
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-slate-400">
@@ -2317,39 +2402,70 @@ function AiDecisionPanel({ decision }: { decision?: AiDecision | null }) {
       </div>
 
       <div>
-        <div className="mb-1 text-xs text-slate-500">Factor Scores (0-100)</div>
-        <div className="grid gap-1">
-          {Object.entries(decision.scores).map(([name, score]) => (
-            <div key={name} className="flex items-center gap-2">
-              <span className="w-24 text-xs text-slate-400">{name}</span>
-              <div className="h-2 flex-1 overflow-hidden rounded bg-slate-800">
-                <div
-                  className={`h-full ${score >= 60 ? "bg-emerald-500" : score <= 40 ? "bg-red-500" : "bg-slate-500"}`}
-                  style={{ width: `${Math.max(0, Math.min(100, score))}%` }}
-                />
+        <div className="label-micro mb-2">Factor scores — 50 is neutral</div>
+        <div className="grid gap-1.5">
+          {Object.entries(decision.scores).map(([name, score]) => {
+            // Bars grow out from the midpoint rather than from zero: what matters is
+            // which way a factor leans and how hard, not its absolute value.
+            const clamped = Math.max(0, Math.min(100, score));
+            const offset = clamped - 50;
+            const width = `${Math.abs(offset)}%`;
+            const bullish = offset > 0;
+            return (
+              <div key={name} className="flex items-center gap-2">
+                <span className="w-[86px] shrink-0 truncate text-[11px] text-slate-400">{name}</span>
+                <div className="relative h-2 flex-1 overflow-hidden rounded-sm bg-void">
+                  <span className="absolute inset-y-0 left-1/2 w-px bg-slate-700" />
+                  <div
+                    className={`absolute inset-y-0 ${bullish ? "bg-exchangeGreen/80" : "bg-exchangeRed/80"}`}
+                    style={bullish ? { left: "50%", width } : { right: "50%", width }}
+                  />
+                </div>
+                <span className={`tabular w-8 shrink-0 text-right text-[11px] ${Math.abs(offset) < 2 ? "text-slate-500" : bullish ? "text-up" : "text-down"}`}>
+                  {formatNumber(score, 0)}
+                </span>
               </div>
-              <span className="w-7 text-right text-xs text-slate-300">{formatNumber(score, 0)}</span>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
       {decision.llm.used && (
-        <div className="rounded-md border border-indigo-500/30 bg-indigo-950/30 p-3">
-          <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-indigo-300">
-            <Bot className="h-3.5 w-3.5" /> Claude validation: {decision.llm.confirmed ? "CONFIRMED" : "HESITANT — DEFENSIVE SIZING"}
+        <div className="rounded-md border border-indigo-400/30 bg-indigo-500/[0.07] p-3">
+          <div className="mb-1.5 flex items-center gap-2">
+            <Bot className="h-3.5 w-3.5 shrink-0 text-indigo-300" />
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-indigo-300">Claude</span>
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                decision.llm.confirmed ? "bg-exchangeGreen/15 text-exchangeGreen" : "bg-warn/15 text-warn"
+              }`}
+            >
+              {decision.llm.confirmed ? "confirmed" : "hesitant — defensive sizing"}
+            </span>
           </div>
-          {decision.llm.narrative && <div className="text-xs text-slate-300">{decision.llm.narrative}</div>}
+          {decision.llm.narrative && <div className="text-xs leading-relaxed text-slate-300">{decision.llm.narrative}</div>}
           {decision.llm.risks.length > 0 && (
-            <ul className="mt-2 list-disc pl-4 text-xs text-amber-300/80">
-              {decision.llm.risks.map((r, i) => <li key={i}>{r}</li>)}
+            <ul className="mt-2 grid gap-1">
+              {decision.llm.risks.map((r, i) => (
+                <li key={i} className="flex gap-1.5 text-xs text-warn/85">
+                  <span className="text-warn/50">▸</span>
+                  <span>{r}</span>
+                </li>
+              ))}
             </ul>
           )}
         </div>
       )}
 
-      <div className="max-h-[160px] overflow-y-auto rounded-md border border-slate-800 bg-slate-950 p-2 text-xs text-slate-400">
-        {decision.reasons.map((r, i) => <div key={i} className="border-b border-slate-800/50 py-1 last:border-0">{r}</div>)}
+      <div>
+        <div className="label-micro mb-1.5">Reasoning trace</div>
+        <div className="max-h-[170px] overflow-y-auto rounded-md border border-hairline bg-void/70 p-2">
+          {decision.reasons.map((r, i) => (
+            <div key={i} className="border-b border-hairline/50 py-1 text-[11px] leading-relaxed text-slate-400 last:border-0">
+              {r}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -2369,5 +2485,10 @@ function formatPercent(value: number, maximumFractionDigits = 2) {
 }
 
 function EmptyState({ text }: { text: string }) {
-  return <div className="rounded-md border border-dashed border-slate-700 p-6 text-center text-sm text-slate-500">{text}</div>;
+  return (
+    <div className="flex flex-col items-center gap-2 rounded-md border border-dashed border-hairline bg-void/40 px-6 py-8 text-center">
+      <span className="h-1.5 w-1.5 rounded-full bg-cyan/60 animate-pulseDot" />
+      <span className="text-xs leading-relaxed text-slate-500">{text}</span>
+    </div>
+  );
 }

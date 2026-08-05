@@ -32,18 +32,30 @@ public sealed record AutoEntryTiming(
     TimeSpan StopLossCooldown,
     decimal StrongSignalOffset)
 {
+    // Intraday spacing is raised for the same reason as scalper below: fees are paid per
+    // round trip regardless of how the trade goes, so with a break-even direction call the
+    // only way to lose less is to trade less. 90/180 minutes caps the burn at roughly a
+    // third of what 30/60 permitted.
     public static readonly AutoEntryTiming Intraday = new(
         ConfirmationDelay: TimeSpan.FromMinutes(2),
         CandidateLifetime: TimeSpan.FromMinutes(15),
-        StandardCooldown: TimeSpan.FromMinutes(30),
-        StopLossCooldown: TimeSpan.FromMinutes(60),
+        StandardCooldown: TimeSpan.FromMinutes(90),
+        StopLossCooldown: TimeSpan.FromMinutes(180),
         StrongSignalOffset: 4m);
 
+    // Scalper cooldowns were 10/20 minutes, which allowed roughly four round trips a day.
+    // Measured over 24 trades: gross PnL before fees was -0.11 USDT — the direction calls
+    // net to zero — while fees came to -4.97. The account lost 5.07 USDT and essentially
+    // all of it was transaction cost. With no demonstrated directional edge the expected
+    // value of a trade is exactly minus the fee, so trade COUNT is the loss, and spacing
+    // entries out is the only lever that reliably moves PnL toward zero. Raised to 45/90
+    // minutes: about a quarter of the previous frequency, and therefore about a quarter of
+    // the burn, until the engine can show an edge that outruns the fee.
     public static readonly AutoEntryTiming Scalper = new(
         ConfirmationDelay: TimeSpan.FromSeconds(30),
         CandidateLifetime: TimeSpan.FromMinutes(5),
-        StandardCooldown: TimeSpan.FromMinutes(10),
-        StopLossCooldown: TimeSpan.FromMinutes(20),
+        StandardCooldown: TimeSpan.FromMinutes(45),
+        StopLossCooldown: TimeSpan.FromMinutes(90),
         StrongSignalOffset: 4m);
 
     public static AutoEntryTiming For(TradingStyle style)

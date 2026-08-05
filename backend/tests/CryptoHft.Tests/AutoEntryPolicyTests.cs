@@ -131,10 +131,10 @@ public sealed class AutoEntryPolicyTests
     [Fact]
     public void Cooldown_StopLossIsLongerThanSuccessfulExit()
     {
-        Assert.Equal(TimeSpan.FromMinutes(60), AutoEntryPolicy.CooldownFor(PositionCloseReason.StopLoss));
-        Assert.Equal(TimeSpan.FromMinutes(60), AutoEntryPolicy.CooldownFor(PositionCloseReason.Unknown));
-        Assert.Equal(TimeSpan.FromMinutes(30), AutoEntryPolicy.CooldownFor(PositionCloseReason.TakeProfit));
-        Assert.Equal(TimeSpan.FromMinutes(30), AutoEntryPolicy.CooldownFor(PositionCloseReason.TrailingStop));
+        Assert.Equal(TimeSpan.FromMinutes(180), AutoEntryPolicy.CooldownFor(PositionCloseReason.StopLoss));
+        Assert.Equal(TimeSpan.FromMinutes(180), AutoEntryPolicy.CooldownFor(PositionCloseReason.Unknown));
+        Assert.Equal(TimeSpan.FromMinutes(90), AutoEntryPolicy.CooldownFor(PositionCloseReason.TakeProfit));
+        Assert.Equal(TimeSpan.FromMinutes(90), AutoEntryPolicy.CooldownFor(PositionCloseReason.TrailingStop));
     }
 
     // ---- Scalper timing ------------------------------------------------------------------------
@@ -164,8 +164,13 @@ public sealed class AutoEntryPolicyTests
     [Fact]
     public void Scalper_CooldownsAreCompressedButPresent()
     {
-        Assert.Equal(TimeSpan.FromMinutes(20), AutoEntryPolicy.CooldownFor(PositionCloseReason.StopLoss, AutoEntryTiming.Scalper));
-        Assert.Equal(TimeSpan.FromMinutes(10), AutoEntryPolicy.CooldownFor(PositionCloseReason.TakeProfit, AutoEntryTiming.Scalper));
+        Assert.Equal(TimeSpan.FromMinutes(90), AutoEntryPolicy.CooldownFor(PositionCloseReason.StopLoss, AutoEntryTiming.Scalper));
+        Assert.Equal(TimeSpan.FromMinutes(45), AutoEntryPolicy.CooldownFor(PositionCloseReason.TakeProfit, AutoEntryTiming.Scalper));
+
+        // Spacing must stay meaningfully wider than the old 10/20, because trade count is
+        // the loss when the direction call is break-even and every round trip pays a fee.
+        Assert.True(AutoEntryTiming.Scalper.StandardCooldown >= TimeSpan.FromMinutes(40));
+        Assert.True(AutoEntryTiming.Intraday.StandardCooldown >= TimeSpan.FromMinutes(60));
     }
 
     [Fact]

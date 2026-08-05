@@ -1465,3 +1465,49 @@ masih menyisakan ruang untuk kondisi yang benar-benar ekstrem.
 - **252/252 unit test pass** (5 baru: p90 mendekati budget tanpa saturasi, bacaan
   produksi yang dulu memaku skor kini < 95, input ekstrem terbatas, minggu tenang
   tetap netral). Build bersih.
+
+---
+
+## 31. Kerugian bukan dari arah — dari FEE × FREKUENSI (2026-08-05)
+
+Owner melaporkan "long terus dan salah terus". Diperiksa: 24 trade sejak 30 Jul.
+
+```
+PnL KOTOR (sebelum fee) :  -0.11 USDT   <-- praktis NOL
+Fee dibayar             :  -4.97 USDT
+NET                     :  -5.07 USDT   (saldo 31.86 -> 26.64)
+```
+
+**Tebakan arahnya IMPAS.** Seluruh kerugian adalah biaya transaksi. Pecahan per sisi:
+LONG 15 trade (47% menang, −6.92), SHORT 9 trade (56%, +1.85) — dan pasar NAIK ~3%
+selama periode itu, jadi long yang rugi bukan karena arah salah melainkan karena
+stop ter-trigger oleh retrace rutin (semua loss ≈ 0.42–0.63% gerak, persis lebar
+SL scalper 1.5×ATR = 0.54%).
+
+### Kenapa tuning geometri tidak bisa menyelamatkan
+Untuk stop `a` dan target `b` di pasar tanpa arah: `P(kena TP) = a/(a+b)`, sehingga
+`EV = P(b−f) − (1−P)(a+f) = −f`. **Expected value = minus fee, berapa pun a dan b.**
+Melebarkan stop, mendekatkan TP, mengubah RR — semuanya menghasilkan EV yang sama.
+Hanya edge arah yang melebihi fee yang bisa menghasilkan profit.
+
+Konfirmasi empiris: `technical` rata-rata 62.1 di trade menang vs 62.9 di trade kalah
+— nol daya pisah. Sejalan dengan kalibrasi terbalik (Bagian 23) dan hasil fit bobot
+(model kalah dari baseline).
+
+### Tindakan: potong frekuensi, satu-satunya tuas yang pasti
+Jika EV per trade ≈ −fee, maka kerugian ∝ jumlah trade. Cooldown dinaikkan:
+
+| | lama | baru |
+|---|---|---|
+| Scalper (TP/trail · SL) | 10 / 20 mnt | **45 / 90 mnt** |
+| Intraday (TP/trail · SL) | 30 / 60 mnt | **90 / 180 mnt** |
+
+Scalper turun dari ~4 round-trip/hari ke ~1. Dengan gross ≈ 0, itu memotong burn
+fee ~4×: periode yang sama akan berakhir sekitar −1.3 USDT alih-alih −5.07.
+
+> Ini **pengurangan kerusakan, bukan edge**. Sistem tetap tidak punya keunggulan arah
+> yang terbukti; yang dilakukan adalah berhenti membayar tol sesering itu sampai ada
+> edge yang melebihi fee. Jangan sajikan ini sebagai "engine sudah profit".
+
+### Testing
+- **252/252 unit test pass**; build bersih.

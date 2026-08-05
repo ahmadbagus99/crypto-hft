@@ -206,6 +206,12 @@ public sealed class AiDecisionLog
     public decimal? LlmSizeMultiplier { get; set; }  // raw multiplier Claude proposed (pre-clamp)
     public int? LlmLeverage { get; set; }            // leverage Claude proposed (null = kept baseline)
     public bool? LlmStopsApplied { get; set; }       // Claude's SL/TP pair passed validation and was used
+    // Claude's own conviction for the proposed side, and the two tallies its sizing band is
+    // derived from. Without these the advisory layer cannot be measured: a multiplier alone
+    // cannot show whether Claude discriminated between setups or emitted a constant.
+    public decimal? LlmAdjustedConfidence { get; set; }
+    public int? LlmAlignedCount { get; set; }        // categories Claude counted as supporting the side
+    public int? LlmBlockingCount { get; set; }       // factors Claude counted as crossing a blocking threshold
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? EvaluatedAt { get; set; }
 }

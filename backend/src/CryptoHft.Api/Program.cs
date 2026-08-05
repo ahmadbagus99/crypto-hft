@@ -868,6 +868,9 @@ using (var scope = app.Services.CreateScope())
             "LlmSizeMultiplier" numeric NULL,
             "LlmLeverage" integer NULL,
             "LlmStopsApplied" boolean NULL,
+            "LlmAdjustedConfidence" numeric NULL,
+            "LlmAlignedCount" integer NULL,
+            "LlmBlockingCount" integer NULL,
             "CreatedAt" timestamptz NOT NULL,
             "EvaluatedAt" timestamptz NULL
         );
@@ -878,6 +881,9 @@ using (var scope = app.Services.CreateScope())
         ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmSizeMultiplier" numeric NULL;
         ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmLeverage" integer NULL;
         ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmStopsApplied" boolean NULL;
+        ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmAdjustedConfidence" numeric NULL;
+        ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmAlignedCount" integer NULL;
+        ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmBlockingCount" integer NULL;
         CREATE INDEX IF NOT EXISTS "IX_AiDecisionLogs_MatchedPositionId"
             ON trading."AiDecisionLogs" ("MatchedPositionId");
         CREATE TABLE IF NOT EXISTS trading."FactorStats" (

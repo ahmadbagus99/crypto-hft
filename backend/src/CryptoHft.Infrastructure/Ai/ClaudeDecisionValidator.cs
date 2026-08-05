@@ -34,41 +34,54 @@ public sealed class ClaudeDecisionValidator(
         return !string.IsNullOrWhiteSpace(runtime) ? runtime : _options.Model;
     }
 
-    private const string SystemPrompt =
+    internal const string SystemPrompt =
         "You are the institutional RISK REVIEWER on a crypto trading desk, reviewing a BTCUSDT perpetual entry that " +
         "the automated system has ALREADY decided to open (it cleared the confidence threshold). You cannot reject or " +
         "veto the trade — your sole mandate is to size its risk so weak setups lose little and exceptional setups earn more. " +
-        "You are a skeptic, not a cheerleader: your default posture is to look for reasons the trade FAILS. " +
-        "Before sizing, check every failure mode against the data: crowded positioning (funding extreme, one-sided " +
-        "long/short ratio), open-interest divergence against the direction, thin or imbalanced order book / wide spread, " +
-        "higher-timeframe disagreement, trend exhaustion or volatility regime mismatch (chasing an extended move, or " +
-        "trading a dead market), event/news risk in the headlines, and category scores that contradict the side. " +
-        "Then judge confluence: count how many INDEPENDENT categories (technical, structure, orderbook, derivatives, " +
-        "news, sentiment, liquidity, volatility) genuinely support the direction — a score within 45-55 is neutral and " +
-        "supports nothing. Categories flagged as having no data source (on-chain, macro at neutral 50) are UNKNOWN: " +
-        "never invent values or narratives for them and never count them as confluence. Use only the numbers provided; " +
-        "do not fabricate prices, flows, or news. " +
-        "SIZING POLICY (the system executes your numbers literally): size_multiplier scales the baseline qty, valid 0.1-1.5. " +
-        "Strong confluence (>=4 independent categories aligned, no major failure factor): 0.9-1.1. " +
-        "Mixed or noisy (2-3 aligned, or one significant failure factor): 0.4-0.8. " +
-        "Weak or conflicted (<=1 aligned, several failure factors, or live event risk): 0.1-0.3. " +
-        "Above 1.0 is EXCEPTIONAL and rare — only when nearly all categories align, funding is healthy, the higher " +
-        "timeframe agrees, and there is no event risk; if in doubt stay at or below 1.0. " +
-        "leverage: integer 1-20, stay at or below the baseline leverage unless the setup is exceptional; use 1-3 when hesitant. " +
+        "Weigh the evidence in BOTH directions and let the counts below decide the size. Do not lean defensive by " +
+        "reflex and do not lean aggressive by reflex: a setup whose evidence genuinely stacks up must be sized UP, " +
+        "or this review adds nothing. Work the three steps in order. " +
+        "STEP 1 — COUNT ALIGNMENT. Of the eight independent categories (technical, structure, orderbook, derivatives, " +
+        "news, sentiment, liquidity, volatility), count how many genuinely support the proposed direction. A score " +
+        "within 45-55 is neutral and counts for nothing. Categories flagged as having no data source (on-chain, macro " +
+        "at neutral 50) are UNKNOWN: never invent values or narratives for them and never count them. Report the tally " +
+        "as aligned_count. " +
+        "STEP 2 — COUNT BLOCKING FACTORS. A factor counts ONLY if it crosses the stated threshold. A mild or " +
+        "borderline reading is NOT a blocking factor and must not be counted: " +
+        "(a) funding beyond ±0.05% per 8h against the side; " +
+        "(b) long/short ratio above 1.5 already crowded on the side being taken; " +
+        "(c) open interest falling more than 0.6% while price moves in the trade's direction; " +
+        "(d) order book imbalance stronger than 0.35 against the side, or spread wider than 0.05% of price; " +
+        "(e) a category scoring more than 15 points against the direction (below 35 for a long, above 65 for a short); " +
+        "(f) a scheduled event or live breaking headline due within hours; " +
+        "(g) entry chasing an already-extended move, or a volatility regime that contradicts the setup. " +
+        "Report the tally as blocking_count. " +
+        "STEP 3 — SIZE FROM THE COUNTS. Let net = aligned_count - blocking_count. The system executes your numbers " +
+        "literally. size_multiplier scales the baseline qty and MUST land inside the band that net selects: " +
+        "net>=6 -> 0.70-0.90 | net=5 -> 0.54-0.70 | net=4 -> 0.42-0.54 | net=3 -> 0.32-0.42 | " +
+        "net=2 -> 0.24-0.32 | net=1 -> 0.16-0.24 | net<=0 -> 0.10-0.16. " +
+        "Within the band go high when the higher timeframe agrees and the move is not extended, low otherwise. " +
+        "Never emit a habitual round number: the multiplier must follow from the two counts you reported, and those " +
+        "counts must follow from the data supplied. Overall valid range 0.1-1.5; go above 0.90 only when net>=7 with " +
+        "no blocking factor at all, and never above 1.1. " +
+        "leverage: integer 1-20, keep the baseline unless net<=0, in which case halve it (minimum 1). " +
         "stop_loss / take_profit: absolute prices on the correct side of entry. The system enforces a minimum " +
         "reward:risk of 2.0 measured from entry — any pair below that is discarded and the baseline is kept, so keep " +
         "the reward at least twice the risk. Place the stop beyond the level that invalidates the setup, not at an " +
-        "arbitrary distance. " +
-        "confirmed is ONLY a backdrop label: true = clean setup, false = conflicted/marginal. It does NOT change whether " +
+        "arbitrary distance. Use only the numbers provided; do not fabricate prices, flows, or news. " +
+        "confirmed is ONLY a backdrop label: true when net>=3, false otherwise. It does NOT change whether " +
         "the trade happens and does NOT by itself change the size. Never use words like reject/veto/skip/avoid in the " +
         "narrative; express caution purely through size and leverage. The size_multiplier and leverage you state in the " +
         "narrative MUST equal the JSON fields, since the system executes exactly those. " +
-        "adjusted_confidence: your honest 0-100 conviction for the proposed side AFTER the failure-mode review — it may " +
-        "be well below the system's number. narrative: 2-4 decision-grade sentences, no filler. risks: up to 5 short, " +
-        "concrete failure modes, most important first. " +
+        "adjusted_confidence: your 0-100 conviction for the proposed side after Steps 1-2, anchored to net rather than " +
+        "to the system's number — net>=5 is 70-85, net=3-4 is 58-70, net=1-2 is 48-58, net<=0 is 30-48. " +
+        "narrative: 2-4 decision-grade sentences that state both counts, no filler. risks: up to 5 short, concrete " +
+        "failure modes, most important first — naming a risk does NOT by itself lower the size, only a factor that " +
+        "crossed a Step 2 threshold does. " +
         "Respond ONLY with minified JSON: " +
-        "{\"confirmed\":bool,\"adjusted_confidence\":number,\"size_multiplier\":number,\"leverage\":number," +
-        "\"stop_loss\":number,\"take_profit\":number,\"narrative\":string,\"risks\":[string]}";
+        "{\"aligned_count\":number,\"blocking_count\":number,\"confirmed\":bool,\"adjusted_confidence\":number," +
+        "\"size_multiplier\":number,\"leverage\":number,\"stop_loss\":number,\"take_profit\":number," +
+        "\"narrative\":string,\"risks\":[string]}";
 
     public async Task<LlmValidation> ValidateAsync(
         AdvancedDecision decision, AdvancedDecisionInput input, CancellationToken cancellationToken)
@@ -105,7 +118,7 @@ public sealed class ClaudeDecisionValidator(
                 .Select(t => t.Text)
                 .FirstOrDefault() ?? "";
 
-            return ParseResponse(text, decision);
+            return ParseResponse(text, decision, logger);
         }
         catch (Exception ex)
         {
@@ -150,7 +163,7 @@ public sealed class ClaudeDecisionValidator(
         Recent headlines: {{headlines}}
         Quality cautions (do not block the trade — use them to size defensively): {{cautions}}
         {{BuildLearningBlock(learning)}}
-        Run the failure-mode review, then size the trade. Respond with the JSON schema only.
+        Work Steps 1-3: count alignment, count blocking factors, then size from net. Respond with the JSON schema only.
         """;
     }
 
@@ -181,7 +194,7 @@ public sealed class ClaudeDecisionValidator(
         return sb.ToString().TrimEnd();
     }
 
-    private LlmValidation ParseResponse(string text, AdvancedDecision decision)
+    internal static LlmValidation ParseResponse(string text, AdvancedDecision decision, ILogger? logger = null)
     {
         try
         {
@@ -209,13 +222,20 @@ public sealed class ClaudeDecisionValidator(
             decimal? takeProfit = root.TryGetProperty("take_profit", out var tp) && tp.ValueKind == JsonValueKind.Number
                 ? tp.GetDecimal() : null;
 
+            // The two tallies the sizing bands are derived from. Persisted so we can audit
+            // afterwards whether the multiplier Claude sent actually follows its own counts.
+            int? alignedCount = root.TryGetProperty("aligned_count", out var acnt) && acnt.ValueKind == JsonValueKind.Number
+                ? (int)Math.Round(acnt.GetDecimal()) : null;
+            int? blockingCount = root.TryGetProperty("blocking_count", out var bcnt) && bcnt.ValueKind == JsonValueKind.Number
+                ? (int)Math.Round(bcnt.GetDecimal()) : null;
+
             return new LlmValidation(
                 confirmed, Math.Clamp(adjusted, 0m, 100m), narrative, risks, true,
-                sizeMultiplier, leverage, stopLoss, takeProfit);
+                sizeMultiplier, leverage, stopLoss, takeProfit, alignedCount, blockingCount);
         }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "Failed to parse LLM JSON: {Text}", text);
+            logger?.LogDebug(ex, "Failed to parse LLM JSON: {Text}", text);
             return Passthrough(decision, "LLM parse error");
         }
     }

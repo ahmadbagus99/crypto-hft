@@ -108,7 +108,11 @@ public sealed record LlmValidation(
     decimal SizeMultiplier = 1m,
     int? Leverage = null,
     decimal? StopLoss = null,
-    decimal? TakeProfit = null);
+    decimal? TakeProfit = null,
+    // The two tallies Claude's sizing band is derived from (null when the LLM was not consulted
+    // or the model omitted them). Logged so the multiplier can be audited against its own counts.
+    int? AlignedCount = null,
+    int? BlockingCount = null);
 
 // The full explainable decision output
 public sealed record AdvancedDecision(

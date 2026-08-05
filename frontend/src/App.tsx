@@ -543,6 +543,25 @@ function SettingsPage() {
                 </p>
               </div>
             </div>
+            <div className="flex items-start gap-3 rounded-md border border-hairline bg-void/60 p-3">
+              <input
+                id="ai-direction"
+                type="checkbox"
+                checked={aiDirection}
+                onChange={e => setAiDirection(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-cyan-500"
+              />
+              <div>
+                <label htmlFor="ai-direction" className="block text-sm text-slate-200">AI Ikut Menentukan Arah</label>
+                <p className="mt-1 text-xs text-slate-600">
+                  Aktif: conviction AI dilebur ke skor arah engine dengan bobot 35% — setuju menguatkan, ragu bisa
+                  menjatuhkan sinyal di bawah threshold, menentang keras membalik sisi (SL/TP ikut dicerminkan).
+                  Nonaktif: engine sendiri yang menentukan arah, AI hanya mengatur ukuran. Jumlah panggilan API sama
+                  di kedua mode. ⚠️ Saat pernah diberi hak penuh, AI menolak hampir semua sinyal — bobot 35% ada
+                  untuk menahan pola itu, tapi jumlah trade tetap bisa turun banyak.
+                </p>
+              </div>
+            </div>
             <div>
               <label className="mb-1 block text-xs text-slate-400">Metode Trading</label>
               <select
@@ -554,6 +573,22 @@ function SettingsPage() {
                 <option value="1">Scalper — geometri 15m, target 0.4–0.8%, in-out cepat</option>
               </select>
               <p className="mt-1 text-xs text-slate-600">Scalper: konfirmasi 30 detik, cooldown 10/20 menit, SL/TP dari ATR 15m. Fee round-trip ~0.1% — target di bawah itu tidak diambil. Berlaku di scan berikutnya tanpa restart.</p>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-400">Tipe Order Entry</label>
+              <select
+                value={entryOrderMode}
+                onChange={e => setEntryOrderMode(e.target.value)}
+                className="w-full rounded-md border border-hairline bg-void px-3 py-2 text-slate-100 ring-hud"
+              >
+                <option value="0">Maker — limit post-only, fee 0.02%</option>
+                <option value="1">Taker — market order, fee 0.05%, isi seketika</option>
+              </select>
+              <p className="mt-1 text-xs text-slate-600">
+                Maker memasang limit sedikit di belakang harga dan menunggu terisi — fee entry turun dari 0.05% ke 0.02%,
+                tapi sebagian sinyal lolos tanpa terisi. Stop-loss tetap market order apapun pilihannya, dan ~74% posisi
+                keluar lewat SL, jadi penghematan bersihnya sekitar 30% dari total fee — bukan 60%.
+              </p>
             </div>
             <div>
               <label className="mb-1 block text-xs text-slate-400">Auto Position Sizing</label>

@@ -1511,3 +1511,55 @@ fee ~4×: periode yang sama akan berakhir sekitar −1.3 USDT alih-alih −5.07.
 
 ### Testing
 - **252/252 unit test pass**; build bersih.
+
+---
+
+## 32. Entry maker order — setting baru `EntryOrderMode` (2026-08-05)
+
+Latar: Bagian 31 menunjukkan gross PnL ≈ 0 dan seluruh kerugian adalah fee. Karena
+`EV = −fee` tanpa edge arah, **menurunkan fee adalah satu-satunya perbaikan dengan
+efek yang dijamin.** Entry selama ini MARKET (taker 0.05%).
+
+### Setting
+`TradingSettings.EntryOrderMode` (0 = Maker default, 1 = Taker; kolom idempotent,
+dropdown di Settings). Dibaca per tick — ganti mode berlaku di scan berikutnya.
+
+| | Maker (0) | Taker (1) |
+|---|---|---|
+| Entry | LIMIT post-only 0.02% di dalam book | MARKET |
+| Fee entry | 0.020% | 0.050% |
+| Round trip | **0.070%** | 0.100% |
+| Risiko | bisa tidak terisi | selalu terisi |
+
+### Rancangan
+- Harga limit: long `price × (1 − 0.0002)`, short `× (1 + 0.0002)` — resting, dan
+  sekaligus fill sedikit lebih baik dari market.
+- **`timeInForce = GTX` (post-only)** untuk limit non-reduce-only: Binance MENOLAK
+  order kalau akan menyeberang, jadi mustahil tanpa sengaja membayar taker.
+  Reduce-only tetap GTC — exit harus boleh terisi.
+- **Pembersih order menggantung**: tiap tick saat flat, semua limit entry berstatus
+  New dibatalkan sebelum entry baru dipertimbangkan. Tanpa ini, tick 30-detik akan
+  menumpuk order dan beberapa bisa terisi bersamaan jadi posisi berlipat.
+- **STOP LOSS TETAP MARKET di kedua mode.** Stop limit bisa gagal terisi saat harga
+  jatuh cepat dan meninggalkan posisi telanjang. Ini batas keselamatan, bukan pilihan.
+  Konsekuensinya penghematan 30%, bukan 60% — 74% exit lewat SL yang tetap taker.
+
+### Efek terukur
+Order tidak terisi = **fee nol** dan trade tidak terjadi. Untuk engine ini itu justru
+menguntungkan: limit yang dilewati pasar adalah entry yang harganya sedang lari, dan
+data realized menunjukkan entry semacam itu yang merugi.
+
+Proyeksi ke 24 trade yang sudah terjadi: fee −4.97 → ~−3.5; digabung cooldown baru
+(Bagian 31, frekuensi ¼) periode yang sama berakhir sekitar **−0.9 USDT** alih-alih
+−5.07.
+
+> Tetap **pengurangan biaya, bukan edge**. Belum ada bukti engine bisa menebak arah.
+
+### Belum dikerjakan (kandidat lanjutan)
+TP sebagai LIMIT reduce-only (maker) — menambah ~8% penghematan lagi, tapi akun ini
+punya quirk Algo Order API (−4120) sehingga perlu diverifikasi terpisah bahwa limit
+reduce-only biasa diterima.
+
+### Testing
+- **257/257 unit test pass** (5 baru: harga maker resting di sisi benar, offset cukup
+  kecil untuk terisi, default Maker, aritmetika penghematan fee). Build + frontend bersih.

@@ -86,6 +86,7 @@ async function saveTradingSettings(payload: {
   lunarCrushApiKey?: string;
   tradingStyle?: number;
   accountRiskGuardEnabled?: boolean;
+  entryOrderMode?: number;
 }): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", {
     method: "PUT",
@@ -352,6 +353,7 @@ function SettingsPage() {
   const [autoSizingMode, setAutoSizingMode] = useState("0");
   const [tradingStyle, setTradingStyle] = useState("0");
   const [riskGuard, setRiskGuard] = useState(true);
+  const [entryOrderMode, setEntryOrderMode] = useState("0");
   const [targetLeverage, setTargetLeverage] = useState("20");
   const [confidenceThreshold, setConfidenceThreshold] = useState("80");
   const [positionCheckInterval, setPositionCheckInterval] = useState("30");
@@ -393,6 +395,7 @@ function SettingsPage() {
       setAutoSizingMode(String(current.autoSizingMode ?? 0));
       setTradingStyle(String(current.tradingStyle ?? 0));
       setRiskGuard(current.accountRiskGuardEnabled ?? true);
+      setEntryOrderMode(String(current.entryOrderMode ?? 0));
       setTargetLeverage(String(current.targetLeverage ?? 20));
       setAiModel(current.aiModel ?? "claude-opus-4-8");
       setConfidenceThreshold(String(current.confidenceThreshold ?? 80));
@@ -418,6 +421,7 @@ function SettingsPage() {
         autoSizingMode: Number(autoSizingMode),
         tradingStyle: Number(tradingStyle),
         accountRiskGuardEnabled: riskGuard,
+        entryOrderMode: Number(entryOrderMode),
         targetLeverage: Number(targetLeverage) || undefined,
         apiKey: apiKey || undefined,
         apiSecret: apiSecret || undefined,

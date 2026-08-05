@@ -353,7 +353,12 @@ public sealed class BinanceFuturesTradingExecutor(
 
         if (request.Kind is OrderKind.Limit or OrderKind.StopLimit)
         {
-            parameters["timeInForce"] = "GTC";
+            // A non-reduce-only limit is an ENTRY posted for the maker fee, so it goes out
+            // post-only: Binance rejects it outright rather than letting it cross and charge
+            // taker. A rejection costs nothing — the signal simply is not taken at that price,
+            // which beats silently paying the fee the mode exists to avoid. Reduce-only limits
+            // (protective exits) stay GTC, because an exit must be allowed to fill.
+            parameters["timeInForce"] = request.ReduceOnly ? "GTC" : "GTX";
         }
 
         return parameters;

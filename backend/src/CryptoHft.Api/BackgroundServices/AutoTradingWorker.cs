@@ -3,7 +3,10 @@ using CryptoHft.Application.Account;
 using CryptoHft.Application.DecisionEngine;
 using CryptoHft.Application.Risk;
 using CryptoHft.Application.Trading;
+using CryptoHft.Domain.Entities;
 using CryptoHft.Domain.Enums;
+using CryptoHft.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 
 namespace CryptoHft.Api.BackgroundServices;
 
@@ -26,6 +29,19 @@ public sealed class AutoTradingWorker(
     // BTCUSDT futures LOT_SIZE/MARKET_LOT_SIZE step. Used to snap target-margin sizing to
     // the nearest tradable quantity; the exchange rule validator remains the final authority.
     private const decimal QuantityStep = 0.001m;
+
+    // How far inside the book a maker entry is posted, as a fraction of price. Large enough
+    // that the order rests rather than crossing (post-only would otherwise reject it), small
+    // enough to still fill on ordinary two-way trade. A long also ends up buying slightly
+    // cheaper than the market order would have, and a short selling slightly dearer.
+    private const decimal MakerEntryOffset = 0.0002m;
+
+    // A resting buy sits below the market and a resting sell above it — that is what makes
+    // the fill a maker fill.
+    private static decimal MakerEntryPrice(TradeSide side, decimal referencePrice)
+        => side == TradeSide.Long
+            ? Math.Round(referencePrice * (1m - MakerEntryOffset), 2)
+            : Math.Round(referencePrice * (1m + MakerEntryOffset), 2);
     private static readonly TimeSpan Interval = TimeSpan.FromSeconds(30);
     private DateTimeOffset _nextOpenPositionRevalidationAt = DateTimeOffset.MinValue;
     private int _openPositionWarningCount;
@@ -97,6 +113,12 @@ public sealed class AutoTradingWorker(
         // Position closed: the trailing history belongs to that position only — wipe it so
         // the dashboard card starts fresh with the next position.
         trailingStopActivity.Clear(Symbol);
+
+        // A maker entry that did not fill is still resting on the book. Clear it before
+        // considering a new one: otherwise every 30s tick that still likes the signal would
+        // stack another order, and several could fill at once into a position many times the
+        // intended size. Flat plus a live entry order is the only state this can happen in.
+        await CancelRestingEntryOrdersAsync(cancellationToken);
 
         var now = DateTimeOffset.UtcNow;
         // Entry timings follow the configured trading style (read per tick, so a settings
@@ -217,12 +239,21 @@ public sealed class AutoTradingWorker(
         using var scope = scopeFactory.CreateScope();
         var executor = scope.ServiceProvider.GetRequiredService<ITradingExecutor>();
 
+        // Maker mode posts the entry just inside the book and pays 0.02% instead of the
+        // 0.05% a market order crosses for. The order may go unfilled, which for this
+        // engine is a feature rather than a cost: an unfilled limit is a trade where price
+        // ran away from us, and those are exactly the chased entries the realized data
+        // shows losing. No fill means no fee at all.
+        var maker = (EntryOrderMode)settings.EntryOrderMode == EntryOrderMode.Maker;
+        var entryKind = maker ? OrderKind.Limit : OrderKind.Market;
+        var makerPrice = maker ? MakerEntryPrice(side, decision.EntryPrice) : (decimal?)null;
+
         var order = new TradeOrderRequest(
             Symbol,
             side,
-            OrderKind.Market,
+            entryKind,
             quantity,
-            Price: null,
+            Price: makerPrice,
             StopPrice: null,
             TakeProfit: decision.TakeProfit,
             StopLoss: decision.StopLoss,
@@ -241,6 +272,48 @@ public sealed class AutoTradingWorker(
         catch (InvalidOperationException ex)
         {
             logger.LogWarning(ex, "Auto-trade order rejected");
+        }
+    }
+
+    // Cancels any unfilled ENTRY limit order (non-reduce-only, still New). Protective
+    // reduce-only orders are never touched — those belong to a position, and this only runs
+    // when flat. Failures are logged and swallowed: a stale order is a nuisance, but throwing
+    // here would stop the tick from doing anything else.
+    private async Task CancelRestingEntryOrdersAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+            var resting = await db.Orders
+                .Where(o => o.Symbol == Symbol
+                            && !o.ReduceOnly
+                            && o.Kind == OrderKind.Limit
+                            && o.Status == OrderStatus.New
+                            && o.ExchangeOrderId != null)
+                .ToListAsync(cancellationToken);
+            if (resting.Count == 0) return;
+
+            var executor = scope.ServiceProvider.GetRequiredService<ITradingExecutor>();
+            foreach (var order in resting)
+            {
+                try
+                {
+                    await executor.CancelOrderAsync(Symbol, order.ExchangeOrderId!, cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Already filled or already gone on the venue — either way it is no longer resting.
+                    logger.LogDebug(ex, "Resting entry order {OrderId} could not be cancelled", order.ExchangeOrderId);
+                }
+                order.Status = OrderStatus.Cancelled;
+            }
+            await db.SaveChangesAsync(cancellationToken);
+            logger.LogInformation("Cleared {Count} unfilled maker entry order(s) before the next scan", resting.Count);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not clear resting entry orders");
         }
     }
 

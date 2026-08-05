@@ -46,6 +46,15 @@ public enum DecisionAction
 
 // Why a closed position closed — the signal that lets SL/TP geometry learn from real exits.
 // Unknown stays 0 so pre-existing rows and unclassifiable closes never teach the wrong lesson.
+// How entry orders reach the exchange. Maker posts a limit order just inside the book
+// and pays the maker fee (0.02% vs 0.05% taker) but may go unfilled; Taker crosses the
+// spread and always fills. Persisted as int in TradingSettings — append only.
+public enum EntryOrderMode
+{
+    Maker = 0,
+    Taker = 1
+}
+
 // How the autonomous system trades. Persisted as int in TradingSettings — append only.
 // Intraday (default): the original behavior — 1h geometry, targets 1-2%, holds hours.
 // Scalper: 15m geometry, targets ~0.4-0.8%, faster confirmation and cooldowns.

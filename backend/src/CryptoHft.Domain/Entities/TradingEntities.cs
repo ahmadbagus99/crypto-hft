@@ -155,6 +155,7 @@ public sealed class PersistedTradingSettings
     // Account-level guard (daily-loss pause, consecutive-loss pause, exposure clamp).
     // True = guard active (blocks/trims trading when tripped); false = bypassed.
     public bool AccountRiskGuardEnabled { get; set; } = true;
+    public int EntryOrderMode { get; set; } // 0 = Maker (limit, post-only), 1 = Taker (market)
 }
 
 public sealed class NewsItem

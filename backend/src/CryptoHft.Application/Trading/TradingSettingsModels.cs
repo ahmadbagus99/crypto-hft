@@ -22,7 +22,8 @@ public sealed record TradingSettingsDto(
     bool HasLunarCrushKey,
     string LunarCrushKeyPreview,
     int TradingStyle,
-    bool AccountRiskGuardEnabled);
+    bool AccountRiskGuardEnabled,
+    int EntryOrderMode);
 
 public sealed record UpdateTradingSettingsRequest(
     bool PaperTradingOnly,
@@ -43,7 +44,8 @@ public sealed record UpdateTradingSettingsRequest(
     string? LunarCrushApiKey,
     decimal? TargetMarginUsdt = null,
     int? TradingStyle = null,
-    bool? AccountRiskGuardEnabled = null);
+    bool? AccountRiskGuardEnabled = null,
+    int? EntryOrderMode = null);
 
 public sealed record ConnectionTestResult(bool Connected, string Message, string? Detail = null);
 
@@ -88,4 +90,6 @@ public sealed record RuntimeTradingSettings(
     int TradingStyle = 0,
     // Guard akun (pause daily-loss, pause consecutive-loss, exposure clamp).
     // True = aktif memblok/memotong; false = dilewati (trading tetap jalan).
-    bool AccountRiskGuardEnabled = true);
+    bool AccountRiskGuardEnabled = true,
+    // 0 = Maker (limit post-only, fee 0.02%, bisa tidak terisi), 1 = Taker (market, selalu terisi).
+    int EntryOrderMode = 0);

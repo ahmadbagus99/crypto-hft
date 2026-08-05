@@ -912,6 +912,7 @@ using (var scope = app.Services.CreateScope())
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "TargetLeverage" integer NOT NULL DEFAULT 20;
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "TradingStyle" integer NOT NULL DEFAULT 0;
         ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "AccountRiskGuardEnabled" boolean NOT NULL DEFAULT TRUE;
+        ALTER TABLE trading."TradingSettings" ADD COLUMN IF NOT EXISTS "EntryOrderMode" integer NOT NULL DEFAULT 0;
         CREATE TABLE IF NOT EXISTS trading."AiUsage" (
             "Id" uuid PRIMARY KEY,
             "Model" text NOT NULL,

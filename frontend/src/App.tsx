@@ -920,12 +920,20 @@ function DashboardPage() {
   // Levels of the live position, lifted here so the chart can draw the same numbers
   // the position panel reports. Null when flat, which clears the lines.
   const openPosition = displayedPositions.find((p) => Math.abs(Number(p.positionAmount)) > 0);
-  const chartLevels: ChartLevels | null = openPosition
-    ? {
-        entry: Number(openPosition.entryPrice) || null,
-        ...getActiveProtectiveLevels(openPosition, journal),
-      }
-    : null;
+  const chartLevels: ChartLevels | null = (() => {
+    if (!openPosition) return null;
+    const fromOrders = getActiveProtectiveLevels(openPosition, journal);
+    // The trailing guard reports where it has ratcheted the stop to, and that is the
+    // more reliable source: amending swaps one exchange order for another, so reading
+    // the order book alone leaves a brief window where the old stop is already
+    // cancelled and the new one is not yet recorded — the line would blink out.
+    const ratcheted = trailingStops?.currentStopLoss ?? null;
+    return {
+      entry: Number(openPosition.entryPrice) || null,
+      stopLoss: ratcheted ?? fromOrders.stopLoss,
+      takeProfit: fromOrders.takeProfit,
+    };
+  })();
 
   useEffect(() => {
     const connection = createTradingConnection();

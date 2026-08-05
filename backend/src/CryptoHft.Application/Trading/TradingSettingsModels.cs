@@ -23,7 +23,8 @@ public sealed record TradingSettingsDto(
     string LunarCrushKeyPreview,
     int TradingStyle,
     bool AccountRiskGuardEnabled,
-    int EntryOrderMode);
+    int EntryOrderMode,
+    bool AiDirectionEnabled);
 
 public sealed record UpdateTradingSettingsRequest(
     bool PaperTradingOnly,
@@ -45,7 +46,8 @@ public sealed record UpdateTradingSettingsRequest(
     decimal? TargetMarginUsdt = null,
     int? TradingStyle = null,
     bool? AccountRiskGuardEnabled = null,
-    int? EntryOrderMode = null);
+    int? EntryOrderMode = null,
+    bool? AiDirectionEnabled = null);
 
 public sealed record ConnectionTestResult(bool Connected, string Message, string? Detail = null);
 
@@ -92,4 +94,7 @@ public sealed record RuntimeTradingSettings(
     // True = aktif memblok/memotong; false = dilewati (trading tetap jalan).
     bool AccountRiskGuardEnabled = true,
     // 0 = Maker (limit post-only, fee 0.02%, bisa tidak terisi), 1 = Taker (market, selalu terisi).
-    int EntryOrderMode = 0);
+    int EntryOrderMode = 0,
+    // True = conviction Claude ikut menentukan arah (bisa membalik sisi); false = engine
+    // sendiri yang menentukan arah dan Claude hanya mengatur ukuran.
+    bool AiDirectionEnabled = false);

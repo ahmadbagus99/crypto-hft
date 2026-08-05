@@ -87,6 +87,7 @@ async function saveTradingSettings(payload: {
   tradingStyle?: number;
   accountRiskGuardEnabled?: boolean;
   entryOrderMode?: number;
+  aiDirectionEnabled?: boolean;
 }): Promise<TradingSettings> {
   const response = await fetch("/api/settings/trading", {
     method: "PUT",
@@ -354,6 +355,7 @@ function SettingsPage() {
   const [tradingStyle, setTradingStyle] = useState("0");
   const [riskGuard, setRiskGuard] = useState(true);
   const [entryOrderMode, setEntryOrderMode] = useState("0");
+  const [aiDirection, setAiDirection] = useState(false);
   const [targetLeverage, setTargetLeverage] = useState("20");
   const [confidenceThreshold, setConfidenceThreshold] = useState("80");
   const [positionCheckInterval, setPositionCheckInterval] = useState("30");
@@ -396,6 +398,7 @@ function SettingsPage() {
       setTradingStyle(String(current.tradingStyle ?? 0));
       setRiskGuard(current.accountRiskGuardEnabled ?? true);
       setEntryOrderMode(String(current.entryOrderMode ?? 0));
+      setAiDirection(current.aiDirectionEnabled ?? false);
       setTargetLeverage(String(current.targetLeverage ?? 20));
       setAiModel(current.aiModel ?? "claude-opus-4-8");
       setConfidenceThreshold(String(current.confidenceThreshold ?? 80));
@@ -422,6 +425,7 @@ function SettingsPage() {
         tradingStyle: Number(tradingStyle),
         accountRiskGuardEnabled: riskGuard,
         entryOrderMode: Number(entryOrderMode),
+        aiDirectionEnabled: aiDirection,
         targetLeverage: Number(targetLeverage) || undefined,
         apiKey: apiKey || undefined,
         apiSecret: apiSecret || undefined,

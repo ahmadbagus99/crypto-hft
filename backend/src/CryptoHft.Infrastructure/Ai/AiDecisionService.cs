@@ -104,7 +104,7 @@ public sealed class AiDecisionService(
         if (useLlm && equity is not null && decision.Confidence >= settings.ConfidenceThreshold && decision.Action != DecisionAction.NoTrade)
         {
             var validation = await llmValidator.ValidateAsync(decision, input, cancellationToken);
-            decision = ApplyValidation(decision, validation, profile.MinimumRiskReward);
+            decision = ApplyValidation(decision, validation, profile.MinimumRiskReward, settings.AiDirectionEnabled);
         }
 
         // Log the decision for online evaluation (fire-and-forget against the DB)
@@ -117,6 +117,19 @@ public sealed class AiDecisionService(
         return decision;
     }
 
+    // Same directional bands the engine uses, so a blended score is classified identically
+    // to a raw one and the entry gate sees one consistent scale.
+    private static DecisionAction ToBlendedAction(decimal directional) => directional switch
+    {
+        >= 80 => DecisionAction.StrongBuy,
+        >= 65 => DecisionAction.Buy,
+        > 55 => DecisionAction.WeakBuy,
+        >= 45 => DecisionAction.NoTrade,
+        > 35 => DecisionAction.WeakSell,
+        > 20 => DecisionAction.Sell,
+        _ => DecisionAction.StrongSell
+    };
+
     // Hard safety caps for Claude's defensive resizing when it is hesitant.
     private const decimal MinSizeMultiplier = 0.1m;
     private const decimal MaxSizeMultiplier = 1.5m;
@@ -128,12 +141,73 @@ public sealed class AiDecisionService(
     // the confirmed flag, which is now just a display signal for "clean backdrop vs hesitant".
     // Decoupling sizing from confirmation keeps the narrative ("trading at 0.65x") consistent with
     // what actually gets placed. Its narrative + risks are always attached for the dashboard/DB log.
-    private static AdvancedDecision ApplyValidation(AdvancedDecision d, LlmValidation v, decimal minRiskReward)
+    // How much of the final directional score Claude owns when direction blending is on.
+    // A third is deliberate: enough that Claude can talk the engine out of a marginal setup
+    // or turn it around, not enough to manufacture a trade the engine sees nothing in. The
+    // engine keeps the majority because it is deterministic and auditable; Claude is not.
+    internal const decimal AiDirectionWeight = 0.35m;
+
+    // Blends Claude's conviction into the directional score and returns the resulting score.
+    // adjusted_confidence is Claude's 0-100 conviction FOR THE SIDE THE ENGINE PROPOSED, so it
+    // is first put back on the shared bullish scale before mixing.
+    internal static decimal BlendDirection(decimal engineBullishScore, decimal adjustedConfidence, bool engineProposedLong)
+    {
+        var claudeBullish = engineProposedLong ? adjustedConfidence : 100m - adjustedConfidence;
+        var blended = engineBullishScore * (1m - AiDirectionWeight) + claudeBullish * AiDirectionWeight;
+        return Math.Clamp(blended, 0m, 100m);
+    }
+
+    private static AdvancedDecision ApplyValidation(
+        AdvancedDecision d, LlmValidation v, decimal minRiskReward, bool blendDirection)
     {
         if (!v.Used || !d.ShouldTrade)
             return d with { Llm = v };
 
         var isBuy = d.Action is DecisionAction.WeakBuy or DecisionAction.Buy or DecisionAction.StrongBuy;
+
+        // Direction blending: Claude stops being purely advisory and joins the directional
+        // read. It can strengthen the engine's call, weaken it below the entry threshold, or
+        // — when it disagrees hard enough to drag the blended score past neutral — reverse it.
+        // The protective geometry is mirrored on a reversal so a flipped trade is not left
+        // with a stop on the wrong side of entry.
+        if (blendDirection)
+        {
+            var blended = BlendDirection(d.ConfidenceBuy, v.AdjustedConfidence, isBuy);
+            var flipped = (blended > 50m) != isBuy;
+
+            if (flipped)
+            {
+                var entry = d.EntryPrice;
+                var stopDistance = Math.Abs(entry - d.StopLoss);
+                var targetDistance = Math.Abs(d.TakeProfit - entry);
+                var nowLong = blended > 50m;
+                d = d with
+                {
+                    StopLoss = Math.Round(nowLong ? entry - stopDistance : entry + stopDistance, 2),
+                    TakeProfit = Math.Round(nowLong ? entry + targetDistance : entry - targetDistance, 2),
+                };
+                isBuy = nowLong;
+            }
+
+            var action = ToBlendedAction(blended);
+            var conviction = blended > 50m ? blended : 100m - blended;
+            var actionable = action != DecisionAction.NoTrade;
+            d = d with
+            {
+                Action = action,
+                ConfidenceBuy = Math.Round(blended, 1),
+                ConfidenceSell = Math.Round(100m - blended, 1),
+                ConfidenceHold = Math.Round(Math.Clamp(100m - Math.Abs(blended - 50m) * 2m, 0m, 100m), 1),
+                Confidence = Math.Round(actionable ? conviction : Math.Clamp(100m - Math.Abs(blended - 50m) * 2m, 0m, 100m), 1),
+                ShouldTrade = actionable && d.ShouldTrade,
+                NoTradeReason = actionable ? d.NoTradeReason : "AI + engine blend is neutral (Hold)",
+                Reasons = d.Reasons.Append(
+                    $"AI direction blend: engine {d.ConfidenceBuy:F1} x {1m - AiDirectionWeight:P0} + Claude {v.AdjustedConfidence:F1} x {AiDirectionWeight:P0} = {blended:F1}"
+                    + (flipped ? " — SIDE REVERSED, protective levels mirrored" : "")).ToList()
+            };
+
+            if (!d.ShouldTrade) return d with { Llm = v };
+        }
 
         // Size: clamp the multiplier, then scale the baseline qty. Keep 6-dp precision (matching the
         // engine baseline) so a small budget is not re-zeroed here — the exchange rule validator

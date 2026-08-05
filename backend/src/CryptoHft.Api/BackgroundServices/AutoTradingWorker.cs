@@ -183,7 +183,8 @@ public sealed class AutoTradingWorker(
         var llmVerdict = AutoEntryPolicy.EvaluateLlm(
             decision,
             confirmation.Side.Value,
-            settings.ConfidenceThreshold);
+            settings.ConfidenceThreshold,
+            settings.AiDirectionEnabled);
         if (!llmVerdict.Allowed)
         {
             _entryCandidate = null;
@@ -230,6 +231,8 @@ public sealed class AutoTradingWorker(
         if (verdict.AdjustedQuantity is not null)
             logger.LogInformation("Risk gate resized order: {Reason}", verdict.Reason);
 
+        // Read the side off the FINAL decision, not the pre-validation candidate: with
+        // direction blending on, Claude may have reversed it and the order must follow.
         var side = decision.Action is DecisionAction.WeakBuy or DecisionAction.Buy or DecisionAction.StrongBuy
             ? TradeSide.Long
             : TradeSide.Short;

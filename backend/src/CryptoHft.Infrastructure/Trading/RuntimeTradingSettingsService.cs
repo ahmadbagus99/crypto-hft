@@ -93,7 +93,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                     TargetMarginUsdt: row.TargetMarginUsdt > 0 ? row.TargetMarginUsdt : 3m,
                     TradingStyle: NormalizeTradingStyle(row.TradingStyle),
                     AccountRiskGuardEnabled: row.AccountRiskGuardEnabled,
-                    EntryOrderMode: NormalizeEntryOrderMode(row.EntryOrderMode));
+                    EntryOrderMode: NormalizeEntryOrderMode(row.EntryOrderMode),
+                    AiDirectionEnabled: row.AiDirectionEnabled);
             }
         }
         catch (Exception ex)
@@ -128,7 +129,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                 TargetMarginUsdt = request.TargetMarginUsdt is > 0 ? Math.Clamp(request.TargetMarginUsdt.Value, 1m, 1000m) : _settings.TargetMarginUsdt,
                 TradingStyle = request.TradingStyle is not null ? NormalizeTradingStyle(request.TradingStyle.Value) : _settings.TradingStyle,
                 AccountRiskGuardEnabled = request.AccountRiskGuardEnabled ?? _settings.AccountRiskGuardEnabled,
-                EntryOrderMode = request.EntryOrderMode is not null ? NormalizeEntryOrderMode(request.EntryOrderMode.Value) : _settings.EntryOrderMode
+                EntryOrderMode = request.EntryOrderMode is not null ? NormalizeEntryOrderMode(request.EntryOrderMode.Value) : _settings.EntryOrderMode,
+                AiDirectionEnabled = request.AiDirectionEnabled ?? _settings.AiDirectionEnabled
             };
             updated = _settings;
         }
@@ -170,6 +172,7 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             row.TradingStyle = s.TradingStyle;
             row.AccountRiskGuardEnabled = s.AccountRiskGuardEnabled;
             row.EntryOrderMode = s.EntryOrderMode;
+            row.AiDirectionEnabled = s.AiDirectionEnabled;
 
             db.SaveChanges();
         }
@@ -205,7 +208,8 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
             Mask(settings.LunarCrushApiKey),
             settings.TradingStyle,
             settings.AccountRiskGuardEnabled,
-            settings.EntryOrderMode);
+            settings.EntryOrderMode,
+            settings.AiDirectionEnabled);
     }
 
     private static decimal ClampPercent(decimal value, decimal min, decimal max)

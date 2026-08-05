@@ -1563,3 +1563,53 @@ reduce-only biasa diterima.
 ### Testing
 - **257/257 unit test pass** (5 baru: harga maker resting di sisi benar, offset cukup
   kecil untuk terisi, default Maker, aritmetika penghematan fee). Build + frontend bersih.
+
+---
+
+## 33. AI ikut menentukan arah — setting `AiDirectionEnabled` (2026-08-05)
+
+Permintaan owner: setting yang bila aktif membuat Claude **bersatu dengan engine** dalam
+menentukan arah posisi; bila nonaktif, engine sendiri yang menentukan arah (perilaku lama).
+
+### Rancangan peleburan
+Claude sudah mengembalikan `adjusted_confidence` = "conviction 0-100 untuk sisi yang
+DIUSULKAN engine". Nilai itu dikembalikan ke skala bullish bersama lalu dilebur:
+
+```
+claudeBullish = engineProposedLong ? adjusted : 100 − adjusted
+D_final       = D_engine × 0.65 + claudeBullish × 0.35
+```
+
+`AiDirectionWeight = 0.35` disengaja **minoritas**: cukup untuk membatalkan atau membalik
+setup marginal, tidak cukup untuk mengarang posisi dari sinyal yang engine baca netral
+(dari D=50, Claude maksimum hanya bisa mencapai 67.5). Engine memegang mayoritas karena
+dia deterministik dan bisa diaudit; Claude tidak.
+
+Sejarah yang membenarkan pembatasan ini: saat Claude pernah punya hak gate penuh, dia
+menolak hampir semua sinyal (bias risk-averse struktural LLM) — lihat [[ai-trading-gate-design]].
+
+### Tiga hasil yang mungkin
+| kondisi | efek |
+|---|---|
+| Claude setuju | conviction menguat, lebih mudah lolos threshold |
+| Claude ragu | conviction melemah, bisa jatuh di bawah threshold → batal |
+| Claude menentang keras | skor menyeberang netral → **sisi DIBALIK** |
+
+Saat sisi terbalik, **SL/TP dicerminkan terhadap entry** (jarak stop & target dipertahankan)
+supaya posisi tidak berakhir dengan stop di sisi yang salah. `AutoEntryPolicy.EvaluateLlm`
+yang biasanya memblok perubahan sisi kini mengizinkannya HANYA saat mode ini aktif, dan
+`side` order dibaca dari decision FINAL, bukan dari kandidat pra-validasi.
+
+Aksi hasil blend diklasifikasi dengan band yang sama persis dengan engine (`ToBlendedAction`),
+jadi gate entry melihat satu skala yang konsisten. Blend yang jatuh di zona 45-55 menjadi
+NoTrade dengan alasan "AI + engine blend is neutral (Hold)".
+
+### Biaya
+Claude tetap hanya dipanggil saat engine sudah punya kandidat actionable — jadi jumlah
+panggilan (dan token) TIDAK berubah. Mode ini mengubah bobot suaranya, bukan frekuensinya.
+
+### Testing
+- **265/265 unit test pass** (8 baru: engine pegang mayoritas, setuju menguatkan, ragu
+  melemahkan tanpa membalik, tentangan keras membalik sisi, orientasi conviction pada
+  proposal short, Claude tak bisa mengarang dari netral, blend selalu 0-100).
+  Build backend + frontend bersih.

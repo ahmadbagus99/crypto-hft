@@ -156,6 +156,9 @@ public sealed class PersistedTradingSettings
     // True = guard active (blocks/trims trading when tripped); false = bypassed.
     public bool AccountRiskGuardEnabled { get; set; } = true;
     public int EntryOrderMode { get; set; } // 0 = Maker (limit, post-only), 1 = Taker (market)
+    // True = Claude's conviction is blended into the directional score and may flip the side.
+    // False = engine alone decides direction; Claude only sizes (the long-standing behaviour).
+    public bool AiDirectionEnabled { get; set; }
 }
 
 public sealed class NewsItem

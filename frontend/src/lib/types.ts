@@ -456,6 +456,7 @@ export type TradingSettings = {
   tradingStyle: number;
   accountRiskGuardEnabled: boolean;
   entryOrderMode: number;
+  aiDirectionEnabled: boolean;
 };
 
 export type AiUsageSummary = {

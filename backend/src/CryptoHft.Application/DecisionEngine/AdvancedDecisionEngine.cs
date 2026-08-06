@@ -97,7 +97,10 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         AdvancedDecisionInput input, RiskProfile profile, decimal equity,
         IReadOnlyDictionary<string, FactorAdjustment>? factorAdjustments = null,
         ExecutionTuning? tuning = null,
-        TradingStyleProfile? styleProfile = null)
+        TradingStyleProfile? styleProfile = null,
+        // Observed centre of each category's own distribution. Null (or absent entries)
+        // reproduces the original fixed-50 behaviour exactly — see CategoryBaseline.
+        IReadOnlyDictionary<string, decimal>? categoryBaselines = null)
     {
         var style = styleProfile ?? TradingStyleProfile.Intraday;
         // The learned execution tuning was collected from intraday (1h-geometry) exits;
@@ -184,6 +187,14 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         foreach (var (key, w) in weights)
         {
             if (!scores.TryGetValue(key, out var s)) continue;
+
+            // Centre the input on its own habit before it votes, so a category that simply
+            // never sits near 50 stops contributing a permanent tilt. Applied before any
+            // inversion: folding around 50 is only meaningful once 50 is really this
+            // input's neutral.
+            if (categoryBaselines is not null && categoryBaselines.TryGetValue(key, out var baseline))
+                s = CategoryBaseline.Recenter(s, baseline);
+
             if (factorAdjustments is not null
                 && factorAdjustments.TryGetValue(key, out var adj) && adj.Inverted)
             {

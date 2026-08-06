@@ -163,5 +163,6 @@ public interface IAdvancedDecisionEngine
         decimal equity,
         IReadOnlyDictionary<string, FactorAdjustment>? factorAdjustments = null,
         ExecutionTuning? tuning = null,
-        TradingStyleProfile? styleProfile = null);
+        TradingStyleProfile? styleProfile = null,
+        IReadOnlyDictionary<string, decimal>? categoryBaselines = null);
 }

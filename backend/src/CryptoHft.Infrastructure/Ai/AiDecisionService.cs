@@ -80,8 +80,13 @@ public sealed class AiDecisionService(
         var regime = MarketRegimeDetector.Detect(primary.Candles);
         var adjustments = await adaptiveWeights.GetFactorAdjustmentsAsync(regime, cancellationToken);
         var tuning = await adaptiveWeights.GetExecutionTuningAsync(regime, cancellationToken);
+        // Centres each category on its own observed distribution. Failure is non-fatal:
+        // an empty set leaves the engine on the original fixed neutral of 50.
+        IReadOnlyDictionary<string, decimal> baselines = new Dictionary<string, decimal>();
+        try { baselines = await adaptiveWeights.GetCategoryBaselinesAsync(cancellationToken); }
+        catch (Exception ex) { logger.LogDebug(ex, "category baselines unavailable"); }
 
-        var decision = engine.Evaluate(input, profile, equity ?? 0m, adjustments, tuning, styleProfile);
+        var decision = engine.Evaluate(input, profile, equity ?? 0m, adjustments, tuning, styleProfile, baselines);
 
         // Live mode with unknown equity: sizing against a guessed balance is dangerous, so the
         // trade is blocked for this tick (analysis still runs for the dashboard).

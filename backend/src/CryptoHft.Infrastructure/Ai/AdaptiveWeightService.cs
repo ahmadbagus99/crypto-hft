@@ -31,6 +31,20 @@ public sealed class AdaptiveWeightService(
     private static readonly TimeSpan EvaluationHorizon = TimeSpan.FromMinutes(60);
     private const decimal WinThresholdPercent = 0.30m; // fallback only: favorable move >= 0.3% counts as a win
 
+    // Category baselines: how far back to look, and how long a computed set stays good.
+    // The centre of an input's distribution moves on the scale of weeks, so recomputing
+    // it more often than hourly only costs queries.
+    private static readonly TimeSpan BaselineLookback = TimeSpan.FromDays(30);
+    private static readonly TimeSpan BaselineCacheFor = TimeSpan.FromHours(1);
+    // Decisions are logged every 30 seconds, so a single long one-sided stretch would
+    // otherwise supply thousands of near-identical readings and drag the median with it.
+    // One sample per hour keeps the baseline a description of the input, not of how long
+    // the market happened to sit somewhere.
+    private const int BaselineMaxRows = 60_000;
+    private IReadOnlyDictionary<string, decimal>? _baselines;
+    private DateTimeOffset _baselinesAt;
+    private readonly SemaphoreSlim _baselineLock = new(1, 1);
+
     // Realized-outcome learning:
     // Only closed positions this recent are scanned for matching (bounds the query; manual
     // trades without a matching decision are re-scanned harmlessly until they age out).
@@ -47,6 +61,75 @@ public sealed class AdaptiveWeightService(
     // Realized updates are weighted by ROI magnitude: 1 + |roi|, capped so one outlier
     // trade cannot dominate the posterior.
     private const decimal MaxOutcomeWeight = 3m;
+
+    // Observed centre of each category's own score distribution. Empty until there is
+    // enough independent history, which leaves the engine on its original fixed neutral.
+    public async Task<IReadOnlyDictionary<string, decimal>> GetCategoryBaselinesAsync(
+        CancellationToken cancellationToken)
+    {
+        if (_baselines is not null && DateTimeOffset.UtcNow - _baselinesAt < BaselineCacheFor)
+            return _baselines;
+
+        await _baselineLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_baselines is not null && DateTimeOffset.UtcNow - _baselinesAt < BaselineCacheFor)
+                return _baselines;
+
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+            var since = DateTimeOffset.UtcNow - BaselineLookback;
+
+            var rows = await db.AiDecisionLogs
+                .Where(d => d.CreatedAt >= since && d.ScoresJson != null)
+                .OrderBy(d => d.CreatedAt)
+                .Select(d => new { d.CreatedAt, d.ScoresJson })
+                .Take(BaselineMaxRows)
+                .ToListAsync(cancellationToken);
+
+            // One reading per hour: duration must not vote.
+            var samples = new Dictionary<string, List<decimal>>();
+            var seenHours = new HashSet<long>();
+            foreach (var row in rows)
+            {
+                var hour = row.CreatedAt.ToUnixTimeSeconds() / 3600;
+                if (!seenHours.Add(hour)) continue;
+                Dictionary<string, decimal>? parsed;
+                try { parsed = JsonSerializer.Deserialize<Dictionary<string, decimal>>(row.ScoresJson!); }
+                catch { continue; }
+                if (parsed is null) continue;
+                foreach (var (key, value) in parsed)
+                {
+                    if (!AdvancedDecisionEngine.DirectionalCategories.Contains(key)) continue;
+                    if (!samples.TryGetValue(key, out var list)) samples[key] = list = new List<decimal>();
+                    list.Add(value);
+                }
+            }
+
+            var result = new Dictionary<string, decimal>();
+            foreach (var (key, values) in samples)
+            {
+                if (CategoryBaseline.ComputeBaseline(values) is decimal median)
+                    result[key] = median;
+            }
+
+            if (result.Count > 0)
+            {
+                logger.LogInformation(
+                    "Category baselines from {Hours} independent hours: {Baselines}",
+                    seenHours.Count,
+                    string.Join(", ", result.Select(kv => $"{kv.Key}={kv.Value:F1}")));
+            }
+
+            _baselines = result;
+            _baselinesAt = DateTimeOffset.UtcNow;
+            return result;
+        }
+        finally
+        {
+            _baselineLock.Release();
+        }
+    }
 
     public async Task<IReadOnlyDictionary<string, FactorAdjustment>> GetFactorAdjustmentsAsync(
         MarketRegime regime, CancellationToken cancellationToken)

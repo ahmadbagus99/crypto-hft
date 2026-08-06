@@ -112,6 +112,10 @@ public interface IAdaptiveWeightService
     Task<IReadOnlyDictionary<string, FactorAdjustment>> GetFactorAdjustmentsAsync(MarketRegime regime, CancellationToken cancellationToken);
     // Realized winrate per confidence bucket — the confidence calibration curve.
     Task<IReadOnlyList<CalibrationBucket>> GetConfidenceCalibrationAsync(CancellationToken cancellationToken);
+    // Observed centre of each category's own score distribution, so an input that never
+    // sits near 50 stops contributing a permanent directional tilt. Empty until enough
+    // history exists, which reproduces the original fixed-neutral behaviour.
+    Task<IReadOnlyDictionary<string, decimal>> GetCategoryBaselinesAsync(CancellationToken cancellationToken);
     Task LogDecisionAsync(AdvancedDecision decision, CancellationToken cancellationToken);
     // Matches closed positions (Position History) to the decisions that opened them and updates
     // factor stats from realized PnL. Returns the number of positions matched.

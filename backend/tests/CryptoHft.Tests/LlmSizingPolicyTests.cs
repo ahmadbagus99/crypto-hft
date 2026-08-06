@@ -143,6 +143,21 @@ public sealed class LlmSizingPolicyTests
         Assert.Equal(45m, v.AdjustedConfidence);
     }
 
+    // The first two calls under the three-step prompt produced 865 output tokens on average
+    // against a 1024 ceiling, and one was cut mid-JSON. A truncated reply must degrade to the
+    // engine's own read rather than half-parsing into a fabricated conviction.
+    [Fact]
+    public void TruncatedReplyIsNotHalfParsed()
+    {
+        var cut = """{"aligned_count":5,"blocking_count":1,"confirmed":true,"adjusted_confidence":68,"narrative":"five categories align and one blocking fact""";
+
+        var v = ClaudeDecisionValidator.ParseResponse(cut, Baseline(confidence: 59m));
+
+        Assert.False(v.Used);
+        Assert.Equal(59m, v.AdjustedConfidence);
+        Assert.Null(v.AlignedCount);
+    }
+
     // A garbled reply falls back to the engine's own confidence rather than a fabricated one.
     [Fact]
     public void UnparseableReplyFallsBackToTheEngine()

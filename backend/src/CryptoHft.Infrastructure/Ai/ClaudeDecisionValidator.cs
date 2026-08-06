@@ -75,7 +75,7 @@ public sealed class ClaudeDecisionValidator(
         "narrative MUST equal the JSON fields, since the system executes exactly those. " +
         "adjusted_confidence: your 0-100 conviction for the proposed side after Steps 1-2, anchored to net rather than " +
         "to the system's number — net>=5 is 70-85, net=3-4 is 58-70, net=1-2 is 48-58, net<=0 is 30-48. " +
-        "narrative: 2-4 decision-grade sentences that state both counts, no filler. risks: up to 5 short, concrete " +
+        "narrative: 2-3 short sentences that state both counts, no filler. risks: up to 3 brief, concrete " +
         "failure modes, most important first — naming a risk does NOT by itself lower the size, only a factor that " +
         "crossed a Step 2 threshold does. " +
         "Respond ONLY with minified JSON: " +
@@ -105,7 +105,11 @@ public sealed class ClaudeDecisionValidator(
             var response = await client.Messages.Create(new MessageCreateParams
             {
                 Model = model,
-                MaxTokens = 1024,
+                // The three-step review returns two extra fields and a narrative that cites both
+                // tallies, which pushed average output from 499 to 865 tokens. At 1024 a reply
+                // that runs long is cut mid-JSON, parses to nothing, and the spend is total loss —
+                // so the ceiling sits well clear of the longest reply rather than near it.
+                MaxTokens = 2048,
                 System = SystemPrompt,
                 Messages = [new() { Role = Role.User, Content = payload }]
             });
@@ -200,7 +204,16 @@ public sealed class ClaudeDecisionValidator(
         {
             var start = text.IndexOf('{');
             var end = text.LastIndexOf('}');
-            if (start < 0 || end <= start) return Passthrough(decision, "LLM returned no JSON");
+            if (start < 0 || end <= start)
+            {
+                // A reply cut off mid-JSON lands here. It is billed in full and yields nothing,
+                // so it is a warning, not a debug note — at Debug the failure is invisible in
+                // production and the only symptom is a silent "Claude unavailable" downstream.
+                logger?.LogWarning(
+                    "LLM reply carried no complete JSON object ({Length} chars, likely truncated). Raw: {Text}",
+                    text.Length, Truncate(text));
+                return Passthrough(decision, "LLM returned no JSON");
+            }
             var json = text.Substring(start, end - start + 1);
 
             using var doc = JsonDocument.Parse(json);
@@ -235,10 +248,14 @@ public sealed class ClaudeDecisionValidator(
         }
         catch (Exception ex)
         {
-            logger?.LogDebug(ex, "Failed to parse LLM JSON: {Text}", text);
+            logger?.LogWarning(ex, "Failed to parse LLM JSON. Raw: {Text}", Truncate(text));
             return Passthrough(decision, "LLM parse error");
         }
     }
+
+    // Keeps a failed reply readable in the logs without flooding them.
+    private static string Truncate(string text, int max = 600)
+        => text.Length <= max ? text : string.Concat(text.AsSpan(0, max), "…[truncated]");
 
     private static LlmValidation Passthrough(AdvancedDecision d, string note)
         => new(true, d.Confidence, note, Array.Empty<string>(), false);

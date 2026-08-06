@@ -183,8 +183,7 @@ public sealed class AutoTradingWorker(
         var llmVerdict = AutoEntryPolicy.EvaluateLlm(
             decision,
             confirmation.Side.Value,
-            settings.ConfidenceThreshold,
-            settings.AiDirectionEnabled);
+            settings.ConfidenceThreshold);
         if (!llmVerdict.Allowed)
         {
             _entryCandidate = null;

@@ -137,20 +137,17 @@ public static class AutoEntryPolicy
     public static AutoEntryLlmVerdict EvaluateLlm(
         AdvancedDecision decision,
         TradeSide confirmedSide,
-        decimal confidenceThreshold,
-        bool allowDirectionChange = false)
+        decimal confidenceThreshold)
     {
+        // Auditor mode declines by turning the decision into a NoTrade, so a refusal arrives
+        // here as an unactionable signal carrying Claude's own reason.
         if (!TryGetActionableSide(decision, confidenceThreshold, out var finalSide))
             return new(false, decision.NoTradeReason.Length > 0 ? decision.NoTradeReason : "final signal is not actionable");
 
-        // A side that changes between confirmation and validation normally means the read is
-        // unstable, and the trade is dropped. With direction blending on it means something
-        // else: Claude's conviction was strong enough to carry the blended score past neutral,
-        // which is the whole point of that mode — so the reversal is taken, not discarded.
+        // A side that changes between confirmation and validation means the read is unstable.
+        // Claude only ever rules on the side the engine proposed, so it cannot cause this.
         if (finalSide != confirmedSide)
-            return allowDirectionChange
-                ? new(true, $"AI blend reversed the side from {confirmedSide} to {finalSide}")
-                : new(false, $"signal changed from {confirmedSide} to {finalSide} during Claude validation");
+            return new(false, $"signal changed from {confirmedSide} to {finalSide} during Claude validation");
 
         if (!decision.Llm.Used)
             return new(true, "Claude unavailable; confirmed rule-based signal retained");

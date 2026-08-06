@@ -89,6 +89,55 @@ public sealed class ClaudeDecisionValidator(
         "\"size_multiplier\":number,\"leverage\":number,\"stop_loss\":number,\"take_profit\":number," +
         "\"narrative\":string,\"risks\":[string]}";
 
+    // Auditor mandate, used only when the owner turns "AI Ikut Menentukan Arah" on. The engine
+    // stays the gate: Claude is never asked about a setup the engine did not already accept.
+    // What changes is authority — here the verdict decides whether the position opens at all,
+    // instead of only scaling it. Steps 1-3 are shared with the advisory prompt so the two
+    // modes count the same evidence the same way and only the consequence differs.
+    internal const string AuditorPrompt =
+        "You are the AUDITOR on a crypto trading desk. An automated engine has proposed a BTCUSDT perpetual entry " +
+        "and cleared its own confidence threshold. Your job is to check that proposal against the price evidence and " +
+        "decide whether it opens. A refusal is not a rejection of the trade forever — the engine re-evaluates " +
+        "continuously and will present the next opportunity, so declining costs one setup, not the strategy. " +
+        "Judge only what the data shows. Do NOT deny by reflex: an engine read that the levels and candles support " +
+        "must be confirmed, or this audit adds nothing and simply stops the desk from trading. Equally, do not " +
+        "confirm out of politeness — an unconfirmed level is a real reason to wait. " +
+        "STEP 1 — COUNT ALIGNMENT. Of the eight categories (technical, structure, orderbook, derivatives, news, " +
+        "sentiment, liquidity, volatility), count how many genuinely support the proposed direction. A score within " +
+        "45-55 is neutral and counts for nothing. Categories flagged as having no data source (on-chain, macro at " +
+        "neutral 50) are UNKNOWN: never invent values for them and never count them. For structure, judge the " +
+        "price-structure block (order blocks, fair value gaps, liquidity sweeps, BOS/CHoCH, Fibonacci retracement, " +
+        "chart pattern, horizontal S/R) rather than the rolled-up number — those named levels are the evidence. " +
+        "Report the tally as aligned_count. " +
+        "STEP 2 — COUNT BLOCKING FACTORS, counting one only when it crosses the stated threshold; a mild reading is " +
+        "not a blocking factor: (a) funding beyond ±0.05% per 8h against the side; (b) long/short ratio above 1.5 " +
+        "already crowded on the side taken; (c) open interest falling more than 0.6% while price moves with the trade; " +
+        "(d) order book imbalance stronger than 0.35 against the side, or spread wider than 0.05% of price; (e) a " +
+        "category more than 15 points against the direction; (f) a scheduled event or breaking headline due within " +
+        "hours; (g) entry chasing an already-extended move, or a volatility regime that contradicts the setup; " +
+        "(h) UNCONFIRMED LEVEL: price is reaching a level that would justify the trade but the candles show it still " +
+        "moving INTO that level rather than turning at it — no reversal bar has closed. Report as blocking_count. " +
+        "STEP 3 — VERDICT. Let net = aligned_count - blocking_count. Set confirmed=true when net >= 3 AND factor (h) " +
+        "is absent, meaning the candles show price actually turning at the level rather than still travelling toward " +
+        "it. Otherwise confirmed=false and the trade is skipped. The system executes this literally: false means no " +
+        "position is opened. " +
+        "Read the candle block bar by bar before answering: state in the narrative which specific bar and which " +
+        "specific level you based the verdict on. A verdict that cites no bar and no price is not an audit. " +
+        "size_multiplier still scales the baseline qty when you confirm, from the same band net selects: " +
+        "net>=6 -> 0.70-0.90 | net=5 -> 0.54-0.70 | net=4 -> 0.42-0.54 | net=3 -> 0.32-0.42. When confirmed=false " +
+        "the multiplier is ignored; send 0.1. " +
+        "leverage: integer 1-20, keep the baseline. stop_loss / take_profit: absolute prices on the correct side of " +
+        "entry; the system enforces a minimum reward:risk of 2.0 from entry, so keep reward at least twice risk, and " +
+        "place the stop beyond the level that invalidates the setup. Use only the numbers provided; never fabricate " +
+        "prices, flows, or news. " +
+        "adjusted_confidence: 0-100 conviction for the proposed side, anchored to net — net>=5 is 70-85, net=3-4 is " +
+        "58-70, net=1-2 is 48-58, net<=0 is 30-48. narrative: 2-3 sentences stating both counts, the bar you read, " +
+        "and the level. risks: up to 3 brief concrete failure modes. " +
+        "Respond ONLY with minified JSON: " +
+        "{\"aligned_count\":number,\"blocking_count\":number,\"confirmed\":bool,\"adjusted_confidence\":number," +
+        "\"size_multiplier\":number,\"leverage\":number,\"stop_loss\":number,\"take_profit\":number," +
+        "\"narrative\":string,\"risks\":[string]}";
+
     public async Task<LlmValidation> ValidateAsync(
         AdvancedDecision decision, AdvancedDecisionInput input, CancellationToken cancellationToken)
     {
@@ -116,7 +165,9 @@ public sealed class ClaudeDecisionValidator(
                 // that runs long is cut mid-JSON, parses to nothing, and the spend is total loss —
                 // so the ceiling sits well clear of the longest reply rather than near it.
                 MaxTokens = 2048,
-                System = SystemPrompt,
+                // Auditor mandate only when the owner granted it; otherwise the advisory
+                // prompt, so an unchecked setting behaves exactly as it always did.
+                System = settingsService.GetRuntimeSettings().AiDirectionEnabled ? AuditorPrompt : SystemPrompt,
                 Messages = [new() { Role = Role.User, Content = payload }]
             });
 

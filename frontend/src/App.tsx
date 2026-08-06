@@ -559,11 +559,13 @@ function SettingsPage() {
               <div>
                 <label htmlFor="ai-direction" className="block text-sm text-slate-200">AI Ikut Menentukan Arah</label>
                 <p className="mt-1 text-xs text-slate-600">
-                  Aktif: conviction AI dilebur ke skor arah engine dengan bobot 35% — setuju menguatkan, ragu bisa
-                  menjatuhkan sinyal di bawah threshold, menentang keras membalik sisi (SL/TP ikut dicerminkan).
-                  Nonaktif: engine sendiri yang menentukan arah, AI hanya mengatur ukuran. Jumlah panggilan API sama
-                  di kedua mode. ⚠️ Saat pernah diberi hak penuh, AI menolak hampir semua sinyal — bobot 35% ada
-                  untuk menahan pola itu, tapi jumlah trade tetap bisa turun banyak.
+                  Aktif: AI jadi <span className="text-slate-400">auditor</span>. Engine tetap gerbang pertama — AI
+                  tidak pernah ditanya soal sinyal yang engine tolak. Setelah lolos, AI membaca level (FVG, Fibonacci,
+                  order block, S/R) dan candle terakhir, lalu memutuskan: setuju → posisi dibuka, tidak setuju → tidak
+                  dibuka, tunggu gerbang berikutnya. AI hanya menilai sisi yang engine usulkan, jadi dia bisa menolak
+                  tapi tidak bisa membalik arah. Nonaktif: AI hanya mengatur ukuran, tidak bisa memblokir.
+                  Jumlah panggilan API sama di kedua mode. ⚠️ Kalau AI sering menolak, jumlah trade bisa turun drastis
+                  — pantau beberapa hari pertama dan matikan kalau nyaris tidak ada posisi terbuka.
                 </p>
               </div>
             </div>

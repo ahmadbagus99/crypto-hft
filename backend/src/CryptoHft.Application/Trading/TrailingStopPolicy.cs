@@ -28,6 +28,12 @@ public static class TrailingStopPolicy
         decimal? takeProfit,
         decimal trailingDistanceR = TrailDistanceR)
     {
+        // A distance of zero is the owner switching the ratchet off: the protective stop
+        // placed at entry stays exactly where it is for the life of the trade. Checked here
+        // rather than in the guard service so every caller honours the setting.
+        if (trailingDistanceR <= 0)
+            return new TrailingStopVerdict(null, "trailing stop disabled in settings");
+
         if (entryPrice <= 0 || markPrice <= 0)
             return new TrailingStopVerdict(null, "price data unavailable");
 

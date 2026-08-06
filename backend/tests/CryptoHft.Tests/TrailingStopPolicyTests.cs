@@ -14,6 +14,43 @@ public sealed class TrailingStopPolicyTests
     private const decimal InitialSl = 98_000m;
     private const decimal Tp = 104_000m;
 
+    // Distance 0 is the owner switching the ratchet off from Settings. The protective stop
+    // must then stay exactly where it was placed, even deep in profit where every other
+    // setting would have moved it.
+    [Fact]
+    public void ZeroDistanceLeavesTheStopAlone()
+    {
+        var verdict = TrailingStopPolicy.Evaluate(
+            TradeSide.Long, Entry, markPrice: 103_000m, InitialSl, InitialSl, Tp,
+            trailingDistanceR: 0m);
+
+        Assert.Null(verdict.NewStopLoss);
+        Assert.Contains("disabled", verdict.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ZeroDistanceLeavesAShortStopAlone()
+    {
+        var verdict = TrailingStopPolicy.Evaluate(
+            TradeSide.Short, Entry, markPrice: 97_000m, 102_000m, 102_000m, 96_000m,
+            trailingDistanceR: 0m);
+
+        Assert.Null(verdict.NewStopLoss);
+    }
+
+    // The same position with the ratchet on must still move, so the test above is proving
+    // the setting works rather than that the scenario never trails.
+    [Fact]
+    public void SameSetupStillTrailsWhenEnabled()
+    {
+        var verdict = TrailingStopPolicy.Evaluate(
+            TradeSide.Long, Entry, markPrice: 103_000m, InitialSl, InitialSl, Tp,
+            trailingDistanceR: 1.00m);
+
+        Assert.NotNull(verdict.NewStopLoss);
+        Assert.True(verdict.NewStopLoss > InitialSl);
+    }
+
     [Fact]
     public void BelowActivation_StopIsNeverTouched()
     {

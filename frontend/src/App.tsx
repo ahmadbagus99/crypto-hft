@@ -433,7 +433,12 @@ function SettingsPage() {
         aiModel: aiModel || undefined,
         confidenceThreshold: Number(confidenceThreshold) || undefined,
         positionCheckIntervalMinutes: Number(positionCheckInterval) || undefined,
-        trailingStopDistanceR: Number(trailingStopDistance) || undefined,
+        // 0 means "ratchet off" and must reach the server. `|| undefined` would read it as
+        // falsy and send nothing, which the API treats as "leave unchanged" — the setting
+        // could never be switched off. Only a genuinely unparseable value is omitted.
+        trailingStopDistanceR: Number.isFinite(Number(trailingStopDistance))
+          ? Number(trailingStopDistance)
+          : undefined,
         lunarCrushApiKey: lunarCrushKey || undefined,
       });
       setApiKey("");
@@ -642,12 +647,18 @@ function SettingsPage() {
                 onChange={e => setTrailingStopDistance(e.target.value)}
                 className="w-full rounded-md border border-hairline bg-void px-3 py-2 text-slate-100 ring-hud"
               >
+                <option value="0.00">Tidak aktif — trailing stop dimatikan</option>
                 <option value="0.50">Agresif — 0.50R</option>
                 <option value="0.75">Seimbang — 0.75R</option>
                 <option value="1.00">Konservatif — 1.00R</option>
                 <option value="1.25">Longgar — 1.25R</option>
               </select>
-              <p className="mt-1 text-xs text-slate-600">Jarak SL trailing dari mark price setelah profit melewati +1R. Default lama: 1.00R.</p>
+              <p className="mt-1 text-xs text-slate-600">
+                Jarak SL trailing dari mark price setelah profit melewati +1R. Default lama: 1.00R.
+                Tidak aktif: stop tetap di tempat awalnya sampai posisi tutup — tidak ada penguncian profit.
+                ⚠️ Dari 66 posisi, 18 keluar lewat trailing dengan total +5.04 USDT; TP hanya tercapai 16.7%,
+                jadi mematikannya kemungkinan mengubah kemenangan kecil itu jadi kerugian penuh.
+              </p>
             </div>
           </div>
         </section>

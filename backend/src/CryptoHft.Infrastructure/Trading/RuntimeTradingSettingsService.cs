@@ -124,7 +124,9 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
                 AiModel = string.IsNullOrWhiteSpace(request.AiModel) ? _settings.AiModel : request.AiModel.Trim(),
                 ConfidenceThreshold = request.ConfidenceThreshold is > 0 ? Math.Clamp(request.ConfidenceThreshold.Value, 1m, 100m) : _settings.ConfidenceThreshold,
                 PositionCheckIntervalMinutes = request.PositionCheckIntervalMinutes is > 0 ? ClampPositionCheckInterval(request.PositionCheckIntervalMinutes.Value) : _settings.PositionCheckIntervalMinutes,
-                TrailingStopDistanceR = request.TrailingStopDistanceR is > 0 ? NormalizeTrailingStopDistance(request.TrailingStopDistanceR.Value, _settings.TrailingStopDistanceR) : _settings.TrailingStopDistanceR,
+                // Accepts 0 (ratchet off). Only a null field means "leave as it was" — a
+                // `> 0` test here would have made switching the ratchet off impossible.
+                TrailingStopDistanceR = request.TrailingStopDistanceR is not null ? NormalizeTrailingStopDistance(request.TrailingStopDistanceR.Value, _settings.TrailingStopDistanceR) : _settings.TrailingStopDistanceR,
                 LunarCrushApiKey = string.IsNullOrWhiteSpace(request.LunarCrushApiKey) ? _settings.LunarCrushApiKey : request.LunarCrushApiKey.Trim(),
                 TargetMarginUsdt = request.TargetMarginUsdt is > 0 ? Math.Clamp(request.TargetMarginUsdt.Value, 1m, 1000m) : _settings.TargetMarginUsdt,
                 TradingStyle = request.TradingStyle is not null ? NormalizeTradingStyle(request.TradingStyle.Value) : _settings.TradingStyle,
@@ -242,15 +244,18 @@ public sealed class RuntimeTradingSettingsService : IRuntimeTradingSettingsServi
         return Math.Clamp(leverage <= 0 ? 20 : leverage, 1, 20);
     }
 
+    // 0 is a real choice — the ratchet off, protective stop left where it was placed —
+    // not a missing value. "Unchanged" is carried by a null request field instead.
     private static decimal NormalizeTrailingStopDistance(decimal value, decimal fallback)
     {
         return value switch
         {
+            0m => 0m,
             0.50m => 0.50m,
             0.75m => 0.75m,
             1.00m => 1.00m,
             1.25m => 1.25m,
-            _ => fallback is 0.50m or 0.75m or 1.00m or 1.25m ? fallback : 1.00m
+            _ => fallback is 0m or 0.50m or 0.75m or 1.00m or 1.25m ? fallback : 1.00m
         };
     }
 

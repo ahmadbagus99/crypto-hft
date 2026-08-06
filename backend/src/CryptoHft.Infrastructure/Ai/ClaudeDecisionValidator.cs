@@ -202,9 +202,7 @@ public sealed class ClaudeDecisionValidator(
     {
         try
         {
-            var start = text.IndexOf('{');
-            var end = text.LastIndexOf('}');
-            if (start < 0 || end <= start)
+            if (ExtractFirstJsonObject(text) is not string json)
             {
                 // A reply cut off mid-JSON lands here. It is billed in full and yields nothing,
                 // so it is a warning, not a debug note — at Debug the failure is invisible in
@@ -214,7 +212,6 @@ public sealed class ClaudeDecisionValidator(
                     text.Length, Truncate(text));
                 return Passthrough(decision, "LLM returned no JSON");
             }
-            var json = text.Substring(start, end - start + 1);
 
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
@@ -251,6 +248,49 @@ public sealed class ClaudeDecisionValidator(
             logger?.LogWarning(ex, "Failed to parse LLM JSON. Raw: {Text}", Truncate(text));
             return Passthrough(decision, "LLM parse error");
         }
+    }
+
+    // Returns the first complete JSON object in the reply, or null if none closes.
+    //
+    // Taking everything between the first '{' and the LAST '}' looked equivalent and was not:
+    // production (2026-08-06 06:26) logged a well-formed object followed by a paragraph of
+    // commentary, and because that prose contained a brace of its own the slice ran past the
+    // object's real end. System.Text.Json then rejected the whole thing — "'W' is invalid
+    // after a single JSON value" — and a perfectly good verdict was thrown away as an outage.
+    // Matching braces by depth stops at the object's own close; quoted braces and escapes are
+    // skipped so a '}' inside the narrative cannot end it early.
+    internal static string? ExtractFirstJsonObject(string text)
+    {
+        var start = text.IndexOf('{');
+        if (start < 0) return null;
+
+        var depth = 0;
+        var inString = false;
+        var escaped = false;
+
+        for (var i = start; i < text.Length; i++)
+        {
+            var ch = text[i];
+
+            if (inString)
+            {
+                if (escaped) escaped = false;
+                else if (ch == '\\') escaped = true;
+                else if (ch == '"') inString = false;
+                continue;
+            }
+
+            switch (ch)
+            {
+                case '"': inString = true; break;
+                case '{': depth++; break;
+                case '}':
+                    if (--depth == 0) return text[start..(i + 1)];
+                    break;
+            }
+        }
+
+        return null; // never closed — the reply was truncated
     }
 
     // Keeps a failed reply readable in the logs without flooding them.

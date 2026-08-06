@@ -158,6 +158,45 @@ public sealed class LlmSizingPolicyTests
         Assert.Null(v.AlignedCount);
     }
 
+    // Logged in production 2026-08-06 06:26: a complete, correct verdict followed by a
+    // paragraph of commentary. Slicing to the LAST '}' swallowed the prose, System.Text.Json
+    // rejected the lot, and a usable answer was discarded as "Claude unavailable".
+    [Fact]
+    public void TrailingCommentaryDoesNotDiscardAGoodVerdict()
+    {
+        var reply = """
+        {"aligned_count":3,"blocking_count":2,"confirmed":false,"adjusted_confidence":52,
+         "size_multiplier":0.18,"leverage":3,"stop_loss":64639.30,"take_profit":65220.91,
+         "narrative":"Net 1 places size low in the band.","risks":["bearish news"]}
+
+        Worth noting: the {news} reading is the binding constraint here.
+        """;
+
+        var v = ClaudeDecisionValidator.ParseResponse(reply, Baseline());
+
+        Assert.True(v.Used);
+        Assert.Equal(3, v.AlignedCount);
+        Assert.Equal(2, v.BlockingCount);
+        Assert.Equal(0.18m, v.SizeMultiplier);
+    }
+
+    // A brace inside the narrative must not be mistaken for the end of the object.
+    [Fact]
+    public void BraceInsideAStringDoesNotEndTheObject()
+    {
+        var reply = """{"confirmed":true,"adjusted_confidence":61,"narrative":"funding {stretched} but fine","size_multiplier":0.44}""";
+
+        var v = ClaudeDecisionValidator.ParseResponse(reply, Baseline());
+
+        Assert.True(v.Used);
+        Assert.Equal(61m, v.AdjustedConfidence);
+        Assert.Equal(0.44m, v.SizeMultiplier);
+    }
+
+    [Fact]
+    public void UnclosedObjectIsReportedAsNoJson()
+        => Assert.Null(ClaudeDecisionValidator.ExtractFirstJsonObject("""{"aligned_count":5,"narrative":"cut off"""));
+
     // A garbled reply falls back to the engine's own confidence rather than a fabricated one.
     [Fact]
     public void UnparseableReplyFallsBackToTheEngine()

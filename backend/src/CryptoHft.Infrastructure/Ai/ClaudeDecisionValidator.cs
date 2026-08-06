@@ -44,8 +44,10 @@ public sealed class ClaudeDecisionValidator(
         "STEP 1 — COUNT ALIGNMENT. Of the eight independent categories (technical, structure, orderbook, derivatives, " +
         "news, sentiment, liquidity, volatility), count how many genuinely support the proposed direction. A score " +
         "within 45-55 is neutral and counts for nothing. Categories flagged as having no data source (on-chain, macro " +
-        "at neutral 50) are UNKNOWN: never invent values or narratives for them and never count them. Report the tally " +
-        "as aligned_count. " +
+        "at neutral 50) are UNKNOWN: never invent values or narratives for them and never count them. For structure, " +
+        "judge the price-structure block (order blocks, fair value gaps, liquidity sweeps, BOS/CHoCH, Fibonacci " +
+        "retracement, chart pattern, horizontal S/R) rather than the rolled-up number alone — those named levels are " +
+        "the evidence, the number is only their average. Report the tally as aligned_count. " +
         "STEP 2 — COUNT BLOCKING FACTORS. A factor counts ONLY if it crosses the stated threshold. A mild or " +
         "borderline reading is NOT a blocking factor and must not be counted: " +
         "(a) funding beyond ±0.05% per 8h against the side; " +
@@ -54,7 +56,11 @@ public sealed class ClaudeDecisionValidator(
         "(d) order book imbalance stronger than 0.35 against the side, or spread wider than 0.05% of price; " +
         "(e) a category scoring more than 15 points against the direction (below 35 for a long, above 65 for a short); " +
         "(f) a scheduled event or live breaking headline due within hours; " +
-        "(g) entry chasing an already-extended move, or a volatility regime that contradicts the setup. " +
+        "(g) entry chasing an already-extended move, or a volatility regime that contradicts the setup; " +
+        "(h) UNCONFIRMED LEVEL: price is reaching a level that would justify the trade (an unfilled FVG, a Fibonacci " +
+        "retracement zone, a support/resistance band) but the candles show it still moving INTO that level rather than " +
+        "turning at it — no reversal bar has closed. A level touched is a setup; a level rejected is a trigger, and " +
+        "only the trigger earns size. Read this from the candle block, not from the scores. " +
         "Report the tally as blocking_count. " +
         "STEP 3 — SIZE FROM THE COUNTS. Let net = aligned_count - blocking_count. The system executes your numbers " +
         "literally. size_multiplier scales the baseline qty and MUST land inside the band that net selects: " +
@@ -154,6 +160,8 @@ public sealed class ClaudeDecisionValidator(
         Entry: {{d.EntryPrice}}, StopLoss: {{d.StopLoss}}, TakeProfit: {{d.TakeProfit}}, RiskReward: {{d.RiskReward:F2}}
         Baseline size (qty): {{d.PositionSizeQuantity}}, baseline leverage: {{d.Leverage}}x (size_multiplier scales this qty)
         Category scores (0-100, >50 bullish): {{scores}}
+        {{BuildStructureBlock(d)}}
+        {{BuildCandleBlock(input)}}
         Funding rate: {{input.Derivatives.FundingRate * 100:F4}}% (per 8h; beyond ±0.05% is stretched, beyond ±0.10% is crowded), cumulative 24h: {{input.Derivatives.CumulativeFunding24h * 100:F4}}%
         Open interest change: {{input.Derivatives.OpenInterestChangePercent:F2}}%
         Forced liquidations (last 5 min): longs ${{input.Derivatives.LongLiquidationNotional / 1_000_000m:F2}}M, shorts ${{input.Derivatives.ShortLiquidationNotional / 1_000_000m:F2}}M (one-sided flush = capitulation of that side)
@@ -170,6 +178,57 @@ public sealed class ClaudeDecisionValidator(
         Work Steps 1-3: count alignment, count blocking factors, then size from net. Respond with the JSON schema only.
         """;
     }
+
+    // The level analyses the engine already runs — order blocks, fair value gaps, liquidity
+    // sweeps, BOS/CHoCH, Fibonacci retracement, chart patterns, horizontal S/R. Until now all
+    // of it was crushed into a single "structure" number before Claude saw anything, so it was
+    // being asked to judge a setup it had no way to see. Each analysis already carries a terse
+    // summary with the actual levels in it; this just stops throwing them away.
+    private static readonly string[] StructureComponents =
+        ["SmartMoney", "PriceAction", "Pattern", "Fibonacci", "SupportResistance"];
+
+    internal static string BuildStructureBlock(AdvancedDecision d)
+    {
+        var parts = StructureComponents
+            .Select(name => d.Components.FirstOrDefault(c => c.Name == name))
+            .Where(c => c is not null && c!.Reason.Length > 0)
+            .Select(c => $"- {c!.Name} ({c.Score:F0}): {c.Reason}")
+            .ToList();
+
+        return parts.Count == 0
+            ? ""
+            : "Price structure (0-100, >50 bullish — these are the levels behind the structure score):\n"
+              + string.Join("\n", parts);
+    }
+
+    // Raw candles on the fastest timeframe available, so the confirmation question — did price
+    // actually turn at the level, or is it still falling into it — can be answered from the
+    // bars rather than inferred from a score. Six is enough to see a reversal without spending
+    // the token budget on history the levels already summarise.
+    private const int ConfirmationCandles = 6;
+
+    internal static string BuildCandleBlock(AdvancedDecisionInput input)
+    {
+        var tf = input.Timeframes
+            .Where(t => t.Candles.Count > 0)
+            .OrderBy(t => IntervalMinutes(t.Interval))
+            .FirstOrDefault();
+        if (tf is null) return "";
+
+        var recent = tf.Candles.TakeLast(ConfirmationCandles).ToList();
+        var rows = recent.Select(c =>
+            $"  {c.OpenTime:HH:mm} O {c.Open:F1} H {c.High:F1} L {c.Low:F1} C {c.Close:F1} V {c.Volume:F0}");
+
+        return $"Last {recent.Count} closed {tf.Interval} candles (oldest first — use for reversal/confirmation):\n"
+               + string.Join("\n", rows);
+    }
+
+    private static int IntervalMinutes(string interval) => interval switch
+    {
+        "1m" => 1, "3m" => 3, "5m" => 5, "15m" => 15, "30m" => 30,
+        "1h" => 60, "2h" => 120, "4h" => 240, "1d" => 1440,
+        _ => int.MaxValue
+    };
 
     // Realized-history digest: the desk's actual results and Claude's own track record.
     // Empty string when no realized data exists — the payload is then identical to before.

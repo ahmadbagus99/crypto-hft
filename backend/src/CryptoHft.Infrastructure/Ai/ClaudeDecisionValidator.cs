@@ -360,20 +360,43 @@ public sealed class ClaudeDecisionValidator(
         }
     }
 
-    // Returns the first complete JSON object in the reply, or null if none closes.
+    // Returns the verdict object from a reply that may be wrapped in prose on either side.
     //
-    // Taking everything between the first '{' and the LAST '}' looked equivalent and was not:
-    // production (2026-08-06 06:26) logged a well-formed object followed by a paragraph of
-    // commentary, and because that prose contained a brace of its own the slice ran past the
-    // object's real end. System.Text.Json then rejected the whole thing — "'W' is invalid
-    // after a single JSON value" — and a perfectly good verdict was thrown away as an outage.
-    // Matching braces by depth stops at the object's own close; quoted braces and escapes are
-    // skipped so a '}' inside the narrative cannot end it early.
+    // Two production failures shaped this. On 2026-08-06 06:26 the object was followed by a
+    // paragraph of commentary and slicing to the LAST '}' swallowed it. At 01:36 the next day
+    // the model reasoned in prose FIRST — "Reading candles: price dipped to low 64276.8…" —
+    // and taking the FIRST '{' locked onto a brace inside that reasoning, so parsing died on
+    // "']' is invalid without a matching open". Neither end of the reply can be trusted to be
+    // the object, so every '{' is tried in turn and the first balanced span that actually
+    // parses AND carries a verdict field wins. Requiring the field matters: a stray brace in
+    // prose can still yield technically-valid JSON that means nothing.
+    private static readonly string[] VerdictKeys = ["confirmed", "size_multiplier", "adjusted_confidence"];
+
     internal static string? ExtractFirstJsonObject(string text)
     {
-        var start = text.IndexOf('{');
-        if (start < 0) return null;
+        for (var start = text.IndexOf('{'); start >= 0; start = text.IndexOf('{', start + 1))
+        {
+            if (BalancedSpan(text, start) is not string candidate) continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(candidate);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object
+                    && VerdictKeys.Any(k => doc.RootElement.TryGetProperty(k, out _)))
+                    return candidate;
+            }
+            catch (JsonException)
+            {
+                // Not the verdict object — keep looking.
+            }
+        }
+        return null;
+    }
 
+    // The span from an opening brace to its matching close, honouring string literals and
+    // escapes so a brace inside the narrative cannot end the object early. Null when it never
+    // closes, which is what a truncated reply looks like.
+    private static string? BalancedSpan(string text, int start)
+    {
         var depth = 0;
         var inString = false;
         var escaped = false;
@@ -400,7 +423,7 @@ public sealed class ClaudeDecisionValidator(
             }
         }
 
-        return null; // never closed — the reply was truncated
+        return null;
     }
 
     // Keeps a failed reply readable in the logs without flooding them.

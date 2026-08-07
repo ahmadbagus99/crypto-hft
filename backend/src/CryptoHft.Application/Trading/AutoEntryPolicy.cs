@@ -137,7 +137,8 @@ public static class AutoEntryPolicy
     public static AutoEntryLlmVerdict EvaluateLlm(
         AdvancedDecision decision,
         TradeSide confirmedSide,
-        decimal confidenceThreshold)
+        decimal confidenceThreshold,
+        bool auditorMode = false)
     {
         // Auditor mode declines by turning the decision into a NoTrade, so a refusal arrives
         // here as an unactionable signal carrying Claude's own reason.
@@ -149,8 +150,17 @@ public static class AutoEntryPolicy
         if (finalSide != confirmedSide)
             return new(false, $"signal changed from {confirmedSide} to {finalSide} during Claude validation");
 
+        // A verdict that could not be read is not an approval. In advisory mode Claude has no
+        // authority to stop anything, so an outage correctly leaves the rule-based signal
+        // standing. In auditor mode the owner asked for the opposite rule — open only when
+        // Claude agrees — and letting an unreadable reply through inverts it: on 2026-08-07
+        // Claude declined 34 setups in a row, the 35th reply failed to parse, that one alone
+        // was allowed through, and it closed at the stop for -0.41. The only position opened
+        // was the only one never actually audited.
         if (!decision.Llm.Used)
-            return new(true, "Claude unavailable; confirmed rule-based signal retained");
+            return auditorMode
+                ? new(false, "Claude unreachable or unreadable — auditor mode opens only on an explicit confirmation")
+                : new(true, "Claude unavailable; confirmed rule-based signal retained");
 
         if (decision.Llm.Confirmed)
             return new(true, "Claude confirmed the persisted rule-based signal");

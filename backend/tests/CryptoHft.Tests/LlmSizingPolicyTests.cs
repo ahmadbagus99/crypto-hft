@@ -193,6 +193,46 @@ public sealed class LlmSizingPolicyTests
         Assert.Equal(0.44m, v.SizeMultiplier);
     }
 
+    // Logged in production 2026-08-07 01:36: the model reasoned in prose FIRST and only then
+    // emitted the verdict. Locking onto the first '{' found a brace inside that reasoning and
+    // parsing died on "']' is invalid without a matching open" — so the one setup Claude had
+    // actually confirmed was recorded as an outage.
+    [Fact]
+    public void ReasoningBeforeTheJsonIsSkipped()
+    {
+        var reply = """
+        Reading candles: price dipped to 64276.8 at 01:15, then 01:25 printed a bullish
+        engulfing bar {O 64307.7 C 64397.5} and 01:30 continued up. Counts: [technical,
+        orderbook, derivatives] align; news and sentiment do not.
+
+        {"aligned_count":4,"blocking_count":1,"confirmed":true,"adjusted_confidence":64,
+         "size_multiplier":0.47,"leverage":20,"narrative":"turn confirmed at S 64324","risks":[]}
+        """;
+
+        var v = ClaudeDecisionValidator.ParseResponse(reply, Baseline());
+
+        Assert.True(v.Used);
+        Assert.True(v.Confirmed);
+        Assert.Equal(4, v.AlignedCount);
+        Assert.Equal(0.47m, v.SizeMultiplier);
+    }
+
+    // A brace in prose that happens to form valid JSON must not be mistaken for the verdict.
+    [Fact]
+    public void ValidJsonWithoutAVerdictFieldIsNotAccepted()
+    {
+        var reply = """
+        Context: {"note":"levels below"} — the real answer follows.
+        {"confirmed":false,"adjusted_confidence":41,"size_multiplier":0.12}
+        """;
+
+        var v = ClaudeDecisionValidator.ParseResponse(reply, Baseline());
+
+        Assert.True(v.Used);
+        Assert.False(v.Confirmed);
+        Assert.Equal(41m, v.AdjustedConfidence);
+    }
+
     [Fact]
     public void UnclosedObjectIsReportedAsNoJson()
         => Assert.Null(ClaudeDecisionValidator.ExtractFirstJsonObject("""{"aligned_count":5,"narrative":"cut off"""));

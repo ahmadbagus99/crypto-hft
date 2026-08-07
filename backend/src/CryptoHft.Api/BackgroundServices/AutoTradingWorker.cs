@@ -50,6 +50,11 @@ public sealed class AutoTradingWorker(
     private int _lastOpenPositionCheckIntervalMinutes;
     private AutoEntryCandidate? _entryCandidate;
     private DateTimeOffset _entryCooldownUntil = DateTimeOffset.MinValue;
+    // A refused audit is a paid answer about a specific market state. Re-asking a minute later
+    // buys the same answer again, so refusals rest for long enough that the candles feeding the
+    // verdict have actually changed.
+    private static readonly TimeSpan AuditRetryDelay = TimeSpan.FromMinutes(15);
+    private DateTimeOffset _nextAuditAt = DateTimeOffset.MinValue;
     private DateTimeOffset? _lastCooldownSourceClosedAt;
     private bool _entryCooldownInitialized;
     private bool _observedOpenPosition;
@@ -151,6 +156,18 @@ public sealed class AutoTradingWorker(
             return;
         }
 
+        // Placed before the confirmation window so a refused setup costs nothing further:
+        // the scan keeps running and the dashboard keeps updating, but no billed audit is
+        // requested until the delay expires.
+        if (now < _nextAuditAt)
+        {
+            _entryCandidate = null;
+            var auditReason = $"audit cooling down after Claude declined; resumes {_nextAuditAt:u}";
+            decisionStore.Set(Symbol, BlockDecision(scanDecision, auditReason));
+            logger.LogInformation("Auto-entry blocked: {Reason}", auditReason);
+            return;
+        }
+
         var confirmation = AutoEntryPolicy.EvaluateConfirmation(
             scanDecision,
             settings.ConfidenceThreshold,
@@ -183,12 +200,20 @@ public sealed class AutoTradingWorker(
         var llmVerdict = AutoEntryPolicy.EvaluateLlm(
             decision,
             confirmation.Side.Value,
-            settings.ConfidenceThreshold);
+            settings.ConfidenceThreshold,
+            settings.AiDirectionEnabled);
         if (!llmVerdict.Allowed)
         {
             _entryCandidate = null;
+            // Clearing the candidate alone let the next tick rebuild it and pay for the same
+            // verdict again: on 2026-08-06 21:08-21:25 that produced 13 billed calls in 17
+            // minutes on one unchanged setup. A refusal now rests until the market has had
+            // time to become a different question.
+            _nextAuditAt = now + AuditRetryDelay;
             decisionStore.Set(Symbol, BlockDecision(decision, llmVerdict.Reason));
-            logger.LogWarning("Auto-entry blocked after Claude validation: {Reason}", llmVerdict.Reason);
+            logger.LogWarning(
+                "Auto-entry blocked after Claude validation: {Reason}; next audit no earlier than {Next:HH:mm:ss}Z",
+                llmVerdict.Reason, _nextAuditAt);
             return;
         }
 

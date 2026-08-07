@@ -90,16 +90,42 @@ public sealed class AiAuditorModeTests
         Assert.Contains("signal changed", verdict.Reason);
     }
 
-    // An unreachable or unparseable Claude must not silently halt the desk: with the API down
-    // the rule-based signal stands, exactly as before.
+    // Advisory mode: Claude has no authority to stop anything, so an outage correctly leaves
+    // the rule-based signal standing.
     [Fact]
-    public void UnavailableClaudeDoesNotBlockTheTrade()
+    public void UnavailableClaudeDoesNotBlockTheTradeInAdvisoryMode()
     {
         var verdict = AutoEntryPolicy.EvaluateLlm(
             Proposal(used: false, confirmed: true), TradeSide.Long, confidenceThreshold: 55m);
 
         Assert.True(verdict.Allowed);
         Assert.Contains("unavailable", verdict.Reason);
+    }
+
+    // The regression that cost real money. On 2026-08-07 Claude declined 34 setups in a row;
+    // the 35th reply failed to parse, fail-open let that one alone through, and it closed at
+    // the stop for -0.41. The only position opened was the only one never actually audited.
+    // A verdict that could not be read is not an approval.
+    [Fact]
+    public void UnreadableClaudeBlocksTheTradeInAuditorMode()
+    {
+        var verdict = AutoEntryPolicy.EvaluateLlm(
+            Proposal(used: false, confirmed: true), TradeSide.Long,
+            confidenceThreshold: 55m, auditorMode: true);
+
+        Assert.False(verdict.Allowed);
+        Assert.Contains("explicit confirmation", verdict.Reason);
+    }
+
+    // Confirmed=true on an unused validation is the shape a passthrough takes, so the guard
+    // must key on Used and not be fooled by the default flag.
+    [Fact]
+    public void AuditorModeIgnoresTheConfirmedFlagWhenTheReplyWasNotUsed()
+    {
+        var passthroughShaped = Proposal(used: false, confirmed: true, aligned: null, blocking: null);
+
+        Assert.False(AutoEntryPolicy
+            .EvaluateLlm(passthroughShaped, TradeSide.Long, 55m, auditorMode: true).Allowed);
     }
 
     // Advisory mode is unchanged: a hesitant verdict still trades when conviction is high

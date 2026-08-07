@@ -119,9 +119,13 @@ public sealed class AutoTradingWorker(
         // Position closed: the trailing history belongs to that position only — wipe it so
         // the dashboard card starts fresh with the next position.
         trailingStopActivity.Clear(Symbol);
-        // Same window for the audit log: the refusals that preceded a position stay readable
-        // while it is open, and the next run starts from empty once it closes.
-        auditLog.Clear(Symbol);
+        // Same window for the audit log — but gated on the close actually having happened.
+        // The two Clear calls above sit on a path that runs on EVERY flat tick, which is
+        // harmless for them because their records only exist while a position is open. Audit
+        // refusals are the opposite: they are written precisely when there is no position, so
+        // an unconditional wipe here erased each one about thirty seconds after it was
+        // recorded and the card stayed empty through three real refusals.
+        if (positionJustClosed) auditLog.Clear(Symbol);
 
         // A maker entry that did not fill is still resting on the book. Clear it before
         // considering a new one: otherwise every 30s tick that still likes the signal would

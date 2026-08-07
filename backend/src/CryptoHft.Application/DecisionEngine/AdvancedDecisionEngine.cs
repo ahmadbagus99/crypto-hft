@@ -346,7 +346,17 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         var cautionReasons = new List<string>();
 
         var trendAligned = isBuy ? mtfAgreement >= 0.5m : isSell ? mtfAgreement >= 0.5m : false;
-        if (!isBuy && !isSell) noTradeReasons.Add("Signal is neutral (Hold)");
+        // The scalper's gates know exactly which question stopped the trade, and saying so is
+        // the point of asking them in order — "higher timeframes disagree" and "price has not
+        // turned yet" call for different responses, and both were previously flattened into
+        // "Signal is neutral (Hold)", which is what an averaged score says when it means
+        // nothing in particular.
+        if (!isBuy && !isSell)
+        {
+            noTradeReasons.Add(scalperGate is { Allowed: false }
+                ? $"{scalperGate.Stage} gate: {scalperGate.Reason}"
+                : "Signal is neutral (Hold)");
+        }
         if (confidence < profile.AutoTradeConfidenceThreshold) noTradeReasons.Add($"Confidence {confidence:F0} below threshold {profile.AutoTradeConfidenceThreshold:F0}");
 
         if (riskReward < profile.MinimumRiskReward) cautionReasons.Add($"Risk/reward {riskReward:F2} (net of fees) below preferred {profile.MinimumRiskReward:F2}");
@@ -379,6 +389,12 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         // Style banner first (which lens produced this read), then category scores
         // ordered by weight, then the detailed factor breakdown.
         reasons.Add($"style {style.Name}: primary TF {primary.Interval}, SL {exec.SlAtrMultiplier:0.#}x / TP {exec.TpAtrMultiplier:0.#}x ATR");
+        if (scalperGate is not null)
+        {
+            // Shown whether it passed or not: on a pass it records which reversal bar earned
+            // the entry, which is the thing to check against the result afterwards.
+            reasons.Add($"gate [{scalperGate.Stage}] {(scalperGate.Allowed ? "PASS" : "STOP")}: {scalperGate.Reason}");
+        }
         foreach (var (name, score) in scores.OrderByDescending(kv => weights.GetValueOrDefault(kv.Key, 0m)))
         {
             var note = name switch

@@ -185,6 +185,66 @@ public sealed class ScalperSequentialGateTests
         Assert.Equal("direction", v.Stage);
     }
 
+    // The gates only earn their keep if the answer reaches the log. Shipped once without
+    // this: the verdict was computed, used to set the action, and then dropped, so a stopped
+    // trade still read "Signal is neutral (Hold)" — the averaged-score phrasing the whole
+    // design exists to replace.
+    [Fact]
+    public void ScalperNoTradeNamesTheGateThatStoppedIt()
+    {
+        var engine = new AdvancedDecisionEngine();
+
+        var decision = engine.Evaluate(
+            ScalperInput(), Profile, 10_000m, styleProfile: TradingStyleProfile.Scalper);
+
+        Assert.Contains(decision.Reasons, r => r.StartsWith("gate ["));
+        if (!decision.ShouldTrade && decision.Action == DecisionAction.NoTrade)
+        {
+            Assert.Matches("direction gate|location gate|timing gate|Confidence",
+                decision.NoTradeReason);
+        }
+    }
+
+    // Intraday must keep the plain phrasing — it has no gates to name.
+    [Fact]
+    public void IntradayReasonsCarryNoGateLine()
+    {
+        var engine = new AdvancedDecisionEngine();
+
+        var decision = engine.Evaluate(ScalperInput(), Profile, 10_000m);
+
+        Assert.DoesNotContain(decision.Reasons, r => r.StartsWith("gate ["));
+    }
+
+    private static readonly CryptoHft.Application.Risk.RiskProfile Profile = new(
+        MaxDailyLoss: 5m, MaxConsecutiveLosses: 3, MaxOpenPositions: 1, MaxExposure: 1m,
+        RiskPerTrade: 0.01m, MinimumRiskReward: 2m, AutoTradeConfidenceThreshold: 62m);
+
+    private static AdvancedDecisionInput ScalperInput()
+    {
+        static IReadOnlyList<Candle> Ramp(int n, decimal start, decimal step) =>
+            Enumerable.Range(0, n).Select(i =>
+            {
+                var c = start + i * step;
+                return new Candle(DateTimeOffset.UtcNow.AddMinutes(i - n), c - step / 2m, c + step, c - step, c, 100m);
+            }).ToList();
+
+        return new AdvancedDecisionInput(
+            "BTCUSDT", 100_000m,
+            new[]
+            {
+                new TimeframeData("1m", Ramp(250, 100_000m, 3m)),
+                new TimeframeData("5m", Ramp(250, 100_000m, 7m)),
+                new TimeframeData("15m", Ramp(250, 100_000m, 20m)),
+                new TimeframeData("1h", Ramp(250, 100_000m, 80m)),
+                new TimeframeData("4h", Ramp(250, 100_000m, 200m)),
+            },
+            new DerivativesSnapshot(0.0001m, 1000m, 0m, 1m, 1m, 0m, 1m),
+            new SentimentSnapshot(50m, 50m, "Neutral", 50, "Neutral", Array.Empty<string>()),
+            new MacroSnapshot(50m, "", false),
+            new OnchainSnapshot(50m, "", false));
+    }
+
     // ---- Isolation from intraday ------------------------------------------------------
 
     [Fact]

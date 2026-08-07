@@ -22,6 +22,7 @@ public sealed class AutoTradingWorker(
     IPositionHistoryService positionHistoryService,
     ITrailingStopGuard trailingStopGuard,
     ITrailingStopActivityStore trailingStopActivity,
+    IAiAuditLogStore auditLog,
     ILatestDecisionStore decisionStore,
     ILogger<AutoTradingWorker> logger) : BackgroundService
 {
@@ -118,6 +119,9 @@ public sealed class AutoTradingWorker(
         // Position closed: the trailing history belongs to that position only — wipe it so
         // the dashboard card starts fresh with the next position.
         trailingStopActivity.Clear(Symbol);
+        // Same window for the audit log: the refusals that preceded a position stay readable
+        // while it is open, and the next run starts from empty once it closes.
+        auditLog.Clear(Symbol);
 
         // A maker entry that did not fill is still resting on the book. Clear it before
         // considering a new one: otherwise every 30s tick that still likes the signal would
@@ -210,6 +214,22 @@ public sealed class AutoTradingWorker(
             // minutes on one unchanged setup. A refusal now rests until the market has had
             // time to become a different question.
             _nextAuditAt = now + AuditRetryDelay;
+
+            // Only auditor mode produces a refusal that is Claude's to own; in advisory mode
+            // a block came from the rules and belongs in the log for those, not this one.
+            if (settings.AiDirectionEnabled)
+            {
+                auditLog.Record(new AiAuditRefusal(
+                    Symbol,
+                    confirmation.Side.Value,
+                    decision.Confidence,
+                    decision.Llm.AdjustedConfidence,
+                    decision.Llm.AlignedCount,
+                    decision.Llm.BlockingCount,
+                    decision.Llm.Narrative,
+                    llmVerdict.Reason,
+                    now));
+            }
             decisionStore.Set(Symbol, BlockDecision(decision, llmVerdict.Reason));
             logger.LogWarning(
                 "Auto-entry blocked after Claude validation: {Reason}; next audit no earlier than {Next:HH:mm:ss}Z",

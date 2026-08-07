@@ -39,6 +39,7 @@ public static class DependencyInjection
         services.AddSingleton<IPositionHistoryService, PositionHistoryService>();
         services.AddSingleton<ITrailingStopGuard, TrailingStopGuardService>();
         services.AddSingleton<ITrailingStopActivityStore, TrailingStopActivityStore>();
+        services.AddSingleton<IAiAuditLogStore, AiAuditLogStore>();
         services.AddSingleton<ApnsPushNotificationService>();
         services.AddSingleton<BarkPushNotificationService>();
         services.AddSingleton<IPushNotificationService, CompositePushNotificationService>();

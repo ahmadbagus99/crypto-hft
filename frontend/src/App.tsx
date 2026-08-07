@@ -20,6 +20,7 @@ import { Line } from "react-chartjs-2";
 import { createTradingConnection } from "./lib/signalr";
 import type {
   AccountUpdateEvent,
+  AiAuditLogSnapshot,
   AiDecision,
   AggTradeTick,
   AutoTradeRiskStatus,
@@ -131,6 +132,12 @@ async function fetchPositions(): Promise<FuturesPositionInfo[]> {
 async function fetchTrailingStops(): Promise<TrailingStopSnapshot> {
   const response = await fetch(`/api/account/trailing-stops?symbol=${symbol}`, { cache: "no-store" });
   if (!response.ok) throw new Error("Failed to load trailing stops");
+  return response.json();
+}
+
+async function fetchAiAuditLog(): Promise<AiAuditLogSnapshot> {
+  const response = await fetch(`/api/ai/audit-log?symbol=${symbol}`, { cache: "no-store" });
+  if (!response.ok) throw new Error("Failed to load AI audit log");
   return response.json();
 }
 
@@ -938,6 +945,7 @@ function DashboardPage() {
   const { data: walletBalances } = useQuery({ queryKey: ["wallet"], queryFn: fetchWallet, refetchInterval: 5000, retry: false });
   const { data: positions } = useQuery({ queryKey: ["positions", symbol], queryFn: fetchPositions, refetchInterval: 5000, retry: false });
   const { data: trailingStops } = useQuery({ queryKey: ["trailing-stops", symbol], queryFn: fetchTrailingStops, refetchInterval: 5000, retry: false });
+  const { data: aiAuditLog } = useQuery({ queryKey: ["ai-audit-log", symbol], queryFn: fetchAiAuditLog, refetchInterval: 10000, retry: false });
   const { data: exchangeRules } = useQuery({ queryKey: ["exchange-rules", symbol], queryFn: fetchExchangeRules, refetchInterval: 60 * 60 * 1000, retry: false });
   const { data: killSwitch, refetch: refetchKillSwitch } = useQuery({ queryKey: ["kill-switch"], queryFn: fetchKillSwitch, refetchInterval: 5000, retry: false });
   const { data: journal } = useQuery({ queryKey: ["journal", symbol], queryFn: fetchJournal, refetchInterval: 5000, retry: false });
@@ -1138,6 +1146,7 @@ function DashboardPage() {
         <section className="grid gap-4 xl:grid-cols-[1.4fr_0.8fr]">
           <Panel title="AI Decision">
             <AiDecisionPanel decision={aiDecision} />
+            <AiAuditLogList log={aiAuditLog} />
           </Panel>
           <Panel title="Claude API Usage">
             <AiUsagePanel usage={aiUsage} />
@@ -2751,6 +2760,55 @@ function formatNumber(value: number, maximumFractionDigits = 2) {
 function formatSignedNumber(value: number, maximumFractionDigits = 4) {
   const formatted = formatNumber(value, maximumFractionDigits);
   return value > 0 ? `+${formatted}` : formatted;
+}
+
+// Setups the engine put forward and Claude declined, newest first. Empty is the normal
+// state: it means every audited setup was confirmed, or none has been audited yet. The list
+// runs from the last position close, so a long tail here is the signal that the auditor is
+// refusing more than the market is offering.
+function AiAuditLogList({ log }: { log?: AiAuditLogSnapshot }) {
+  const refusals = log?.refusals ?? [];
+  if (refusals.length === 0) return null;
+
+  const ordered = [...refusals].reverse();
+
+  return (
+    <div className="mt-4 border-t border-hairline pt-3">
+      <div className="mb-2 flex items-baseline justify-between">
+        <span className="label-micro">Ditolak Auditor</span>
+        <span className="text-xs tabular-nums text-slate-500">
+          {refusals.length} sejak posisi terakhir ditutup
+        </span>
+      </div>
+      <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
+        {ordered.map((r, i) => {
+          const long = r.proposedSide === 1;
+          const counts =
+            r.alignedCount != null && r.blockingCount != null
+              ? `${r.alignedCount} sejalan / ${r.blockingCount} penghalang`
+              : null;
+          return (
+            <div key={`${r.refusedAt}-${i}`} className="rounded-md border border-hairline bg-void/60 p-2">
+              <div className="flex items-center gap-2 text-xs">
+                <span className={long ? "text-exchangeGreen" : "text-exchangeRed"}>
+                  {long ? "LONG" : "SHORT"}
+                </span>
+                <span className="tabular-nums text-slate-500">
+                  engine {r.engineConfidence.toFixed(1)} → AI {r.adjustedConfidence.toFixed(0)}
+                </span>
+                {counts && <span className="tabular-nums text-slate-600">{counts}</span>}
+                <span className="ml-auto tabular-nums text-slate-600">
+                  {new Date(r.refusedAt).toLocaleTimeString()}
+                </span>
+              </div>
+              {r.narrative && <p className="mt-1 text-xs leading-snug text-slate-400">{r.narrative}</p>}
+              {!r.narrative && <p className="mt-1 text-xs leading-snug text-slate-500">{r.reason}</p>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function formatPercent(value: number, maximumFractionDigits = 2) {

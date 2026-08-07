@@ -338,6 +338,15 @@ app.MapGet("/api/account/position-revalidations", (
     return Results.Ok(revalidationStore.Get(symbol));
 });
 
+// Setups the engine put forward and Claude declined, since the last position closed.
+app.MapGet("/api/ai/audit-log", (
+    string? symbol,
+    IAiAuditLogStore auditLog) =>
+{
+    symbol = string.IsNullOrWhiteSpace(symbol) ? "BTCUSDT" : symbol.ToUpperInvariant();
+    return Results.Ok(auditLog.Get(symbol));
+});
+
 // Trailing-stop ratchet history for the CURRENT open position (cleared on close).
 app.MapGet("/api/account/trailing-stops", (
     string? symbol,

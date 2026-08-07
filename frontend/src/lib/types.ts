@@ -432,6 +432,24 @@ export type AiDecision = {
   time: string;
 };
 
+export type AiAuditRefusal = {
+  symbol: string;
+  proposedSide: number;
+  engineConfidence: number;
+  adjustedConfidence: number;
+  alignedCount?: number | null;
+  blockingCount?: number | null;
+  narrative: string;
+  reason: string;
+  refusedAt: string;
+};
+
+export type AiAuditLogSnapshot = {
+  symbol: string;
+  refusals: AiAuditRefusal[];
+  sinceAt?: string | null;
+};
+
 export type TradingSettings = {
   paperTradingOnly: boolean;
   autoTradingEnabled: boolean;

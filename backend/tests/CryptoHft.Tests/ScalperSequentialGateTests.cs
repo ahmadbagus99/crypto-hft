@@ -118,16 +118,31 @@ public sealed class ScalperSequentialGateTests
         Assert.False(ScalperSequentialGate.Timing(TradeSide.Long, bars).Allowed);
     }
 
+    // The second bar of a bounce still counts. Demanding the FIRST one asks for a counter-
+    // trend signal inside a system whose direction gate has already established the trend,
+    // and replayed over the 20 real August entries that veto removed four trades while moving
+    // the total by +0.007 — two thirds of the sample for nothing. The shape is still reported
+    // so a continuation entry can be told from a fresh turn afterwards.
     [Fact]
-    public void ContinuationOfAMoveAlreadyUnderWayIsNotATurn()
+    public void SecondBarOfTheMoveIsStillAllowedButLabelled()
     {
-        // Two green bars in a row, second neither sweeps the first's low nor follows a red bar.
         var bars = new[] { Bar(64800, 64870, 64795, 64860), Bar(64862, 64920, 64858, 64910, 1) };
 
         var v = ScalperSequentialGate.Timing(TradeSide.Long, bars);
 
-        Assert.False(v.Allowed);
-        Assert.Contains("already under way", v.Reason);
+        Assert.True(v.Allowed);
+        Assert.Contains("continuation", v.Reason);
+    }
+
+    // A fresh turn is labelled differently, so the two can be separated in the results later.
+    [Fact]
+    public void FreshTurnAndContinuationAreDistinguishable()
+    {
+        var fresh = ScalperSequentialGate.Timing(TradeSide.Long,
+            new[] { Bar(64850, 64860, 64790, 64800), Bar(64800, 64880, 64795, 64870, 1) });
+
+        Assert.Contains("reversal", fresh.Reason);
+        Assert.DoesNotContain("continuation", fresh.Reason);
     }
 
     [Fact]

@@ -98,13 +98,23 @@ public static class ScalperSequentialGate
         if (!strongClose)
             return new(false, side, "timing", "bar closed inside its own range — no conviction in the turn");
 
+        // Whether this is the FIRST bar of the turn or the second is recorded but no longer
+        // vetoes. Demanding a reversal specifically asks for a counter-trend signal inside a
+        // system whose direction gate has already established the trend — the turn is what
+        // gets us here, and a bar closing our way with conviction from a discount zone is that
+        // turn whether or not the bar before it was red. Replayed over the 20 real August
+        // entries the veto removed four trades and moved the total by +0.007, so it cost two
+        // thirds of the sample and bought nothing; that is supporting evidence at n=20, not
+        // the reason.
         var priorWentOtherWay = long_ ? prior.Close < prior.Open : prior.Close > prior.Open;
         var sweptPriorExtreme = long_ ? bar.Low <= prior.Low : bar.High >= prior.High;
-        if (!priorWentOtherWay && !sweptPriorExtreme)
-            return new(false, side, "timing", "bar continues a move already under way — not a turn");
+        var freshTurn = priorWentOtherWay || sweptPriorExtreme;
 
-        return new(true, side, "timing",
-            $"reversal bar closed {bar.Close:F1} ({(sweptPriorExtreme ? "swept the prior extreme" : "turned after an opposing bar")})");
+        var shape = sweptPriorExtreme ? "swept the prior extreme"
+            : priorWentOtherWay ? "turned after an opposing bar"
+            : "second bar of the move";
+
+        return new(true, side, "timing", $"{(freshTurn ? "reversal" : "continuation")} bar closed {bar.Close:F1} ({shape})");
     }
 
     // Runs the three in order and reports the first failure, so the log says which question

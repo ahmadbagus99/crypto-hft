@@ -266,7 +266,7 @@ public sealed class DecisionEngineImprovementTests
             styleProfile: TradingStyleProfile.Scalper);
 
         Assert.Contains(decision.Reasons, r => r.Contains("style scalper: primary TF 15m"));
-        Assert.Contains(decision.Reasons, r => r.Contains("SL 1.5x / TP 4.5x ATR"));
+        Assert.Contains(decision.Reasons, r => r.Contains("SL 2.5x / TP 3x ATR"));
     }
 
     [Fact]
@@ -280,7 +280,7 @@ public sealed class DecisionEngineImprovementTests
             styleProfile: TradingStyleProfile.Scalper);
 
         Assert.Contains(intraday.Reasons, r => r.Contains("SL 2.6x / TP 3.2x ATR"));
-        Assert.Contains(scalper.Reasons, r => r.Contains("SL 1.5x / TP 4.5x ATR"));
+        Assert.Contains(scalper.Reasons, r => r.Contains("SL 2.5x / TP 3x ATR"));
     }
 
     [Fact]
@@ -468,10 +468,19 @@ public sealed class DecisionEngineImprovementTests
         Assert.True(decision.RiskReward < grossReward / grossRisk);
     }
 
-    // A scalper target must clear the fee by enough that the exchange is not the main
-    // beneficiary: 1.5x/4.5x ATR is the geometry that keeps the NET ratio near 2:1.
+    // The scalper geometry used to be chosen by solving for a net 2:1, and that is precisely
+    // what broke it. Holding the ratio while the fee stays a fixed 0.1% of notional forces the
+    // risk denominator down, and 1.5xATR put the stop 0.296% from entry against an ordinary
+    // four-hour drawdown of 0.450% — inside the noise. Measured on 20 real entries (4-7 Aug):
+    // 15 stopped out, 1 target reached, -0.220% per trade at t = -2.62. The ratio was healthy
+    // only because the risk it divided by was too small to survive.
+    //
+    // The stop now clears that band and the ratio is allowed to fall where the arithmetic puts
+    // it. These assertions pin the trade-off rather than a number: the stop must survive the
+    // noise, and the style's own minimum must describe the geometry so the caution does not
+    // fire on every trade and teach the auditor to distrust everything.
     [Fact]
-    public void ScalperGeometry_KeepsNetRiskRewardNearTwo()
+    public void ScalperStopClearsTheNoiseBandAndTheRatioFollows()
     {
         const decimal atr = 128m;      // ~ATR(15m) on BTC around 64.8k
         const decimal entry = 64_800m;
@@ -479,8 +488,18 @@ public sealed class DecisionEngineImprovementTests
         var reward = atr * TradingStyleProfile.Scalper.FallbackTpAtrMultiplier;
         var fee = entry * AdvancedDecisionEngine.RoundTripFeeFraction;
 
-        var netRr = (reward - fee) / (risk + fee);
+        var stopPercent = risk / entry * 100m;
+        Assert.True(stopPercent > 0.45m,
+            $"stop at {stopPercent:F3}% sits inside the 0.450% drawdown that stopped 15 of 20 entries");
 
-        Assert.InRange(netRr, 1.8m, 2.2m);
+        var netRr = (reward - fee) / (risk + fee);
+        Assert.True(netRr >= TradingStyleProfile.Scalper.MinimumRiskReward,
+            $"net {netRr:F2} is below the style's own minimum {TradingStyleProfile.Scalper.MinimumRiskReward:F2}, "
+            + "which would flag a caution on every single scalper trade");
     }
+
+    // Intraday works at distances where the fee is a rounding error, so it keeps the 2:1 bar.
+    [Fact]
+    public void IntradayStillRequiresTwoToOne()
+        => Assert.Equal(2m, TradingStyleProfile.Intraday.MinimumRiskReward);
 }

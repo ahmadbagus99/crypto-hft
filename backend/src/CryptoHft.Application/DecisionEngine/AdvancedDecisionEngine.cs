@@ -241,6 +241,19 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         var confidenceHold = Math.Clamp(100m - Math.Abs(directional - 50m) * 2m, 0m, 100m);
 
         var action = ToAction(directional);
+
+        // Scalper only: the weighted score decided WHICH WAY, and now three ordered gates
+        // decide whether this is a place and a moment to act on it. Intraday skips this
+        // entirely and keeps the pure blended behaviour it has always had.
+        ScalperGateVerdict? scalperGate = null;
+        if (style.UsesSequentialGate)
+        {
+            scalperGate = EvaluateScalperGate(input, votes, smcTf.Candles, fib, srLevels, style);
+            action = scalperGate.Allowed
+                ? scalperGate.Side == TradeSide.Long ? DecisionAction.Buy : DecisionAction.Sell
+                : DecisionAction.NoTrade;
+        }
+
         var isBuy = action is DecisionAction.WeakBuy or DecisionAction.Buy or DecisionAction.StrongBuy;
         var isSell = action is DecisionAction.WeakSell or DecisionAction.Sell or DecisionAction.StrongSell;
 
@@ -907,6 +920,39 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
     }
 
     // Symmetric directional bands around 50 (neutral). LONG actionable at >= 65, SHORT at <= 35.
+    // Feeds the scalper's three gates from what the engine has already computed: the 4h/1h
+    // trend votes for direction, the dealing-range position plus the level analyses for
+    // location, and the 1m series (5m if 1m is unavailable) for the turn itself.
+    private static ScalperGateVerdict EvaluateScalperGate(
+        AdvancedDecisionInput input,
+        IReadOnlyList<TimeframeVote> votes,
+        IReadOnlyList<Candle> structureCandles,
+        FibSignals fib,
+        SrSignals srLevels,
+        TradingStyleProfile style)
+    {
+        // Recomputed rather than threaded down from the scoring pass: Detect is a pure scan
+        // over the same candles, and only the scalper path pays for it.
+        var smc = SmartMoneyConcepts.Detect(structureCandles);
+
+        decimal Vote(string interval) =>
+            votes.FirstOrDefault(v => v.Interval == interval)?.Trend ?? 50m;
+
+        // "At a named level" = an unfilled gap, a fibonacci retracement zone, or a
+        // support/resistance band close enough to have moved the S/R score off neutral.
+        var atNamedLevel =
+            smc.BullishFvg || smc.BearishFvg ||
+            (fib.RetraceRatio >= 0.35m && fib.RetraceRatio <= 0.80m) ||
+            Math.Abs(srLevels.Score - 50m) >= 5m;
+
+        var entryTf = GetTimeframe(input, style.TimingInterval)
+                      ?? GetTimeframe(input, "5m")
+                      ?? input.Timeframes.OrderBy(t => t.Candles.Count).First();
+
+        return ScalperSequentialGate.Evaluate(
+            Vote("4h"), Vote("1h"), smc.RangePosition, atNamedLevel, entryTf.Candles);
+    }
+
     private static DecisionAction ToAction(decimal directional) => directional switch
     {
         >= 80 => DecisionAction.StrongBuy,

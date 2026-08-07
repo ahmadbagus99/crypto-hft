@@ -25,7 +25,20 @@ public sealed record TradingStyleProfile(
     IReadOnlyList<(string Interval, decimal Weight)> VoteWeights,
     decimal FallbackSlAtrMultiplier, // used when UseLearnedTuning is false
     decimal FallbackTpAtrMultiplier,
-    bool UseLearnedTuning)
+    bool UseLearnedTuning,
+    // Scalper only: run the ordered direction -> location -> timing gates instead of letting
+    // the blended score decide on its own. Intraday leaves this false and is untouched.
+    bool UsesSequentialGate = false,
+    // Which series the timing gate reads for the reversal bar. Ignored unless the gate runs.
+    string TimingInterval = "1m",
+    // The reward:risk the style is built around, net of fees. Per style because the fee is a
+    // fixed 0.1% of notional however small the target: at intraday distances it is a rounding
+    // error, at scalper distances it is most of the edge. Holding both to 2:1 is what forced
+    // the scalper stop inside the noise band in the first place — the ratio looked healthy
+    // only because the risk denominator was too small to survive. A caution that fires on
+    // every single trade teaches the auditor to distrust everything, so the threshold has to
+    // describe the style it is judging.
+    decimal MinimumRiskReward = 2m)
 {
     public static readonly TradingStyleProfile Intraday = new(
         "intraday", "1h", "15m",
@@ -34,12 +47,28 @@ public sealed record TradingStyleProfile(
         FallbackTpAtrMultiplier: 4m,
         UseLearnedTuning: true);
 
+    // The scalper's stop was measured losing on real entries (4-7 Aug: t = -2.62 over 20
+    // trades, 15 stopped out and 1 target reached). 1.5xATR put the stop at 0.328% of entry
+    // while the ordinary drawdown in the four hours after entry ran 0.450% — inside the noise,
+    // so 65% of entries were stopped by a move that meant nothing. 2.5xATR clears that band.
+    // The target comes down with it: at SL 2.5 a NET 2:1 after ~0.1% round-trip fees needs
+    // roughly 3xATR, and widening both while keeping a 3:1 ratio would have pushed the median
+    // hold past five hours, which is no longer scalping.
     public static readonly TradingStyleProfile Scalper = new(
         "scalper", "15m", "5m",
         new[] { ("5m", 0.30m), ("15m", 0.35m), ("1h", 0.25m), ("4h", 0.10m) },
-        FallbackSlAtrMultiplier: 1.5m,
-        FallbackTpAtrMultiplier: 4.5m,
-        UseLearnedTuning: false);
+        FallbackSlAtrMultiplier: 2.5m,
+        FallbackTpAtrMultiplier: 3m,
+        UseLearnedTuning: false,
+        UsesSequentialGate: true,
+        TimingInterval: "1m",
+        // 2.5xATR risk against a 3xATR target nets 0.83:1 after fees, so this geometry needs
+        // to win about 55% of the time. That is a demanding bar and it is stated rather than
+        // hidden: the alternative was a 6.5xATR target, which is a 1.28% move that price
+        // reached in roughly a fifth of the hours measured. Neither is comfortable — the fee
+        // is simply large relative to the distances a scalper works in, and switching entries
+        // to maker is the lever that moves this number, not the geometry.
+        MinimumRiskReward: 0.8m);
 
     public static TradingStyleProfile For(TradingStyle style)
         => style == TradingStyle.Scalper ? Scalper : Intraday;

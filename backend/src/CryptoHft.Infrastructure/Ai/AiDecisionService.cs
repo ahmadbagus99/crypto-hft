@@ -58,19 +58,21 @@ public sealed class AiDecisionService(
             macroTask.Result, onchainTask.Result, calendarTask.Result);
 
         var equity = await GetEquityAsync(cancellationToken);
+
+        // The trading style picks the lens: which timeframe anchors regime/geometry and
+        // how the MTF votes are weighted. Read per tick, so a settings change takes
+        // effect on the next scan without a restart. Resolved before the risk profile
+        // because the reward:risk the style is built around belongs to the style.
+        var styleProfile = TradingStyleProfile.For((TradingStyle)settings.TradingStyle);
+
         var profile = new RiskProfile(
             MaxDailyLoss: settings.MaxDailyLossPercent,
             MaxConsecutiveLosses: 3,
             MaxOpenPositions: 1,
             MaxExposure: settings.MaxExposurePercent,
             RiskPerTrade: settings.RiskPerTradePercent,
-            MinimumRiskReward: 2m,
+            MinimumRiskReward: styleProfile.MinimumRiskReward,
             AutoTradeConfidenceThreshold: settings.ConfidenceThreshold);
-
-        // The trading style picks the lens: which timeframe anchors regime/geometry and
-        // how the MTF votes are weighted. Read per tick, so a settings change takes
-        // effect on the next scan without a restart.
-        var styleProfile = TradingStyleProfile.For((TradingStyle)settings.TradingStyle);
 
         // Adaptive learning: load learned weight multipliers + execution baselines
         // (SL/TP geometry, leverage factor) for the current regime — detected on the

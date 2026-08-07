@@ -11,7 +11,10 @@ public sealed class BinanceMultiTimeframeProvider(
     IHttpClientFactory httpClientFactory,
     IOptions<BinanceOptions> options) : IMultiTimeframeProvider
 {
-    private static readonly string[] Intervals = ["5m", "15m", "1h", "4h", "1d"];
+    // 1m is fetched for the scalper's timing gate, which needs to see whether a reversal bar
+    // has actually closed rather than inferring it from a 5m average. Intraday ignores it:
+    // its vote weights never name 1m, so the extra series changes nothing on that path.
+    private static readonly string[] Intervals = ["1m", "5m", "15m", "1h", "4h", "1d"];
     private readonly BinanceOptions _options = options.Value;
 
     public async Task<IReadOnlyList<TimeframeData>> GetTimeframesAsync(string symbol, CancellationToken cancellationToken)

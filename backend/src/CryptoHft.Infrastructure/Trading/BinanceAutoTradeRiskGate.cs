@@ -248,7 +248,7 @@ public sealed class BinanceAutoTradeRiskGate(
             return Status(
                 true,
                 "guard-off",
-                "account risk guard disabled — daily-loss and consecutive-loss pauses bypassed",
+                "account risk guard disabled — the daily-loss pause is bypassed",
                 checkedAt,
                 equity,
                 dailyLoss,
@@ -273,22 +273,12 @@ public sealed class BinanceAutoTradeRiskGate(
                 NextUtcDay(checkedAt));
         }
 
-        if (consecutiveLosses >= MaxConsecutiveLosses)
-        {
-            return Status(
-                false,
-                "consecutive-losses",
-                $"{consecutiveLosses} consecutive losing trades today >= limit {MaxConsecutiveLosses} " +
-                "— trading paused until next UTC day or manual intervention",
-                checkedAt,
-                equity,
-                dailyLoss,
-                dailyLossLimit,
-                settings.MaxDailyLossPercent,
-                consecutiveLosses,
-                NextUtcDay(checkedAt));
-        }
-
+        // A run of losses no longer stops the day. The daily loss limit already bounds what a
+        // bad run can cost, and it does so in the currency that matters — money — whereas a
+        // count of trades stops on three small scratches while leaving a single large loss
+        // untouched. Three trades at -0.05 and three at -1.50 are the same number and nothing
+        // like the same damage. The streak is still counted and reported so the dashboard can
+        // show it; it simply no longer decides anything.
         return Status(
             true,
             "active",

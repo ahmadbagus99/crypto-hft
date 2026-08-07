@@ -139,8 +139,12 @@ public sealed class AutoTradeRiskGateTests
         Assert.Equal(new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero), status.ResetsAt);
     }
 
+    // A run of losses no longer stops the day: the daily limit already bounds what a bad run
+    // can cost, and it bounds it in money. A count of trades halts on three scratches worth
+    // -0.05 each while a single -1.50 passes untouched — same number, nothing like the same
+    // damage. The streak is still counted and surfaced; it just decides nothing.
     [Fact]
-    public void ResolveAccountStatus_PausesForConsecutiveLosses_WhenDailyNetLossIsBelowLimit()
+    public void ResolveAccountStatus_KeepsTrading_ThroughALosingStreakWithDailyRoomLeft()
     {
         var entries = new[] { E(0, 5m), E(10, -1m), E(20, -1m), E(30, -1m) };
 
@@ -150,9 +154,27 @@ public sealed class AutoTradeRiskGateTests
             todaysPnl: entries,
             checkedAt: T0);
 
+        Assert.True(status.TradingAllowed);
+        Assert.Equal("active", status.Status);
+        Assert.Equal(3, status.ConsecutiveLosses);   // still reported for the dashboard
+        Assert.Null(status.ResetsAt);
+    }
+
+    // The money limit is the one that stops the day, streak or no streak.
+    [Fact]
+    public void ResolveAccountStatus_StopsOnTheDailyLimit_EvenWithoutAStreak()
+    {
+        var entries = new[] { E(0, -6m), E(10, 1m) };
+
+        var status = BinanceAutoTradeRiskGate.ResolveAccountStatus(
+            Settings(maxDailyLossPercent: 0.50m),
+            equity: 10m,
+            todaysPnl: entries,
+            checkedAt: T0);
+
         Assert.False(status.TradingAllowed);
-        Assert.Equal("consecutive-losses", status.Status);
-        Assert.Equal(3, status.ConsecutiveLosses);
+        Assert.Equal("daily-loss", status.Status);
+        Assert.Equal(0, status.ConsecutiveLosses);   // last trade was a win
         Assert.NotNull(status.ResetsAt);
     }
 

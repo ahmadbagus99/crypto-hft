@@ -1415,9 +1415,10 @@ function AutoTradeRiskStatusCard({ status }: { status: AutoTradeRiskStatus }) {
         <div className="grid shrink-0 grid-cols-2 gap-x-8 gap-y-3 text-sm sm:grid-cols-4">
           <RiskStatusValue label="Daily Loss" value={formatRiskValue(status.dailyLoss, "USDT")} danger={status.status === "daily-loss"} />
           <RiskStatusValue label="Daily Limit" value={formatRiskValue(status.dailyLossLimit, "USDT")} />
-          <RiskStatusValue
-            label="Loss Beruntun"
-            value={status.consecutiveLosses === null ? "-" : `${status.consecutiveLosses} / ${status.maxConsecutiveLosses}`}
+          <DailyQuotaDonut
+            used={status.dailyLoss}
+            limit={status.dailyLossLimit}
+            streak={status.consecutiveLosses}
           />
           <div>
             <div className="text-xs text-slate-500">Aktif Lagi</div>
@@ -1429,6 +1430,74 @@ function AutoTradeRiskStatusCard({ status }: { status: AutoTradeRiskStatus }) {
         </div>
       </div>
     </section>
+  );
+}
+
+// How much of today's loss budget is spent — the one number that decides whether the guard
+// stops trading. It replaced a "3 / 3" losing-streak counter that read like a limit but no
+// longer stops anything: a count of trades halts on three scratches worth -0.05 each while a
+// single -1.50 passes untouched. The streak stays visible underneath as context, sized like
+// the context it is.
+function DailyQuotaDonut({
+  used,
+  limit,
+  streak,
+}: {
+  used: number | null;
+  limit: number | null;
+  streak: number | null;
+}) {
+  const known = used !== null && limit !== null && limit > 0;
+  const spent = known ? Math.max(0, used) : 0;
+  const ratio = known ? Math.min(1, spent / limit) : 0;
+  const percent = Math.round(ratio * 100);
+
+  // 40px circle, stroke drawn from the top and clockwise.
+  const radius = 16;
+  const circumference = 2 * Math.PI * radius;
+  const dash = circumference * ratio;
+
+  const tone =
+    !known ? "text-slate-600"
+      : ratio >= 1 ? "text-red-400"
+      : ratio >= 0.75 ? "text-amber-400"
+      : "text-cyan";
+
+  return (
+    <div>
+      <div className="text-xs text-slate-500">Kuota Harian</div>
+      <div className="mt-1 flex items-center gap-2.5">
+        <div className="relative h-10 w-10 shrink-0">
+          <svg viewBox="0 0 40 40" className="h-10 w-10 -rotate-90" aria-hidden="true">
+            <circle cx="20" cy="20" r={radius} fill="none" strokeWidth="4" className="stroke-hairline" />
+            <circle
+              cx="20"
+              cy="20"
+              r={radius}
+              fill="none"
+              strokeWidth="4"
+              strokeLinecap="round"
+              strokeDasharray={`${dash} ${circumference}`}
+              className={`${tone} transition-[stroke-dasharray] duration-500`}
+              stroke="currentColor"
+            />
+          </svg>
+          <span
+            className={`absolute inset-0 flex items-center justify-center text-[10px] font-semibold tabular-nums ${tone}`}
+          >
+            {known ? `${percent}%` : "-"}
+          </span>
+        </div>
+        <div className="min-w-0 leading-tight">
+          <div className="text-xs tabular-nums text-slate-300">
+            {known ? `${spent.toFixed(2)} / ${limit.toFixed(2)}` : "-"}
+          </div>
+          <div className="text-[11px] text-slate-600">
+            {streak === null ? "beruntun -" : `beruntun ${streak}`}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

@@ -154,7 +154,13 @@ public sealed class ClaudeDecisionValidator(
             catch (Exception ex) { logger.LogDebug(ex, "learning snapshot unavailable"); }
 
             var client = new AnthropicClient { ApiKey = apiKey };
-            var payload = BuildPayload(decision, input, learning);
+            // Cached hourly by the service, so this costs nothing per call. Empty on failure,
+            // which sends raw scores — the behaviour before centring existed.
+            IReadOnlyDictionary<string, decimal> baselines = new Dictionary<string, decimal>();
+            try { baselines = await adaptiveWeights.GetCategoryBaselinesAsync(cancellationToken); }
+            catch (Exception ex) { logger.LogDebug(ex, "category baselines unavailable for payload"); }
+
+            var payload = BuildPayload(decision, input, learning, baselines);
             var model = ResolveModel();
 
             var response = await client.Messages.Create(new MessageCreateParams
@@ -188,9 +194,13 @@ public sealed class ClaudeDecisionValidator(
         }
     }
 
-    private static string BuildPayload(AdvancedDecision d, AdvancedDecisionInput input, LearningSnapshot? learning)
+    private static string BuildPayload(
+        AdvancedDecision d,
+        AdvancedDecisionInput input,
+        LearningSnapshot? learning,
+        IReadOnlyDictionary<string, decimal> baselines)
     {
-        var scores = string.Join(", ", d.Scores.Select(kv => $"{kv.Key}={kv.Value:F0}"));
+        var scores = BuildScoreLine(d, baselines);
         var headlines = input.Sentiment.Headlines.Count > 0
             ? string.Join(" | ", input.Sentiment.Headlines.Take(5))
             : "none";
@@ -229,6 +239,24 @@ public sealed class ClaudeDecisionValidator(
         Work Steps 1-3: count alignment, count blocking factors, then size from net. Respond with the JSON schema only.
         """;
     }
+
+    // Each category alongside the centre of its own distribution, because since the engine
+    // started centring inputs on their own habit the raw number and the vote have diverged.
+    // Production 2026-08-07 10:17: sentiment read 29 and Claude counted it as a blocking
+    // factor "more than 15 points against" — while the engine, knowing sentiment normally
+    // sits at 28, had already treated it as neutral. News is the same story upward: 61 looks
+    // mildly bullish next to 50 and is a strong reading next to its own 31.6. Judging both
+    // sides of the desk on one ruler is the point; showing the raw value too keeps the
+    // absolute level available where it genuinely matters.
+    internal static string BuildScoreLine(AdvancedDecision d, IReadOnlyDictionary<string, decimal> baselines)
+        => string.Join(", ", d.Scores.Select(kv =>
+        {
+            if (!baselines.TryGetValue(kv.Key, out var baseline)) return $"{kv.Key}={kv.Value:F0}";
+            var centred = CategoryBaseline.Recenter(kv.Value, baseline);
+            return Math.Abs(centred - kv.Value) < 0.05m
+                ? $"{kv.Key}={kv.Value:F0}"
+                : $"{kv.Key}={centred:F0} (raw {kv.Value:F0}, its own normal {baseline:F0})";
+        }));
 
     // The level analyses the engine already runs — order blocks, fair value gaps, liquidity
     // sweeps, BOS/CHoCH, Fibonacci retracement, chart patterns, horizontal S/R. Until now all

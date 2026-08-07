@@ -106,6 +106,61 @@ public sealed class LlmPayloadDetailTests
             InputWith(new TimeframeData("5m", Array.Empty<Candle>()))));
     }
 
+    private static AdvancedDecision WithScores(params (string Key, decimal Value)[] scores)
+        => DecisionWith() with { Scores = scores.ToDictionary(s => s.Key, s => s.Value) };
+
+    // Production 2026-08-07 10:17: sentiment read 29 and Claude counted it as a blocking
+    // factor "more than 15 points against", while the engine — knowing sentiment normally
+    // sits at 28 — had already treated it as neutral. Once the engine started centring inputs
+    // on their own habit, sending raw numbers meant the two sides judged the same setup on
+    // different rulers.
+    [Fact]
+    public void ScoreLineCarriesTheValueTheEngineActuallyVotesOn()
+    {
+        var line = ClaudeDecisionValidator.BuildScoreLine(
+            WithScores(("sentiment", 29m)),
+            new Dictionary<string, decimal> { ["sentiment"] = 28m });
+
+        Assert.Contains("sentiment=51", line);          // what the engine blends
+        Assert.Contains("raw 29", line);                // absolute level still visible
+        Assert.Contains("its own normal 28", line);
+    }
+
+    // The same correction the other way: 61 looks mildly bullish next to 50 and is a strong
+    // reading next to news's own 32.
+    [Fact]
+    public void AnUnusuallyHighReadingIsShownAsUnusual()
+    {
+        var line = ClaudeDecisionValidator.BuildScoreLine(
+            WithScores(("news", 61m)),
+            new Dictionary<string, decimal> { ["news"] = 32m });
+
+        Assert.Contains("news=79", line);
+        Assert.Contains("raw 61", line);
+    }
+
+    // A well-centred category is left plain, so the annotation marks the ones that moved.
+    [Fact]
+    public void WellCentredCategoriesStayUnannotated()
+    {
+        var line = ClaudeDecisionValidator.BuildScoreLine(
+            WithScores(("technical", 67m)),
+            new Dictionary<string, decimal> { ["technical"] = 51m });
+
+        Assert.Equal("technical=67", line);
+    }
+
+    // No baselines yet (fresh database) must reproduce the original raw score line exactly.
+    [Fact]
+    public void WithoutBaselinesTheLineIsUnchanged()
+    {
+        var line = ClaudeDecisionValidator.BuildScoreLine(
+            WithScores(("sentiment", 29m), ("news", 61m)),
+            new Dictionary<string, decimal>());
+
+        Assert.Equal("sentiment=29, news=61", line);
+    }
+
     // The owner's method, encoded as a rule: a level touched is a setup, a level rejected is a
     // trigger, and only the trigger earns size.
     [Fact]

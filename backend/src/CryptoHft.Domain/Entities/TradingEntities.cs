@@ -212,6 +212,10 @@ public sealed class AiDecisionLog
     public decimal? LlmAdjustedConfidence { get; set; }
     public int? LlmAlignedCount { get; set; }        // categories Claude counted as supporting the side
     public int? LlmBlockingCount { get; set; }       // factors Claude counted as crossing a blocking threshold
+    // Whether a bar had actually rejected the level when the trade was opened. Entries taken
+    // without it are sized down rather than refused, so this column is what makes "does an
+    // unconfirmed level really lose more often" answerable from realized PnL instead of assumed.
+    public bool? LlmLevelConfirmed { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? EvaluatedAt { get; set; }
 }

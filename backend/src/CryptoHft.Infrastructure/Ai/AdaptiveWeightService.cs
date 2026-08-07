@@ -197,7 +197,8 @@ public sealed class AdaptiveWeightService(
             LlmStopsApplied = llmUsed ? stopsApplied : null,
             LlmAdjustedConfidence = llmUsed ? llm.AdjustedConfidence : null,
             LlmAlignedCount = llmUsed ? llm.AlignedCount : null,
-            LlmBlockingCount = llmUsed ? llm.BlockingCount : null
+            LlmBlockingCount = llmUsed ? llm.BlockingCount : null,
+            LlmLevelConfirmed = llmUsed ? llm.LevelConfirmed : null
         });
         await db.SaveChangesAsync(cancellationToken);
     }

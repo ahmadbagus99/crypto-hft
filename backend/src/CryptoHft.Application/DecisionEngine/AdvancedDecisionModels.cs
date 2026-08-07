@@ -112,7 +112,11 @@ public sealed record LlmValidation(
     // The two tallies Claude's sizing band is derived from (null when the LLM was not consulted
     // or the model omitted them). Logged so the multiplier can be audited against its own counts.
     int? AlignedCount = null,
-    int? BlockingCount = null);
+    int? BlockingCount = null,
+    // Whether a bar has actually rejected the level the setup rests on, as opposed to price
+    // still travelling into it. Timing rather than direction, so it is kept out of
+    // BlockingCount and priced as a size haircut instead of a veto. Null when not reported.
+    bool? LevelConfirmed = null);
 
 // The full explainable decision output
 public sealed record AdvancedDecision(

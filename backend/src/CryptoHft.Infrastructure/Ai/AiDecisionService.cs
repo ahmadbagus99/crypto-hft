@@ -122,6 +122,12 @@ public sealed class AiDecisionService(
         return decision;
     }
 
+    // What an unconfirmed level costs in size. Half is a starting guess, not a measurement —
+    // nothing in the record says how much worse an early entry actually does, because until
+    // now those trades were refused rather than taken. Once enough closed positions carry
+    // LlmLevelConfirmed the factor can be fitted, or the veto restored, on evidence.
+    internal const decimal UnconfirmedLevelSizeFactor = 0.5m;
+
     // Hard safety caps for Claude's defensive resizing when it is hesitant.
     private const decimal MinSizeMultiplier = 0.1m;
     private const decimal MaxSizeMultiplier = 1.5m;
@@ -180,10 +186,18 @@ public sealed class AiDecisionService(
             };
         }
 
-        // Size: clamp the multiplier, then scale the baseline qty. Keep 6-dp precision (matching the
-        // engine baseline) so a small budget is not re-zeroed here — the exchange rule validator
-        // raises the final qty up to the venue minimum before placement.
-        var mult = Math.Clamp(v.SizeMultiplier, MinSizeMultiplier, MaxSizeMultiplier);
+        // An entry into a level that has not yet rejected price is a setup without its trigger.
+        // It used to veto the trade outright, which produced no position and therefore no
+        // evidence about whether the caution was even warranted — two refusals at engine
+        // conviction above 80 with nothing learned from either. Priced as a haircut instead,
+        // the trade happens small and the outcome is recorded, so the question becomes
+        // answerable from realized results rather than assumed. Applied here rather than asked
+        // of the model so the discount is deterministic and shows up in the same place every
+        // time.
+        var mult = v.LevelConfirmed is false
+            ? v.SizeMultiplier * UnconfirmedLevelSizeFactor
+            : v.SizeMultiplier;
+        mult = Math.Clamp(mult, MinSizeMultiplier, MaxSizeMultiplier);
         var qty = Math.Round(d.PositionSizeQuantity * mult, 6);
 
         // Leverage: clamp to the hard range, else keep baseline.

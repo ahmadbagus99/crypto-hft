@@ -114,13 +114,20 @@ public sealed class ClaudeDecisionValidator(
         "already crowded on the side taken; (c) open interest falling more than 0.6% while price moves with the trade; " +
         "(d) order book imbalance stronger than 0.35 against the side, or spread wider than 0.05% of price; (e) a " +
         "category more than 15 points against the direction; (f) a scheduled event or breaking headline due within " +
-        "hours; (g) entry chasing an already-extended move, or a volatility regime that contradicts the setup; " +
-        "(h) UNCONFIRMED LEVEL: price is reaching a level that would justify the trade but the candles show it still " +
-        "moving INTO that level rather than turning at it — no reversal bar has closed. Report as blocking_count. " +
-        "STEP 3 — VERDICT. Let net = aligned_count - blocking_count. Set confirmed=true when net >= 3 AND factor (h) " +
-        "is absent, meaning the candles show price actually turning at the level rather than still travelling toward " +
-        "it. Otherwise confirmed=false and the trade is skipped. The system executes this literally: false means no " +
-        "position is opened. " +
+        "hours; (g) entry chasing an already-extended move, or a volatility regime that contradicts the setup. " +
+        "Report as blocking_count. These are reasons to doubt the DIRECTION. " +
+        "STEP 2b — LEVEL CONFIRMATION, reported separately in level_confirmed because it is a question of TIMING, not " +
+        "direction, and must not be counted in blocking_count. Set level_confirmed=false when price is reaching a " +
+        "level that would justify the trade (an unfilled FVG, a Fibonacci retracement zone, a support/resistance " +
+        "band) but the candles show it still moving INTO that level rather than turning at it — no reversal bar has " +
+        "closed. Set it true when a bar has actually rejected the level: a close back through it, a rejection wick, " +
+        "or a decisive turn in the last bars. Read this from the candle block, not from the scores. A level touched " +
+        "is a setup; a level rejected is a trigger. " +
+        "STEP 3 — VERDICT. Let net = aligned_count - blocking_count. Set confirmed=true when net >= 3, whatever " +
+        "level_confirmed says. Otherwise confirmed=false and the trade is skipped; the system executes that " +
+        "literally, false means no position is opened. An unconfirmed level does NOT block the trade — the system " +
+        "halves the size for it on its own, so do not also withhold the verdict for it or the same caution is " +
+        "charged twice. " +
         "Read the candle block bar by bar before answering: state in the narrative which specific bar and which " +
         "specific level you based the verdict on. A verdict that cites no bar and no price is not an audit. " +
         "size_multiplier still scales the baseline qty when you confirm, from the same band net selects: " +
@@ -131,12 +138,12 @@ public sealed class ClaudeDecisionValidator(
         "place the stop beyond the level that invalidates the setup. Use only the numbers provided; never fabricate " +
         "prices, flows, or news. " +
         "adjusted_confidence: 0-100 conviction for the proposed side, anchored to net — net>=5 is 70-85, net=3-4 is " +
-        "58-70, net=1-2 is 48-58, net<=0 is 30-48. narrative: 2-3 sentences stating both counts, the bar you read, " +
-        "and the level. risks: up to 3 brief concrete failure modes. " +
+        "58-70, net=1-2 is 48-58, net<=0 is 30-48. narrative: 2-3 sentences stating both counts, whether the level " +
+        "was confirmed, the bar you read, and the level itself. risks: up to 3 brief concrete failure modes. " +
         "Respond ONLY with minified JSON: " +
-        "{\"aligned_count\":number,\"blocking_count\":number,\"confirmed\":bool,\"adjusted_confidence\":number," +
-        "\"size_multiplier\":number,\"leverage\":number,\"stop_loss\":number,\"take_profit\":number," +
-        "\"narrative\":string,\"risks\":[string]}";
+        "{\"aligned_count\":number,\"blocking_count\":number,\"level_confirmed\":bool,\"confirmed\":bool," +
+        "\"adjusted_confidence\":number,\"size_multiplier\":number,\"leverage\":number,\"stop_loss\":number," +
+        "\"take_profit\":number,\"narrative\":string,\"risks\":[string]}";
 
     public async Task<LlmValidation> ValidateAsync(
         AdvancedDecision decision, AdvancedDecisionInput input, CancellationToken cancellationToken)
@@ -376,10 +383,13 @@ public sealed class ClaudeDecisionValidator(
                 ? (int)Math.Round(acnt.GetDecimal()) : null;
             int? blockingCount = root.TryGetProperty("blocking_count", out var bcnt) && bcnt.ValueKind == JsonValueKind.Number
                 ? (int)Math.Round(bcnt.GetDecimal()) : null;
+            bool? levelConfirmed = root.TryGetProperty("level_confirmed", out var lc)
+                && lc.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? lc.GetBoolean() : null;
 
             return new LlmValidation(
                 confirmed, Math.Clamp(adjusted, 0m, 100m), narrative, risks, true,
-                sizeMultiplier, leverage, stopLoss, takeProfit, alignedCount, blockingCount);
+                sizeMultiplier, leverage, stopLoss, takeProfit, alignedCount, blockingCount, levelConfirmed);
         }
         catch (Exception ex)
         {

@@ -129,6 +129,26 @@ public sealed class LlmSizingPolicyTests
         Assert.Equal(0.47m, v.SizeMultiplier);
     }
 
+    // Timing is now reported separately from direction, so it can be priced as a haircut
+    // instead of vetoing the trade and leaving nothing to learn from.
+    [Fact]
+    public void ParserCapturesLevelConfirmation()
+    {
+        var declined = """{"aligned_count":4,"blocking_count":1,"level_confirmed":false,"confirmed":true,"adjusted_confidence":61,"size_multiplier":0.38}""";
+        var confirmed = """{"aligned_count":4,"blocking_count":1,"level_confirmed":true,"confirmed":true,"adjusted_confidence":61,"size_multiplier":0.38}""";
+
+        Assert.False(ClaudeDecisionValidator.ParseResponse(declined, Baseline()).LevelConfirmed);
+        Assert.True(ClaudeDecisionValidator.ParseResponse(confirmed, Baseline()).LevelConfirmed);
+    }
+
+    // A model that omits the field must not be read as "unconfirmed" — that would silently
+    // halve every trade on a reply that simply predates the schema.
+    [Fact]
+    public void MissingLevelConfirmationIsUnknownNotFalse()
+        => Assert.Null(ClaudeDecisionValidator
+            .ParseResponse("""{"confirmed":true,"adjusted_confidence":61,"size_multiplier":0.38}""", Baseline())
+            .LevelConfirmed);
+
     // Older models or a truncated reply must not break the call — the tallies simply go unlogged.
     [Fact]
     public void ParserTreatsMissingTalliesAsUnknown()

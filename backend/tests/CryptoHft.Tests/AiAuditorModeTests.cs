@@ -54,6 +54,28 @@ public sealed class AiAuditorModeTests
     public void AuditorMustCiteABarAndALevel()
         => Assert.Contains("which specific bar and which", ClaudeDecisionValidator.AuditorPrompt);
 
+    // Level confirmation is a question of timing, not direction. Counting it in
+    // blocking_count AND vetoing on it charged the same caution twice, which is how two
+    // setups at engine conviction above 80 were both refused with nothing learned from either.
+    [Fact]
+    public void LevelConfirmationIsSeparatedFromTheDirectionCount()
+    {
+        Assert.Contains("must not be counted in blocking_count", ClaudeDecisionValidator.AuditorPrompt);
+        Assert.Contains("does NOT block the trade", ClaudeDecisionValidator.AuditorPrompt);
+        Assert.Contains("\"level_confirmed\":bool", ClaudeDecisionValidator.AuditorPrompt);
+    }
+
+    // The verdict must now rest on net alone, so an early entry can still trade — small.
+    [Fact]
+    public void VerdictRestsOnNetAlone()
+        => Assert.Contains("confirmed=true when net >= 3, whatever", ClaudeDecisionValidator.AuditorPrompt);
+
+    // The discount is applied in code, not asked of the model, so it lands identically every
+    // time and can be reasoned about without re-reading a narrative.
+    [Fact]
+    public void UnconfirmedLevelCostsHalfTheSize()
+        => Assert.Equal(0.5m, AiDecisionService.UnconfirmedLevelSizeFactor);
+
     // A refusal arrives at the entry policy as an unactionable signal carrying Claude's reason.
     [Fact]
     public void RefusalBlocksTheEntryAndExplainsWhy()

@@ -893,6 +893,7 @@ using (var scope = app.Services.CreateScope())
         ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmAdjustedConfidence" numeric NULL;
         ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmAlignedCount" integer NULL;
         ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmBlockingCount" integer NULL;
+        ALTER TABLE trading."AiDecisionLogs" ADD COLUMN IF NOT EXISTS "LlmLevelConfirmed" boolean NULL;
         CREATE INDEX IF NOT EXISTS "IX_AiDecisionLogs_MatchedPositionId"
             ON trading."AiDecisionLogs" ("MatchedPositionId");
         CREATE TABLE IF NOT EXISTS trading."FactorStats" (

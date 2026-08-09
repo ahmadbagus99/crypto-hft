@@ -248,7 +248,7 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         ScalperGateVerdict? scalperGate = null;
         if (style.UsesSequentialGate)
         {
-            scalperGate = EvaluateScalperGate(input, votes, smcTf.Candles, fib, srLevels, style);
+            scalperGate = EvaluateScalperGate(input, votes, smcTf.Candles, fib, srLevels, style, atr);
             action = scalperGate.Allowed
                 ? scalperGate.Side == TradeSide.Long ? DecisionAction.Buy : DecisionAction.Sell
                 : DecisionAction.NoTrade;
@@ -945,7 +945,8 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
         IReadOnlyList<Candle> structureCandles,
         FibSignals fib,
         SrSignals srLevels,
-        TradingStyleProfile style)
+        TradingStyleProfile style,
+        decimal primaryAtr)
     {
         // Recomputed rather than threaded down from the scoring pass: Detect is a pure scan
         // over the same candles, and only the scalper path pays for it.
@@ -965,8 +966,15 @@ public sealed class AdvancedDecisionEngine : IAdvancedDecisionEngine
                       ?? GetTimeframe(input, "5m")
                       ?? input.Timeframes.OrderBy(t => t.Candles.Count).First();
 
+        // Break-retest-rejection is read on the same series the entry is timed from: the
+        // source material demonstrates the whole pattern on a 1m chart rather than sourcing
+        // the level from a higher timeframe.
+        var entryAtrSeries = TechnicalIndicators.Atr(entryTf.Candles);
+        var entryAtr = entryAtrSeries.Length > 0 && entryAtrSeries[^1] > 0 ? entryAtrSeries[^1] : primaryAtr;
+        var brr = BreakRetestRejection.Detect(entryTf.Candles, entryAtr);
+
         return ScalperSequentialGate.Evaluate(
-            Vote("4h"), Vote("1h"), smc.RangePosition, atNamedLevel, entryTf.Candles);
+            Vote("4h"), Vote("1h"), smc.RangePosition, atNamedLevel, entryTf.Candles, brr);
     }
 
     private static DecisionAction ToAction(decimal directional) => directional switch

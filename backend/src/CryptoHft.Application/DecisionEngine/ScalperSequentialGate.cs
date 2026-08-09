@@ -124,10 +124,29 @@ public static class ScalperSequentialGate
         decimal vote1h,
         decimal rangePosition,
         bool atNamedLevel,
-        IReadOnlyList<Candle> entryCandles)
+        IReadOnlyList<Candle> entryCandles,
+        BrrSignals? brr = null)
     {
         var direction = Direction(vote4h, vote1h);
         if (!direction.Allowed || direction.Side is not TradeSide side) return direction;
+
+        // A live break-retest-rejection running the same way answers location and timing at
+        // once, and answers them better: "price is back at the level it broke eight bars ago
+        // and has just rejected it" is a sharper statement than "price is in the discount half"
+        // followed by "a bar closed our way". The generic gates stay as the path for setups
+        // that are not a retest — most of them.
+        if (brr is { Detected: true, RejectionConfirmed: true } confirmed && confirmed.Side == side)
+        {
+            return new(true, side, "pass", $"{direction.Reason}; BRR: {confirmed.Summary}");
+        }
+
+        // A break that has come back to its level but has NOT rejected yet is the one shape
+        // the source material is explicit about refusing: the touch is not the trigger. Say so
+        // plainly instead of letting the generic timing gate give a vaguer reason.
+        if (brr is { Detected: true, RejectionConfirmed: false } pending && pending.Side == side)
+        {
+            return new(false, side, "timing", $"BRR retest without rejection — {pending.Summary}");
+        }
 
         var location = Location(side, rangePosition, atNamedLevel);
         if (!location.Allowed) return location;

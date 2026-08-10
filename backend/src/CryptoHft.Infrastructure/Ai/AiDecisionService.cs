@@ -111,7 +111,8 @@ public sealed class AiDecisionService(
         if (useLlm && equity is not null && decision.Confidence >= settings.ConfidenceThreshold && decision.Action != DecisionAction.NoTrade)
         {
             var validation = await llmValidator.ValidateAsync(decision, input, cancellationToken);
-            decision = ApplyValidation(decision, validation, profile.MinimumRiskReward, settings.AiDirectionEnabled);
+            decision = ApplyValidation(decision, validation, profile.MinimumRiskReward, settings.AiDirectionEnabled,
+                lockGeometry: styleProfile.LocksGeometry);
         }
 
         // Log the decision for online evaluation (fire-and-forget against the DB)
@@ -147,7 +148,7 @@ public sealed class AiDecisionService(
     // the engine's read or declines it. Only the engine's proposed side is ever on the table,
     // so this can refuse a trade but never invent or reverse one.
     private static AdvancedDecision ApplyValidation(
-        AdvancedDecision d, LlmValidation v, decimal minRiskReward, bool auditorMode)
+        AdvancedDecision d, LlmValidation v, decimal minRiskReward, bool auditorMode, bool lockGeometry)
     {
         if (!v.Used || !d.ShouldTrade)
             return d with { Llm = v };
@@ -207,9 +208,18 @@ public sealed class AiDecisionService(
 
         // SL/TP: accept Claude's pair only if both sit on the correct side of entry and the
         // resulting risk/reward still clears the minimum; otherwise keep the rule baseline.
+        //
+        // The scalper opts out entirely. Its geometry is not a preference — the stop is placed
+        // to clear a measured 0.450% noise band and the target is what the fee arithmetic
+        // leaves once that stop is paid for. On 2026-08-10 02:01 Claude's pair was accepted
+        // over it: the stop stayed at the engine's 2.5xATR while the target went to 5.4xATR,
+        // a 1.56% move that the record says price reaches about a fifth of the time. It ran
+        // 11.5 hours, never approached the target, and closed at the stop for -1.155. A
+        // geometry derived from measurement should not be renegotiable per trade by a model
+        // that cannot see the measurement.
         var stopLoss = d.StopLoss;
         var takeProfit = d.TakeProfit;
-        if (v.StopLoss is decimal cSl && v.TakeProfit is decimal cTp)
+        if (!lockGeometry && v.StopLoss is decimal cSl && v.TakeProfit is decimal cTp)
         {
             var slOk = isBuy ? cSl < d.EntryPrice : cSl > d.EntryPrice;
             var tpOk = isBuy ? cTp > d.EntryPrice : cTp < d.EntryPrice;

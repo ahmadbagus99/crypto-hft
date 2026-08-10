@@ -272,4 +272,19 @@ public sealed class ScalperSequentialGateTests
         Assert.Equal(4m, TradingStyleProfile.Intraday.FallbackTpAtrMultiplier);
         Assert.True(TradingStyleProfile.Intraday.UseLearnedTuning);
     }
+
+    // 2026-08-10 02:01: Claude's SL/TP were accepted over the engine's. The stop stayed at
+    // 2.5xATR while the target went to 5.4xATR — a 1.56% move price reaches about a fifth of
+    // the time. It ran 11.5 hours, never approached the target, and closed at the stop for
+    // -1.155. The scalper's geometry is derived from a measured noise band and the fee
+    // arithmetic; it is not a preference a model reading the same chart can improve on.
+    [Fact]
+    public void ScalperGeometryIsNotNegotiablePerTrade()
+        => Assert.True(TradingStyleProfile.Scalper.LocksGeometry);
+
+    // Intraday keeps its geometry open: there it is a starting point learned from realized
+    // exits, and the fee is a rounding error at those distances.
+    [Fact]
+    public void IntradayGeometryStaysOpenToClaude()
+        => Assert.False(TradingStyleProfile.Intraday.LocksGeometry);
 }

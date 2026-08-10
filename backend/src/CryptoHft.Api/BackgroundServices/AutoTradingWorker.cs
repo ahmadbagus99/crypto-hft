@@ -420,9 +420,17 @@ public sealed class AutoTradingWorker(
 
     private void LogDecision(AdvancedDecision decision)
     {
+        // A refused decision carries its reason in NoTradeReason, but an ALLOWED one carried
+        // nothing: the gate line lived only in Reasons, which never reaches the log. Two
+        // losing entries opened on 9-10 August and there was no record of which path let
+        // them through — BRR or the generic gates — so the post-mortem was guesswork. The
+        // question "why did this trade happen" deserves an answer as much as "why didn't it".
+        var gate = decision.Reasons.FirstOrDefault(r => r.StartsWith("gate ["));
+
         logger.LogInformation(
             "AI decision: {Action} conf={Confidence} regime={Regime} shouldTrade={ShouldTrade} {Reason}",
-            decision.Action, decision.Confidence, decision.Regime, decision.ShouldTrade, decision.NoTradeReason);
+            decision.Action, decision.Confidence, decision.Regime, decision.ShouldTrade,
+            decision.NoTradeReason.Length > 0 ? decision.NoTradeReason : gate ?? "");
     }
 
     private async Task<(bool StateKnown, FuturesPositionInfo? Position)> GetOpenPositionAsync(CancellationToken cancellationToken)

@@ -38,7 +38,13 @@ public sealed record TradingStyleProfile(
     // only because the risk denominator was too small to survive. A caution that fires on
     // every single trade teaches the auditor to distrust everything, so the threshold has to
     // describe the style it is judging.
-    decimal MinimumRiskReward = 2m)
+    decimal MinimumRiskReward = 2m,
+    // Whether the style's SL/TP are fixed or open to Claude's per-trade proposal. Intraday
+    // leaves them open: its geometry is a starting point learned from realized exits and a
+    // model reading the same chart can reasonably improve on it. The scalper's is not a
+    // preference — the stop clears a measured noise band and the target is what the fee
+    // arithmetic leaves once that stop is paid for, so it is not renegotiable per trade.
+    bool LocksGeometry = false)
 {
     public static readonly TradingStyleProfile Intraday = new(
         "intraday", "1h", "15m",
@@ -68,7 +74,13 @@ public sealed record TradingStyleProfile(
         // reached in roughly a fifth of the hours measured. Neither is comfortable — the fee
         // is simply large relative to the distances a scalper works in, and switching entries
         // to maker is the lever that moves this number, not the geometry.
-        MinimumRiskReward: 0.8m);
+        MinimumRiskReward: 0.8m,
+        // 2026-08-10 02:01: Claude's pair was accepted over the engine's. The stop stayed at
+        // 2.5xATR while the target went to 5.4xATR — a 1.56% move that the record says price
+        // reaches about a fifth of the time. It ran 11.5 hours, never approached the target,
+        // and closed at the stop for -1.155. Lowering MinimumRiskReward to describe the new
+        // geometry had the side effect of making almost any proposal clear the bar.
+        LocksGeometry: true);
 
     public static TradingStyleProfile For(TradingStyle style)
         => style == TradingStyle.Scalper ? Scalper : Intraday;
